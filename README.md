@@ -10,4 +10,15 @@ If a queue doesn't have work, we can't verify they're functioning (via the curre
 
 ```
 ./missing_workers.sh -h
+./fitness.py -h
+...
+```
+
+### examples
+
+#### fitness.py
+
+```
+
+./fitness.py -p terraform-packet
 ```
