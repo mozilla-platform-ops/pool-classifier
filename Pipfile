@@ -18,4 +18,4 @@ pendulum = "*"
 influxdb = "*"
 schedule = "*"
 toml = "*"
-
+natsort = "*"
