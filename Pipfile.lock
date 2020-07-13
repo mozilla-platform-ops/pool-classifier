@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "4715a8c23d56055ddcfb0a830a08cf8f786f45c24dd66beb02d47620872c7ba8"
+            "sha256": "d26d3990b7e7872e42db3d897d5c96c46b9b3f131738a14180744df116c991e0"
         },
         "pipfile-spec": 6,
         "requires": {},
@@ -62,9 +62,12 @@
             ],
             "version": "==3.0.4"
         },
-        "humanhash": {
-            "git": "https://github.com/zacharyvoase/humanhash.git",
-            "ref": "e6bd570b23bcf66a8928b9dd7f297773dedcf264"
+        "humanhash3": {
+            "hashes": [
+                "sha256:89ae15f6034bdb07e53ac2b2e246cc7131940766d2b2b70b7398dd27c640b1ab"
+            ],
+            "index": "pypi",
+            "version": "==0.0.6"
         },
         "idna": {
             "hashes": [

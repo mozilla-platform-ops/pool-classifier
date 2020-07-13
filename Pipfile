@@ -20,4 +20,4 @@ schedule = "*"
 toml = "*"
 natsort = "*"
 taskcluster = "*"
-humanhash = {git = "https://github.com/zacharyvoase/humanhash.git", ref = "master"}
+humanhash3 = "*"
