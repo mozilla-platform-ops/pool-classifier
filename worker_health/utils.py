@@ -1,6 +1,7 @@
 import json
 import logging
 import pprint
+import shutil
 import subprocess
 from urllib.request import urlopen
 
@@ -124,6 +125,11 @@ def fetch_url(url):
         return url, response.read(), None
     except Exception as e:
         return url, None, e
+
+
+def pformat_term(a_string):
+    cols, _width = shutil.get_terminal_size(fallback=(120, 50))
+    return pprint.pformat(a_string, width=(cols - 2))
 
 
 # https://www.peterbe.com/plog/best-practice-with-retries-with-requests
