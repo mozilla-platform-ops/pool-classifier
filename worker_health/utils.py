@@ -129,7 +129,7 @@ def fetch_url(url):
 
 def pformat_term(a_string):
     cols, _width = shutil.get_terminal_size(fallback=(120, 50))
-    return pprint.pformat(a_string, width=(cols - 2))
+    return pprint.pformat(a_string, width=(cols - 2), compact=True)
 
 
 # https://www.peterbe.com/plog/best-practice-with-retries-with-requests
