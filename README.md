@@ -2,7 +2,11 @@
 
 Tools to ensure Taskcluster workers are not idle and performing well (success rate).
 
-### setup
+## TODO
+
+- move code into https://github.com/mozilla-platform-ops/relops-infra
+
+## setup
 
 For all tools, run in the pipenv.
 
@@ -16,9 +20,13 @@ pipenv shell
 # run command
 ```
 
-## fitness.py
+## overview
 
-Provide a report on a provisioner and worker-type.
+### fitness.py
+
+Shows each worker's success rate and varios concerning conditions like, consecutive failures, lack of work.
+
+Provides a report on a provisioner and worker-type.
 
 Not specific to Bitbar (works on all taskcluster provisioners).
 
@@ -33,17 +41,32 @@ Not specific to Bitbar (works on all taskcluster provisioners).
 ./fitness.py -p PROVISIONER WORKER-TYPE
 ```
 
-## missing_workers
+### missing_workers
 
-Helps identify Bitbar workers that are configured in a TC queue that has pending jobs, but aren't reporting for work. Utilizes a mozilla-bitbar-devicepool configuration file to detect workers that haven't worked in more than 24 hours.
+For static hardware pools (like moonshots, macs, and bitbar), alert if a worker hasn't worked in more than a day (they disappear from TC output in 24 hours).
 
-If a queue doesn't have work, we can't verify they're functioning (via the currently used method).
+If a queue doesn't have work, we can't verify they're functioning (via the currently used method - TC doesn't show static worker status unless working (I think) in https://firefox-ci-tc.services.mozilla.com/docs/reference/platform/queue/api#listWorkers).
 
-```
+```bash
 ./missing_workers.py -h
 ```
 
-## slack_alert
+### quarantine_tool
+
+Lists quarantined hosts, quarantines, lifts quarantine, and lists all workers in a workerType.
+
+```bash
+# show quarantined
+./quarantine_tool.py proj-autophone gecko-t-bitbar-gw-unit-p2 show
+
+# show all workers
+./quarantine_tool.py proj-autophone gecko-t-bitbar-gw-unit-p2 show-all
+
+./quarantine_tool.py proj-autophone gecko-t-bitbar-gw-unit-p2 quarantine pixel2-01
+./quarantine_tool.py proj-autophone gecko-t-bitbar-gw-unit-p2 lift pixel2-01
+```
+
+### slack_alert
 
 Sends scheduled slack message about problem hosts.
 
@@ -51,7 +74,7 @@ Sends scheduled slack message about problem hosts.
 ./slack_alert.py -h
 ```
 
-## influx_logger
+### influx_logger
 
 Logs worker health metrics to influx.
 
