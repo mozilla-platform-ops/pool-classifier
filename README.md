@@ -33,12 +33,12 @@ Not specific to Bitbar (works on all taskcluster provisioners).
 ![fitness.py](images/fitness_py_example.png)
 
 ```
-./fitness.py -h
+./fitness_check.py -h
 
 # to report on all worker types under a provisioner
-./fitness.py -p PROVISIONER
+./fitness_check.py -p PROVISIONER
 # for a specific worker-type in the provisioner
-./fitness.py -p PROVISIONER WORKER-TYPE
+./fitness_check.py -p PROVISIONER WORKER-TYPE
 ```
 
 ### missing_workers
