@@ -111,7 +111,7 @@ def graph_percentage(value, show_label=False, round_value=False):
     return_string += "["
     for i in range(1, 11):
         if value >= i * 0.1:
-            return_string += u"="
+            return_string += "="
         else:
             return_string += " "
     return_string += "]"
@@ -182,3 +182,41 @@ def get_jsonc2(an_url, verbosity=0):
         result = response.text
         output = json.loads(result)
     return an_url, output, None
+
+
+def mkdir_p(dir_to_create):
+    subprocess.run(f"mkdir -p {dir_to_create}", shell=True)
+
+
+# given an array, find <item> in array, and return item and <number_of_followers> after item
+def arr_get_followers(array, item, number_of_followers, raise_on_errors=False):
+    if len(array) == 0:
+        if raise_on_errors:
+            raise Exception("empty array")
+        return []
+
+    if item not in array:
+        if raise_on_errors:
+            raise Exception("item not in array!")
+        return []
+
+    if number_of_followers > len(array):
+        raise Exception("too many followers for length of array!")
+
+    counter = 0
+    for a_item in array:
+        if a_item == item:
+            end_index = counter + number_of_followers + 1
+            return array[counter:end_index]
+        counter += 1
+
+
+def arr_get_slice_from_item(array, item):
+    if item not in array:
+        raise Exception("item not in array!")
+
+    counter = 0
+    for a_item in array:
+        if a_item == item:
+            return array[counter:]
+        counter += 1
