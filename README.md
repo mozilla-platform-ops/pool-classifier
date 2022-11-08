@@ -57,8 +57,9 @@ Runs a command on a set of hosts once each has been quarantined and no jobs are 
 
 Features:
 - integrates with Taskcluster API to quarantine, check no jobs are running, and lift quarantine
+- ability to resume from a state file
 - OS X speech support for updates
-- pre-quarantine feature so there's less waiting for jobs to finish
+- pre-quarantine feature (quarantines several hosts) so there's less waiting for jobs to finish
 - command output is logged to file
 
 ```bash
@@ -68,6 +69,9 @@ Features:
 # command argument will have 'SR_HOST' replaced with the current host
 ./safe_runner.py --talk releng-hardware gecko-t-osx-1015-r8 macmini-r8-22,macmini-r8-23,macmini-r8-24 \
   "cd ~/git/ronin_puppet && bolt plan run deploy::apply_no_verify -t SR_HOST.test.releng.mdc1.mozilla.com noop=false -v"
+
+# resume from existing state file (can also be used to start a new run)
+./safe_runner.py -r sr_state_dir_xyz -t -R -P 11
 ```
 
 ### quarantine_tool
