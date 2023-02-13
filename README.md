@@ -74,6 +74,10 @@ Features:
 ./safe_runner.py -r sr_state_dir_xyz -t -R -P 11
 ```
 
+### unsafe_runner
+
+Similar to safe_runner, but doesn't deal with any quarantine stuff.
+
 ### quarantine_tool
 
 Lists quarantined hosts, quarantines, lifts quarantine, and lists all workers in a workerType.
