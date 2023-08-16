@@ -66,11 +66,19 @@ Features:
 # for options
 ./safe_runner.py -h
 
-# command argument will have 'SR_HOST' replaced with the current host
+# start option 1: specify all options on the command line
+# command argument substitutions:
+#   'SR_HOST': replaced with the current host
+#   'SR_FQDN': replaced with the fqdn_prefix CLI argument
 ./safe_runner.py --talk releng-hardware gecko-t-osx-1015-r8 macmini-r8-22,macmini-r8-23,macmini-r8-24 \
-  "cd ~/git/ronin_puppet && bolt plan run deploy::apply_no_verify -t SR_HOST.test.releng.mdc1.mozilla.com noop=false -v"
+  "cd ~/git/ronin_puppet && bolt plan run deploy::apply_no_verify -t SR_HOST.SR_FQDN noop=false -v"
 
-# resume from existing state file (can also be used to start a new run)
+# start option 2: create an empty state file, populate, and resume
+./safe_runner.py -r sr_state_dir_xyz
+vi sr_state_dir_xyz/runner_state.toml  # and set options
+./safe_runner.py -r sr_state_dir_xyz
+
+# resume from existing state file and set options
 ./safe_runner.py -r sr_state_dir_xyz -t -R -P 11
 ```
 

@@ -6,7 +6,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setuptools.setup(
     # TODO: rename to relops-worker-tools, must rename package dir also
     name="worker_health",
-    version="0.0.1",
+    version="1.0.0",
     author="Andrew Erickson",
     author_email="aerickson@mozilla.com",
     description="tools for working with workers",
