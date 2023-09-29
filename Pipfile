@@ -9,7 +9,7 @@ pyflakes = "*"
 pytest = "*"
 pytest-mock = "*"
 pytest-watch = "*"
-relops-worker-tools = {editable = true, path = "."}
+worker_health = {editable = true, path = "."}
 pytest-cov = "*"
 ipdb = "*"
 

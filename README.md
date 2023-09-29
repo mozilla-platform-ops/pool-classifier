@@ -62,6 +62,9 @@ Features:
 - pre-quarantine feature (quarantines several hosts) so there's less waiting for jobs to finish
 - command output is logged to file
 
+Potential issues:
+- If ssh is giving you issues with Bolt, append '--native-ssh' to your Bolt command.
+
 ```bash
 # for options
 ./safe_runner.py -h
