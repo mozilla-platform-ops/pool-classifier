@@ -8,6 +8,8 @@ Tools to ensure Taskcluster workers are not idle and performing well (success ra
 
 ## setup
 
+### Python and related
+
 For all tools, run in the pipenv.
 
 ```
@@ -18,6 +20,25 @@ pipenv install
 # for every use
 pipenv shell
 # run command
+```
+
+### Taskcluster credentials
+
+Many of the tools make calls against Taskcluster. We use a token stored in ~/.tc_token.
+
+```bash
+{
+    "clientId": "mozilla-auth0/ad|Mozilla-LDAP|aerickson/quarantine-workers",
+    "accessToken": "REDACTED"
+}
+```
+
+You can create a client token at https://firefox-ci-tc.services.mozilla.com/auth/clients.
+
+Make the expiration 100 years or similar. The only scope currently required is:
+
+```bash
+queue:quarantine-worker:*
 ```
 
 ## overview
