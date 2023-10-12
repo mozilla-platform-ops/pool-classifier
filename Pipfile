@@ -6,12 +6,12 @@ verify_ssl = true
 [dev-packages]
 pre-commit = "*"
 pyflakes = "*"
-pytest = "*"
 pytest-mock = "*"
 pytest-watch = "*"
 worker_health = {editable = true, path = "."}
 pytest-cov = "*"
 ipdb = "*"
+pytest = "*"
 
 [packages]
 pyyaml = "*"
