@@ -24,5 +24,7 @@ natsort = "*"
 taskcluster = "*"
 humanhash3 = "*"
 colorama = "*"
-tomlkit = "*"
+# use head git tomlkit until https://github.com/sdispater/tomlkit/pull/328 is in a release
+# tomlkit = "*"
+tomlkit = {git = "https://github.com/sdispater/tomlkit.git", editable = false, ref = "a3ed6a1"}
 alive-progress = "*"
