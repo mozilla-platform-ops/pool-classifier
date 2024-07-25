@@ -90,16 +90,10 @@ Potential issues:
 # for options
 ./safe_runner.py -h
 
-# start option 1: specify all options on the command line
-# command argument substitutions:
-#   'SR_HOST': replaced with the current host
-#   'SR_FQDN': replaced with the fqdn_prefix CLI argument
-./safe_runner.py --talk releng-hardware gecko-t-osx-1015-r8 macmini-r8-22,macmini-r8-23,macmini-r8-24 \
-  "cd ~/git/ronin_puppet && bolt plan run deploy::apply_no_verify -t SR_HOST.SR_FQDN noop=false -v"
-
-# start option 2: create an empty state file, populate, and resume
+# basic usage
 ./safe_runner.py -r sr_state_dir_xyz
-vi sr_state_dir_xyz/runner_state.toml  # and set options
+# edit config and set options
+vi sr_state_dir_xyz/runner_state.toml
 ./safe_runner.py -r sr_state_dir_xyz
 
 # resume from existing state file and set options
