@@ -16,7 +16,6 @@ pytest = "*"
 [packages]
 pyyaml = "*"
 requests = "*"
-pendulum = "*"
 influxdb = "*"
 schedule = "*"
 toml = "*"
@@ -24,7 +23,8 @@ natsort = "*"
 taskcluster = "*"
 humanhash3 = "*"
 colorama = "*"
-# use head git tomlkit until https://github.com/sdispater/tomlkit/pull/328 is in a release
-# tomlkit = "*"
 tomlkit = {git = "https://github.com/sdispater/tomlkit.git", editable = false, ref = "a3ed6a1"}
 alive-progress = "*"
+testdroid = "*"
+gitpython = "*"
+pendulum = "*"
