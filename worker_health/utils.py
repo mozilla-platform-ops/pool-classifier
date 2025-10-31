@@ -4,6 +4,7 @@ import pprint
 import shutil
 import subprocess
 from urllib.request import urlopen
+from datetime import datetime
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -12,6 +13,55 @@ from urllib3.util import Retry
 logger = logging.getLogger(__name__)
 
 USER_AGENT_STRING = "Python (https://github.com/mozilla-platform-ops/android-tools/tree/master/worker_health)"
+
+
+def human_delta(dt):
+    # dt: seconds
+    if dt is None:
+        return "--"
+    if dt < 60:
+        return f"{int(dt)}s"
+    elif dt < 3600:
+        return f"{int(dt // 60)}m {int(dt % 60)}s"
+    elif dt < 86400:
+        return f"{int(dt // 3600)}h"
+    elif dt < 604800:
+        return f"{int(dt // 86400)}d {int((dt % 86400) // 3600)}h"
+    elif dt < 2592000:
+        return f"{int(dt // 604800)}w {int((dt % 604800) // 86400)}d"
+    elif dt < 31536000:
+        return f"{int(dt // 2592000)}mo {int((dt % 2592000) // 86400)}d"
+    elif dt < 315360000:
+        return f"{int(dt // 31536000)}y {int((dt % 31536000) // 2592000)}mo"
+    elif dt < 3153600000:
+        return f"{int(dt // 315360000)}mo {int((dt % 315360000) // 31536000)}y"
+    else:
+        return f"{int(dt)}s HUGE"
+
+
+def humanize_time_period(seconds):
+    periods = [
+        ("year", 60 * 60 * 24 * 365),
+        ("month", 60 * 60 * 24 * 30),
+        ("hour", 60 * 60),
+        ("minute", 60),
+        ("second", 1),
+    ]
+
+    for period, period_seconds in periods:
+        if seconds >= period_seconds:
+            count = seconds // period_seconds
+            return f"{count} {period}{'s' if count > 1 else ''} ago"
+    return "just now"
+
+
+def date_in_past(date_str):
+    from datetime import timezone
+
+    if date_str is None:
+        return False
+    date_obj = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+    return date_obj < datetime.now(timezone.utc)
 
 
 def run_cmd(cmd):
