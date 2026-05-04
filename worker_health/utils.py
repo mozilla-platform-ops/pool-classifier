@@ -31,12 +31,8 @@ def human_delta(dt):
         return f"{int(dt // 604800)}w {int((dt % 604800) // 86400)}d"
     elif dt < 31536000:
         return f"{int(dt // 2592000)}mo {int((dt % 2592000) // 86400)}d"
-    elif dt < 315360000:
-        return f"{int(dt // 31536000)}y {int((dt % 31536000) // 2592000)}mo"
-    elif dt < 3153600000:
-        return f"{int(dt // 315360000)}mo {int((dt % 315360000) // 31536000)}y"
     else:
-        return f"{int(dt)}s HUGE"
+        return f"~{int(dt // 31536000)}y"
 
 
 def humanize_time_period(seconds):
