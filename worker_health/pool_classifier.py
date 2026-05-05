@@ -69,6 +69,10 @@ CREATE INDEX IF NOT EXISTS idx_task_results_worker ON task_results (worker_id);
 logger = logging.getLogger(__name__)
 
 
+def _c(code: str, text: str, use_color: bool = True) -> str:
+    return f"\033[{code}m{text}\033[0m" if use_color else text
+
+
 class PoolClassifier:
     def __init__(
         self,
@@ -76,6 +80,7 @@ class PoolClassifier:
         worker_type: str,
         results_dir: Path,
         poll_interval: int = DEFAULT_POLL_INTERVAL,
+        use_color: bool = True,
     ):
         self.provisioner = provisioner
         self.worker_type = worker_type
@@ -85,7 +90,11 @@ class PoolClassifier:
         self.seen_tasks: Dict[str, set] = {}  # in-memory cache, loaded from DB at startup
         self._interrupted = False
         self.db: Optional[sqlite3.Connection] = None
+        self.use_color = use_color
         self._init_tc()
+
+    def _color(self, code: str, text: str) -> str:
+        return _c(code, text, self.use_color)
 
     def _init_tc(self):
         token_file = os.path.expanduser(os.environ.get("TC_TOKEN_FILE", "~/.tc_token"))
@@ -233,7 +242,7 @@ class PoolClassifier:
 
             if run_state == "completed":
                 category = None
-                logger.info(f"  {worker_id}: completed task={task_id} run={run_id}")
+                logger.info(f"  {worker_id}: {self._color('1;32', 'completed')} task={task_id} run={run_id}")
             else:
                 log_text = ""
                 if run_id is not None:
@@ -244,7 +253,11 @@ class PoolClassifier:
                     else:
                         logger.info(f"  {worker_id}: task={task_id} no log available")
                 category = self._classify(log_text, run_state, reason_resolved)
-                logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} → {category}")
+                if category == "unclassified":
+                    cat_colored = self._color("1;35", category)  # magenta
+                else:
+                    cat_colored = self._color("1;31", category)  # red
+                logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} → {cat_colored}")
                 if category == "unclassified" and log_text:
                     self._save_unclassified(task_id, run_id, worker_id, log_text)
 
@@ -351,9 +364,10 @@ class PoolClassifier:
             scan_summary = (
                 f"{scanned}/{total_workers} workers" if scanned < total_workers else f"{total_workers} workers"
             )
+            alert_str = self._color("1;31" if alerting_count > 0 else "1;32", str(alerting_count))
             logger.info(
                 f"Scan done: {scan_summary} scanned, {new_total} new terminal tasks, "
-                f"{alerting_count} workers with ≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures. "
+                f"{alert_str} workers with ≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures. "
                 f"{'Interrupted.' if self._interrupted else f'Sleeping {self.poll_interval}s...'}",
             )
 
@@ -379,7 +393,8 @@ class PoolClassifier:
         if self._interrupted:
             sys.exit(130)
         self._interrupted = True
-        print("\n[Ctrl-C] Will stop at next best time. Press again to exit immediately.", file=sys.stderr)
+        msg = _c("1;33", "[Ctrl-C] Will stop at next best time. Press again to exit immediately.", self.use_color)
+        print(f"\n{msg}", file=sys.stderr)
 
     # --- reports ---
 
