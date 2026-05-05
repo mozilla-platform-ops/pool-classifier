@@ -611,8 +611,12 @@ class PoolClassifier:
             for wid, w in sorted(workers.items()):
                 sr_all = self._sr_pct(w)
                 sr_all_str = f"{sr_all:.0%}" if sr_all is not None else "—"
+                q_flag = ""
+                if quarantined and wid in quarantined:
+                    dur = self._quarantine_duration(quarantined[wid])
+                    q_flag = f" 🔒 ({dur})" if dur and dur != "expired" else " 🔒"
                 lines.append(
-                    f"| {wid} | {_wsr(wid, '1d')} | {_wsr(wid, '3d')} | {_wsr(wid, '7d')} | {sr_all_str} | "
+                    f"| {wid}{q_flag} | {_wsr(wid, '1d')} | {_wsr(wid, '3d')} | {_wsr(wid, '7d')} | {sr_all_str} | "
                     f"{w.get('successes', 0)} | {w.get('failures', 0)} | "
                     f"{self._top_category(w)} | {w.get('consecutive_failures', 0)} | "
                     f"{self._fmt_dt(w.get('last_active'))} |",
@@ -778,9 +782,14 @@ class PoolClassifier:
             )
             failures = w.get("failures", 0)
             fail_class = ' class="bad"' if failures > 0 else ""
+            q_cell = ""
+            if quarantined and wid in quarantined:
+                dur = self._quarantine_duration(quarantined[wid])
+                dur_str = f" ({dur})" if dur and dur != "expired" else ""
+                q_cell = f' <span class="quarantine">&#x1F512;{dur_str}</span>'
             parts.append(
                 f"  <tr{row_class}>"
-                f"<td>{wid}</td>"
+                f"<td>{wid}{q_cell}</td>"
                 f"{wsr_td(wid, '1d')}{wsr_td(wid, '3d')}{wsr_td(wid, '7d')}"
                 f'<td class="{sr_class(w)}">{sr_str(w)}</td>'
                 f'<td class="ok">{w.get("successes", 0)}</td>'
