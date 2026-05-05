@@ -17,6 +17,8 @@ import requests
 import taskcluster
 from alive_progress import alive_bar
 
+from worker_health.utils import human_delta
+
 TC_ROOT = "https://firefox-ci-tc.services.mozilla.com"
 LOG_TAIL_BYTES = 51200  # 50 KB
 
@@ -368,7 +370,7 @@ class PoolClassifier:
             logger.info(
                 f"Scan done: {scan_summary} scanned, {new_total} new terminal tasks, "
                 f"{alert_str} workers with ≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures. "
-                f"{'Interrupted.' if self._interrupted else f'Sleeping {self.poll_interval}s...'}",
+                f"{'Interrupted.' if self._interrupted else f'Sleeping {human_delta(self.poll_interval)}...'}",
             )
 
             for _ in range(self.poll_interval):
@@ -425,6 +427,19 @@ class PoolClassifier:
             return ""
         return max(cats, key=lambda k: cats[k])
 
+    def _quarantine_duration(self, until_iso: Optional[str]) -> str:
+        """Return human-readable time remaining in quarantine, or 'expired'."""
+        if not until_iso:
+            return ""
+        try:
+            until = datetime.fromisoformat(until_iso.replace("Z", "+00:00"))
+            remaining = (until - datetime.now(timezone.utc)).total_seconds()
+            if remaining <= 0:
+                return "expired"
+            return human_delta(remaining)
+        except Exception:
+            return ""
+
     def _sr_pct(self, worker_state: dict) -> Optional[float]:
         s = worker_state.get("successes", 0)
         f = worker_state.get("failures", 0)
@@ -433,12 +448,37 @@ class PoolClassifier:
             return None
         return s / total
 
+    def _list_quarantined_workers(self) -> Dict[str, Optional[str]]:
+        """Return dict of worker_id -> quarantineUntil (ISO string) for quarantined workers."""
+        quarantined: Dict[str, Optional[str]] = {}
+        query: dict = {"quarantined": "true"}
+        try:
+            while True:
+                resp = self.tc_queue.listWorkers(self.provisioner, self.worker_type, query=query)
+                for w in resp.get("workers", []):
+                    quarantined[w["workerId"]] = w.get("quarantineUntil")
+                token = resp.get("continuationToken")
+                if not token:
+                    break
+                query = {"quarantined": "true", "continuationToken": token}
+        except Exception as e:
+            logger.warning(f"Failed to fetch quarantined workers: {e}")
+        return quarantined
+
+    def update_report(self):
+        """One-shot: init DB, fetch quarantine state, write reports, exit."""
+        self._init_db()
+        self._update_reports()
+        if self.db:
+            self.db.close()
+
     def _update_reports(self):
         workers = self._query_workers()
-        self._write_md(workers)
-        self._write_html(workers)
+        quarantined = self._list_quarantined_workers()
+        self._write_md(workers, quarantined)
+        self._write_html(workers, quarantined)
 
-    def _write_md(self, workers: Dict[str, dict]):
+    def _write_md(self, workers: Dict[str, dict], quarantined: set = None):
         now = datetime.now(timezone.utc)
         total_failures = sum(w.get("failures", 0) for w in workers.values())
         total_successes = sum(w.get("successes", 0) for w in workers.values())
@@ -476,10 +516,18 @@ class PoolClassifier:
         if alerting:
             lines += [f"## Needs Attention (≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures)", ""]
             for wid, w in sorted(alerting.items(), key=lambda x: -x[1].get("consecutive_failures", 0)):
+                sr = self._sr_pct(w)
+                sr_str = f"{sr:.0%}" if sr is not None else "—"
+                if quarantined and wid in quarantined:
+                    dur = self._quarantine_duration(quarantined[wid])
+                    q_flag = f" 🔒 QUARANTINED ({dur} remaining)" if dur and dur != "expired" else " 🔒 QUARANTINED"
+                else:
+                    q_flag = ""
                 lines.append(
                     f"- **{wid}**: {w['consecutive_failures']} consecutive failures "
                     f"({w.get('last_failure_category', '?')}), "
-                    f"last: {self._fmt_dt(w.get('last_failure'))}",
+                    f"SR: {sr_str}, "
+                    f"last: {self._fmt_dt(w.get('last_failure'))}{q_flag}",
                 )
             lines.append("")
 
@@ -503,7 +551,7 @@ class PoolClassifier:
         self.results_dir.mkdir(parents=True, exist_ok=True)
         (self.results_dir / "OVERVIEW.md").write_text("\n".join(lines) + "\n")
 
-    def _write_html(self, workers: Dict[str, dict]):
+    def _write_html(self, workers: Dict[str, dict], quarantined: set = None):
         now = datetime.now(timezone.utc)
         total_failures = sum(w.get("failures", 0) for w in workers.values())
         total_successes = sum(w.get("successes", 0) for w in workers.values())
@@ -522,6 +570,12 @@ class PoolClassifier:
                 return ""
             display = iso[:19].replace("T", " ") + " UTC"
             return f'<span class="utc-time" data-utc="{iso}">{display}</span>'
+
+        def fmt_relative(iso: Optional[str]) -> str:
+            if not iso:
+                return ""
+            display = iso[:19].replace("T", " ") + " UTC"
+            return f'<span class="relative-time" data-utc="{iso}">{display}</span>'
 
         def sr_class(w: dict) -> str:
             sr = self._sr_pct(w)
@@ -564,6 +618,7 @@ class PoolClassifier:
             "  .warn { color: #f90; }",
             "  ul { padding-left: 1.5rem; }",
             "  li.bad { color: #f44; margin-bottom: .3rem; }",
+            "  .quarantine { color: #f90; font-size: .85em; margin-left: .4em; }",
             "</style>",
             "</head>",
             "<body>",
@@ -593,9 +648,16 @@ class PoolClassifier:
         if alerting:
             parts += [f"<h2>&#x26A0; Needs Attention (≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures)</h2>", "<ul>"]
             for wid, w in sorted(alerting.items(), key=lambda x: -x[1].get("consecutive_failures", 0)):
+                sr_display = f'<span class="{sr_class(w)}">{sr_str(w)}</span>'
+                if quarantined and wid in quarantined:
+                    dur = self._quarantine_duration(quarantined[wid])
+                    dur_str = f" ({dur} remaining)" if dur and dur != "expired" else ""
+                    q_badge = f' <span class="quarantine">&#x1F512; quarantined{dur_str}</span>'
+                else:
+                    q_badge = ""
                 parts.append(
                     f'  <li class="bad"><strong>{wid}</strong>: {w["consecutive_failures"]} consecutive failures '
-                    f"({w.get('last_failure_category', '?')}) — last: {fmt(w.get('last_failure'))}</li>",
+                    f"({w.get('last_failure_category', '?')}) — SR: {sr_display} — last: {fmt_relative(w.get('last_failure'))}{q_badge}</li>",
                 )
             parts.append("</ul>")
 
@@ -633,6 +695,16 @@ class PoolClassifier:
 
         parts += [
             "<script>",
+            "  function humanizeTime(iso) {",
+            "    const diff = (Date.now() - new Date(iso)) / 1000;",
+            "    if (diff < 60) return Math.round(diff) + 's ago';",
+            "    if (diff < 3600) return Math.floor(diff/60) + 'm ago';",
+            "    if (diff < 86400) return Math.floor(diff/3600) + 'h ago';",
+            "    if (diff < 604800) return Math.floor(diff/86400) + 'd ago';",
+            "    if (diff < 2592000) return Math.floor(diff/604800) + 'w ago';",
+            "    return Math.floor(diff/2592000) + 'mo ago';",
+            "  }",
+            "  document.querySelectorAll('.relative-time').forEach(el => el.textContent = humanizeTime(el.dataset.utc));",
             "  function formatTime(iso, mode) {",
             "    const d = new Date(iso);",
             "    if (mode === 'utc') return iso.slice(0,19).replace('T',' ') + ' UTC';",

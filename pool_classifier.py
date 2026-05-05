@@ -56,6 +56,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="enable debug logging")
     parser.add_argument("--no-color", action="store_true", help="disable color output")
+    parser.add_argument(
+        "-u",
+        "--update-only",
+        action="store_true",
+        help="fetch quarantine state, write report, and exit",
+    )
     args = parser.parse_args()
 
     if args.no_color:
@@ -86,4 +92,7 @@ if __name__ == "__main__":
         poll_interval=args.poll_interval,
         use_color=_use_color,
     )
-    classifier.run()
+    if args.update_only:
+        classifier.update_report()
+    else:
+        classifier.run()
