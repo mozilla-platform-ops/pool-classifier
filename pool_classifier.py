@@ -62,6 +62,22 @@ if __name__ == "__main__":
         action="store_true",
         help="fetch quarantine state, write report, and exit",
     )
+    parser.add_argument(
+        "--reclassify",
+        action="store_true",
+        help="re-run patterns against saved/fetched logs for a category and update the DB, then exit",
+    )
+    parser.add_argument(
+        "--reclassify-category",
+        default="unclassified",
+        metavar="CATEGORY",
+        help="category to target with --reclassify (default: unclassified)",
+    )
+    parser.add_argument(
+        "--save-unmatched-logs",
+        action="store_true",
+        help="save re-fetched logs that still don't match any pattern to reclassify_logs/{category}/",
+    )
     args = parser.parse_args()
 
     if args.no_color:
@@ -92,7 +108,12 @@ if __name__ == "__main__":
         poll_interval=args.poll_interval,
         use_color=_use_color,
     )
-    if args.update_only:
+    if args.reclassify:
+        classifier.reclassify_unclassified(
+            target_category=args.reclassify_category,
+            save_unmatched_logs=args.save_unmatched_logs,
+        )
+    elif args.update_only:
         classifier.update_report()
     else:
         classifier.run()
