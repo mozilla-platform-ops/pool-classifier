@@ -43,6 +43,8 @@ FAILURE_PATTERNS = [
         r"CRITICAL -  raptor-browsertime Critical: Browsertime process timed out after waiting \d+ seconds for output",
         "browsertime-device-timeout",
     ),
+    (r"raptor-browsertime Critical: No data to collect", "raptor-no-data-to-collect"),
+    (r"FileNotFoundError:.*mozinfo/android_os_to_api_map\.yaml", "mozinfo-import-error"),
     (r"WARNING - Got \d+ unexpected crashes", "test-failure-unexpected-crashes"),
     (r"WARNING - Got \d+ unexpected statuses", "test-failure-unexpected-statuses"),
     (r"Could not fetch from url https://hg\.[^ ]+ into file .* due to \(Permanent\) HTTP response code", "hg_error"),
