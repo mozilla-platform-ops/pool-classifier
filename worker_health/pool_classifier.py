@@ -8,7 +8,7 @@ import signal
 import sqlite3
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -440,24 +440,58 @@ class PoolClassifier:
         except Exception:
             return ""
 
-    def _top_offenders(self, workers: Dict[str, dict], category: str, n: int = 5) -> List[Tuple[str, int]]:
-        ranked = sorted(
-            [
-                (wid, w["failures_by_category"].get(category, 0))
-                for wid, w in workers.items()
-                if w["failures_by_category"].get(category, 0) > 0
-            ],
-            key=lambda x: -x[1],
-        )
-        return ranked[:n]
+    def _top_offenders(self, category: str, n: int = 5, since: Optional[str] = None) -> List[Tuple[str, int]]:
+        if since:
+            rows = self.db.execute(
+                "SELECT worker_id, COUNT(*) as cnt FROM task_results"
+                " WHERE category = ? AND run_state != 'completed' AND run_started >= ?"
+                " GROUP BY worker_id ORDER BY cnt DESC LIMIT ?",
+                (category, since, n),
+            )
+        else:
+            rows = self.db.execute(
+                "SELECT worker_id, COUNT(*) as cnt FROM task_results"
+                " WHERE category = ? AND run_state != 'completed'"
+                " GROUP BY worker_id ORDER BY cnt DESC LIMIT ?",
+                (category, n),
+            )
+        return [(row["worker_id"], row["cnt"]) for row in rows]
 
     def _sr_pct(self, worker_state: dict) -> Optional[float]:
         s = worker_state.get("successes", 0)
         f = worker_state.get("failures", 0)
-        total = s + f
+        return self._sr_from_counts(s, f)
+
+    def _sr_from_counts(self, succ: int, fail: int) -> Optional[float]:
+        total = succ + fail
         if total == 0:
             return None
-        return s / total
+        return succ / total
+
+    def _query_windowed_sr(self) -> Dict[str, dict]:
+        """Return per-worker success/failure counts for 1d, 3d, and 7d windows."""
+        now = datetime.now(timezone.utc)
+        c1d = (now - timedelta(days=1)).isoformat()
+        c3d = (now - timedelta(days=3)).isoformat()
+        c7d = (now - timedelta(days=7)).isoformat()
+        result = {}
+        for row in self.db.execute(
+            """
+            SELECT
+                worker_id,
+                SUM(CASE WHEN run_state = 'completed' AND run_started >= :c1d THEN 1 ELSE 0 END) AS succ_1d,
+                SUM(CASE WHEN run_state != 'completed' AND run_started >= :c1d THEN 1 ELSE 0 END) AS fail_1d,
+                SUM(CASE WHEN run_state = 'completed' AND run_started >= :c3d THEN 1 ELSE 0 END) AS succ_3d,
+                SUM(CASE WHEN run_state != 'completed' AND run_started >= :c3d THEN 1 ELSE 0 END) AS fail_3d,
+                SUM(CASE WHEN run_state = 'completed' AND run_started >= :c7d THEN 1 ELSE 0 END) AS succ_7d,
+                SUM(CASE WHEN run_state != 'completed' AND run_started >= :c7d THEN 1 ELSE 0 END) AS fail_7d
+            FROM task_results
+            GROUP BY worker_id
+            """,
+            {"c1d": c1d, "c3d": c3d, "c7d": c7d},
+        ):
+            result[row["worker_id"]] = dict(row)
+        return result
 
     def _list_quarantined_workers(self) -> Dict[str, Optional[str]]:
         """Return dict of worker_id -> quarantineUntil (ISO string) for quarantined workers."""
@@ -486,10 +520,18 @@ class PoolClassifier:
     def _update_reports(self):
         workers = self._query_workers()
         quarantined = self._list_quarantined_workers()
-        self._write_md(workers, quarantined)
-        self._write_html(workers, quarantined)
+        windowed_sr = self._query_windowed_sr()
+        since_1d = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        self._write_md(workers, quarantined, windowed_sr, since_1d)
+        self._write_html(workers, quarantined, windowed_sr, since_1d)
 
-    def _write_md(self, workers: Dict[str, dict], quarantined: set = None):
+    def _write_md(
+        self,
+        workers: Dict[str, dict],
+        quarantined: set = None,
+        windowed_sr: Dict[str, dict] = None,
+        since_1d: Optional[str] = None,
+    ):
         now = datetime.now(timezone.utc)
         total_failures = sum(w.get("failures", 0) for w in workers.values())
         total_successes = sum(w.get("successes", 0) for w in workers.values())
@@ -543,26 +585,35 @@ class PoolClassifier:
             lines.append("")
 
         if category_totals:
-            lines += ["## Top Offenders by Category", ""]
+            lines += ["## Top Offenders by Category (last 1d)", ""]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                lines.append(f"### {cat} ({count} total)")
+                lines.append(f"### {cat} ({count} total all-time)")
                 lines.append("")
-                for wid, n in self._top_offenders(workers, cat):
+                for wid, n in self._top_offenders(cat, since=since_1d):
                     lines.append(f"- {wid}: {n}")
                 lines.append("")
 
         if workers:
+
+            def _wsr(wid, key):
+                if not windowed_sr:
+                    return "—"
+                d = windowed_sr.get(wid, {})
+                sr = self._sr_from_counts(d.get(f"succ_{key}", 0), d.get(f"fail_{key}", 0))
+                return f"{sr:.0%}" if sr is not None else "—"
+
             lines += [
                 "## All Workers",
                 "",
-                "| Worker | SR% | Successes | Failures | Top Category | Consec Fails | Last Active |",
-                "|--------|-----|-----------|----------|--------------|--------------|-------------|",
+                "| Worker | SR (1d) | SR (3d) | SR (7d) | SR (all) | Successes | Failures | Top Category | Consec Fails | Last Active |",
+                "|--------|---------|---------|---------|----------|-----------|----------|--------------|--------------|-------------|",
             ]
             for wid, w in sorted(workers.items()):
-                sr = self._sr_pct(w)
-                sr_str = f"{sr:.0%}" if sr is not None else "—"
+                sr_all = self._sr_pct(w)
+                sr_all_str = f"{sr_all:.0%}" if sr_all is not None else "—"
                 lines.append(
-                    f"| {wid} | {sr_str} | {w.get('successes', 0)} | {w.get('failures', 0)} | "
+                    f"| {wid} | {_wsr(wid, '1d')} | {_wsr(wid, '3d')} | {_wsr(wid, '7d')} | {sr_all_str} | "
+                    f"{w.get('successes', 0)} | {w.get('failures', 0)} | "
                     f"{self._top_category(w)} | {w.get('consecutive_failures', 0)} | "
                     f"{self._fmt_dt(w.get('last_active'))} |",
                 )
@@ -571,7 +622,13 @@ class PoolClassifier:
         self.results_dir.mkdir(parents=True, exist_ok=True)
         (self.results_dir / "OVERVIEW.md").write_text("\n".join(lines) + "\n")
 
-    def _write_html(self, workers: Dict[str, dict], quarantined: set = None):
+    def _write_html(
+        self,
+        workers: Dict[str, dict],
+        quarantined: set = None,
+        windowed_sr: Dict[str, dict] = None,
+        since_1d: Optional[str] = None,
+    ):
         now = datetime.now(timezone.utc)
         total_failures = sum(w.get("failures", 0) for w in workers.values())
         total_successes = sum(w.get("successes", 0) for w in workers.values())
@@ -596,6 +653,14 @@ class PoolClassifier:
                 return ""
             display = iso[:19].replace("T", " ") + " UTC"
             return f'<span class="relative-time" data-utc="{iso}">{display}</span>'
+
+        def wsr_td(wid: str, key: str) -> str:
+            d = (windowed_sr or {}).get(wid, {})
+            sr = self._sr_from_counts(d.get(f"succ_{key}", 0), d.get(f"fail_{key}", 0))
+            if sr is None:
+                return '<td class="">—</td>'
+            cls = "ok" if sr >= 0.85 else ("warn" if sr >= 0.5 else "bad")
+            return f'<td class="{cls}">{sr:.0%}</td>'
 
         def sr_class(w: dict) -> str:
             sr = self._sr_pct(w)
@@ -686,12 +751,12 @@ class PoolClassifier:
             parts.append("</ul>")
 
         if category_totals:
-            parts += ["<h2>Top Offenders by Category</h2>"]
+            parts += ["<h2>Top Offenders by Category <span class='cat-total'>(last 1d)</span></h2>"]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                offenders = self._top_offenders(workers, cat)
+                offenders = self._top_offenders(cat, since=since_1d)
                 offender_items = "".join(f"<li>{wid}: {n}</li>" for wid, n in offenders)
                 parts.append(
-                    f'<h3 class="cat-header">{cat} <span class="cat-total">({count} total)</span></h3>'
+                    f'<h3 class="cat-header">{cat} <span class="cat-total">({count} total all-time)</span></h3>'
                     f'<ul class="offenders">{offender_items}</ul>',
                 )
 
@@ -699,8 +764,8 @@ class PoolClassifier:
             "<h2>All Workers</h2>",
             "<table>",
             "  <thead><tr>",
-            "    <th>Worker</th><th>SR%</th><th>Successes</th><th>Failures</th>"
-            "<th>Top Category</th><th>Consec Fails</th><th>Last Active</th>",
+            "    <th>Worker</th><th>SR (1d)</th><th>SR (3d)</th><th>SR (7d)</th><th>SR (all)</th>"
+            "<th>Successes</th><th>Failures</th><th>Top Category</th><th>Consec Fails</th><th>Last Active</th>",
             "  </tr></thead>",
             "  <tbody>",
         ]
@@ -716,6 +781,7 @@ class PoolClassifier:
             parts.append(
                 f"  <tr{row_class}>"
                 f"<td>{wid}</td>"
+                f"{wsr_td(wid, '1d')}{wsr_td(wid, '3d')}{wsr_td(wid, '7d')}"
                 f'<td class="{sr_class(w)}">{sr_str(w)}</td>'
                 f'<td class="ok">{w.get("successes", 0)}</td>'
                 f"<td{fail_class}>{failures}</td>"
