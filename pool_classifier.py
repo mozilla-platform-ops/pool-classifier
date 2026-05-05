@@ -32,6 +32,11 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--verbose", action="store_true", help="enable debug logging")
     args = parser.parse_args()
 
+    # font: smbraille
+    print(" ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀")
+    print(" ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ ")
+    print()
+
     logging.basicConfig(
         format="%(asctime)s %(levelname)-8s %(message)s",
         level=logging.DEBUG if args.verbose else logging.INFO,
