@@ -14,16 +14,18 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 import taskcluster
+from alive_progress import alive_bar
 
 TC_ROOT = "https://firefox-ci-tc.services.mozilla.com"
 LOG_TAIL_BYTES = 51200  # 50 KB
 
 DEFAULT_PROVISIONER = "proj-autophone"
 DEFAULT_WORKER_TYPE = "gecko-t-lambda-perf-a55"
-DEFAULT_POLL_INTERVAL = 60  # seconds
+DEFAULT_POLL_INTERVAL = 900  # seconds (15 minutes)
 WORKER_REFRESH_INTERVAL = 300  # seconds between re-listing workers
 WORKER_THREAD_COUNT = 8
 CONSECUTIVE_FAILURE_ALERT = 2
+SEEN_TASKS_CAP = 30  # max seen task IDs to persist per worker (recentTasks is ~20)
 
 # Patterns are checked in order; first match wins.
 # Edit these to match the failure modes you care about.
@@ -128,7 +130,11 @@ class PoolClassifier:
     def _load_state(self) -> dict:
         if self._state_file.exists():
             try:
-                return json.loads(self._state_file.read_text())
+                state = json.loads(self._state_file.read_text())
+                # restore seen_tasks into memory
+                for worker_id, w in state.get("workers", {}).items():
+                    self.seen_tasks[worker_id] = set(w.get("seen_task_ids", []))
+                return state
             except Exception as e:
                 logger.warning(f"Could not parse state file, starting fresh: {e}")
         return {"workers": {}}
@@ -136,6 +142,10 @@ class PoolClassifier:
     def _save_state(self, state: dict):
         self.results_dir.mkdir(parents=True, exist_ok=True)
         state["last_updated"] = datetime.now(timezone.utc).isoformat()
+        # persist seen task IDs (capped) so restarts don't reprocess old tasks
+        for worker_id, seen in self.seen_tasks.items():
+            if worker_id in state["workers"]:
+                state["workers"][worker_id]["seen_task_ids"] = list(seen)[-SEEN_TASKS_CAP:]
         tmp = self._state_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(state, indent=2) + "\n")
         tmp.replace(self._state_file)
@@ -156,9 +166,12 @@ class PoolClassifier:
             return results
 
         unseen_task_ids = [t["taskId"] for t in recent if t.get("taskId") and t["taskId"] not in seen]
+        if unseen_task_ids:
+            logger.debug(f"  {worker_id}: checking {len(unseen_task_ids)} unseen task(s)")
 
         for task_id in unseen_task_ids:
             try:
+                logger.debug(f"  {worker_id}: fetching status for {task_id}")
                 status_resp = self._get_task_status(task_id)
             except Exception as e:
                 logger.debug(f"{task_id}: status fetch error: {e}")
@@ -177,10 +190,11 @@ class PoolClassifier:
             latest = my_runs[-1]
             run_state = latest.get("state")
             if run_state not in ("completed", "failed", "exception"):
-                # still running — leave unseen, re-check next poll
+                logger.debug(f"  {worker_id}: task {task_id} still running (state={run_state}), will re-check")
                 continue
 
             seen.add(task_id)
+            logger.debug(f"  {worker_id}: task {task_id} terminal (state={run_state})")
             results.append(
                 (task_id, latest.get("runId"), run_state, latest.get("started"), latest.get("reasonResolved")),
             )
@@ -190,10 +204,13 @@ class PoolClassifier:
     def _poll_one_worker(self, worker: dict) -> Tuple[str, List[Tuple]]:
         worker_id = worker["workerId"]
         worker_group = worker["workerGroup"]
+        logger.debug(f"  polling {worker_id}")
         tasks = self._new_terminal_tasks(worker_id, worker_group)
+        if tasks:
+            logger.debug(f"  {worker_id}: {len(tasks)} new terminal task(s)")
         return worker_id, tasks
 
-    def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], state: dict):
+    def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], state: dict, bar=None):
         w = state["workers"].setdefault(
             worker_id,
             {
@@ -209,6 +226,11 @@ class PoolClassifier:
         )
 
         for task_id, run_id, run_state, run_started, reason_resolved in terminal_tasks:
+            if self._interrupted:
+                logger.info(f"  {worker_id}: interrupted, skipping remaining tasks")
+                break
+            if bar:
+                bar()
             if run_started:
                 if w["last_active"] is None or run_started > w["last_active"]:
                     w["last_active"] = run_started
@@ -217,10 +239,16 @@ class PoolClassifier:
                 w["successes"] += 1
                 w["consecutive_failures"] = 0
                 w["last_success"] = run_started or w["last_success"]
+                logger.info(f"  {worker_id}: completed task={task_id} run={run_id}")
             else:
                 log_text = ""
                 if run_id is not None:
+                    logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} — fetching log tail")
                     log_text = self._fetch_log_tail(task_id, run_id)
+                    if log_text:
+                        logger.info(f"  {worker_id}: task={task_id} log tail fetched ({len(log_text)} bytes)")
+                    else:
+                        logger.info(f"  {worker_id}: task={task_id} no log available")
                 category = self._classify(log_text, run_state, reason_resolved)
                 w["failures"] += 1
                 w["failures_by_category"][category] = w["failures_by_category"].get(category, 0) + 1
@@ -228,6 +256,8 @@ class PoolClassifier:
                 w["last_failure"] = run_started or w["last_failure"]
                 w["last_failure_category"] = category
                 logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} → {category}")
+                if category == "unclassified" and log_text:
+                    self._save_unclassified(task_id, run_id, worker_id, log_text)
 
     # --- main loop ---
 
@@ -251,17 +281,46 @@ class PoolClassifier:
 
             state = self._load_state()
 
+            total_workers = len(workers)
+            logger.info(f"Scanning {total_workers} workers...")
+            poll_results = []
+            scanned = 0
+            pool = ThreadPool(WORKER_THREAD_COUNT)
+            terminated = False
             try:
-                poll_results = ThreadPool(WORKER_THREAD_COUNT).starmap(self._poll_one_worker, [(w,) for w in workers])
+                with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
+                    for worker_id, tasks in pool.imap_unordered(self._poll_one_worker, workers):
+                        scanned += 1
+                        bar()
+                        poll_results.append((worker_id, tasks))
+                        if self._interrupted:
+                            pool.terminate()
+                            terminated = True
+                            break
             except Exception as e:
-                logger.warning(f"Thread pool error: {e}")
-                poll_results = []
+                logger.warning(f"Poll error: {e}")
+                pool.terminate()
+                terminated = True
+            finally:
+                if not terminated:
+                    pool.close()
+                pool.join()
 
-            new_total = 0
-            for worker_id, terminal_tasks in poll_results:
-                if terminal_tasks:
-                    new_total += len(terminal_tasks)
-                    self._process_results(worker_id, terminal_tasks, state)
+            new_total = sum(len(tasks) for _, tasks in poll_results if tasks)
+
+            if new_total > 0 and not self._interrupted:
+                with alive_bar(new_total, title="processing tasks", enrich_print=False) as bar:
+                    for worker_id, terminal_tasks in poll_results:
+                        if self._interrupted:
+                            break
+                        if terminal_tasks:
+                            self._process_results(worker_id, terminal_tasks, state, bar)
+            else:
+                for worker_id, terminal_tasks in poll_results:
+                    if self._interrupted:
+                        break
+                    if terminal_tasks:
+                        self._process_results(worker_id, terminal_tasks, state)
 
             self._save_state(state)
             self._update_reports(state)
@@ -269,10 +328,13 @@ class PoolClassifier:
             alerting_count = sum(
                 1 for w in state["workers"].values() if w.get("consecutive_failures", 0) >= CONSECUTIVE_FAILURE_ALERT
             )
+            scan_summary = (
+                f"{scanned}/{total_workers} workers" if scanned < total_workers else f"{total_workers} workers"
+            )
             logger.info(
-                f"Poll done: {new_total} new terminal tasks, "
-                f"{alerting_count} workers alerting. "
-                f"Sleeping {self.poll_interval}s...",
+                f"Scan done: {scan_summary} scanned, {new_total} new terminal tasks, "
+                f"{alerting_count} workers with ≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures. "
+                f"{'Interrupted.' if self._interrupted else f'Sleeping {self.poll_interval}s...'}",
             )
 
             for _ in range(self.poll_interval):
@@ -283,11 +345,19 @@ class PoolClassifier:
         logger.info("Interrupted — exiting.")
         sys.exit(0)
 
+    def _save_unclassified(self, task_id: str, run_id: int, worker_id: str, log_text: str):
+        unclassified_dir = self.results_dir / "unclassified"
+        unclassified_dir.mkdir(parents=True, exist_ok=True)
+        out = unclassified_dir / f"{task_id}.log"
+        header = f"# worker={worker_id} run={run_id} task={task_id}\n\n"
+        out.write_text(header + log_text)
+        logger.info(f"  saved unclassified log → {out}")
+
     def _handle_interrupt(self, sig, frame):
         if self._interrupted:
             sys.exit(130)
         self._interrupted = True
-        print("\n[Ctrl-C] Stopping after current poll. Press again to exit immediately.", file=sys.stderr)
+        print("\n[Ctrl-C] Will stop at next best time. Press again to exit immediately.", file=sys.stderr)
 
     # --- report helpers ---
 
