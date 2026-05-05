@@ -522,8 +522,6 @@ class PoolClassifier:
             lines += ["## Failure Categories", ""]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
                 lines.append(f"- {cat}: **{count}**")
-                for wid, n in self._top_offenders(workers, cat):
-                    lines.append(f"  - {wid}: {n}")
             lines.append("")
 
         if alerting:
@@ -543,6 +541,15 @@ class PoolClassifier:
                     f"last: {self._fmt_dt(w.get('last_failure'))}{q_flag}",
                 )
             lines.append("")
+
+        if category_totals:
+            lines += ["## Top Offenders by Category", ""]
+            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
+                lines.append(f"### {cat} ({count} total)")
+                lines.append("")
+                for wid, n in self._top_offenders(workers, cat):
+                    lines.append(f"- {wid}: {n}")
+                lines.append("")
 
         if workers:
             lines += [
@@ -632,7 +639,9 @@ class PoolClassifier:
             "  ul { padding-left: 1.5rem; }",
             "  li.bad { color: #f44; margin-bottom: .3rem; }",
             "  .quarantine { color: #f90; font-size: .85em; margin-left: .4em; }",
-            "  ul.offenders { margin: .2rem 0 .4rem 1.2rem; padding: 0; list-style: none; font-size: .85em; color: #aaa; }",
+            "  h3.cat-header { color: #ccc; font-size: .95em; margin: 1rem 0 .2rem; }",
+            "  .cat-total { color: #666; font-weight: normal; }",
+            "  ul.offenders { margin: 0 0 .6rem 1.2rem; padding: 0; list-style: none; font-size: .85em; color: #aaa; }",
             "  ul.offenders li { padding: .1rem 0; }",
             "</style>",
             "</head>",
@@ -657,11 +666,7 @@ class PoolClassifier:
         if category_totals:
             parts += ["<h2>Failure Categories</h2>", "<ul>"]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                offenders = self._top_offenders(workers, cat)
-                offender_items = "".join(f"<li>{wid}: {n}</li>" for wid, n in offenders)
-                parts.append(
-                    f'  <li>{cat}: <strong>{count}</strong><ul class="offenders">{offender_items}</ul></li>',
-                )
+                parts.append(f"  <li>{cat}: <strong>{count}</strong></li>")
             parts.append("</ul>")
 
         if alerting:
@@ -679,6 +684,16 @@ class PoolClassifier:
                     f"({w.get('last_failure_category', '?')}) — SR: {sr_display} — last: {fmt_relative(w.get('last_failure'))}{q_badge}</li>",
                 )
             parts.append("</ul>")
+
+        if category_totals:
+            parts += ["<h2>Top Offenders by Category</h2>"]
+            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
+                offenders = self._top_offenders(workers, cat)
+                offender_items = "".join(f"<li>{wid}: {n}</li>" for wid, n in offenders)
+                parts.append(
+                    f'<h3 class="cat-header">{cat} <span class="cat-total">({count} total)</span></h3>'
+                    f'<ul class="offenders">{offender_items}</ul>',
+                )
 
         parts += [
             "<h2>All Workers</h2>",
