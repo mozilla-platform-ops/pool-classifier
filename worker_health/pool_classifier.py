@@ -38,7 +38,15 @@ FAILURE_PATTERNS = [
     (r"mozdevice\.DeviceError", "device_error"),
     (r"error: device .* not found", "device_not_found"),
     (r"DeviceDisconnectedError", "device_disconnected"),
-    (r"[Tt]imeout\b", "timeout"),
+    (r"TEST-UNEXPECTED-TIMEOUT \|.+\| Test timed out", "test-unexpected-timeout"),
+    (
+        r"CRITICAL -  raptor-browsertime Critical: Browsertime process timed out after waiting \d+ seconds for output",
+        "browsertime-device-timeout",
+    ),
+    (r"WARNING - Got \d+ unexpected crashes", "test-failure-unexpected-crashes"),
+    (r"WARNING - Got \d+ unexpected statuses", "test-failure-unexpected-statuses"),
+    (r"Could not fetch from url https://hg\.[^ ]+ into file .* due to \(Permanent\) HTTP response code", "hg_error"),
+    (r"abort: error applying bundle", "hg_error"),
 ]
 
 DB_SCHEMA = """
@@ -157,7 +165,11 @@ class PoolClassifier:
     def _fetch_log_tail(self, task_id: str, run_id: int) -> str:
         url = f"{self.queue_base}/task/{task_id}/runs/{run_id}/artifacts/public/logs/live_backing.log"
         try:
-            r = requests.get(url, headers={"Range": f"bytes=-{LOG_TAIL_BYTES}"}, timeout=60)
+            r = requests.get(
+                url,
+                headers={"Range": f"bytes=-{LOG_TAIL_BYTES}", "Accept-Encoding": "identity"},
+                timeout=60,
+            )
             if r.status_code in (200, 206):
                 return r.text
         except Exception as e:
@@ -382,6 +394,118 @@ class PoolClassifier:
         if self.db:
             self.db.close()
         sys.exit(0)
+
+    def _update_category(
+        self,
+        task_id: str,
+        worker_id: str,
+        run_state: str,
+        reason_resolved: Optional[str],
+        log_text: str,
+    ) -> Optional[str]:
+        """Classify log_text and update DB if not still unclassified. Returns new category or None."""
+        category = self._classify(log_text, run_state, reason_resolved)
+        if category == "unclassified":
+            return None
+        self.db.execute(
+            "UPDATE task_results SET category = ? WHERE task_id = ? AND worker_id = ?",
+            (category, task_id, worker_id),
+        )
+        self.db.execute(
+            """UPDATE workers SET last_failure_category = ?
+               WHERE worker_id = ?
+                 AND last_failure = (SELECT run_started FROM task_results WHERE task_id = ? AND worker_id = ?)""",
+            (category, worker_id, task_id, worker_id),
+        )
+        self.db.commit()
+        return category
+
+    def reclassify_unclassified(self, target_category: str = "unclassified", save_unmatched_logs: bool = False):
+        """Re-run FAILURE_PATTERNS against saved logs and re-fetch logs for DB entries in target_category."""
+        self._init_db()
+        reclassified = 0
+        refetch_total = 0
+
+        unmatched_dir = self.results_dir / "reclassify_logs" / target_category
+        if save_unmatched_logs:
+            if unmatched_dir.exists():
+                for f in unmatched_dir.glob("*.log"):
+                    f.unlink()
+            unmatched_dir.mkdir(parents=True, exist_ok=True)
+            (unmatched_dir / "README.md").write_text(
+                "# Temporary reclassify logs\n\n"
+                "This directory is wiped and repopulated each time `--reclassify --save-unmatched-logs` is run.\n"
+                "Do not store anything here you want to keep.\n",
+            )
+
+        # Pass 1: saved log files (only relevant when target is unclassified).
+        saved_task_ids = set()
+        if target_category == "unclassified":
+            unclassified_dir = self.results_dir / "unclassified"
+            if unclassified_dir.exists():
+                for log_path in unclassified_dir.glob("*.log"):
+                    task_id = log_path.stem
+                    saved_task_ids.add(task_id)
+                    raw = log_path.read_text()
+                    log_text = raw.split("\n", 2)[2] if raw.count("\n") >= 2 else raw
+                    row = self.db.execute(
+                        "SELECT worker_id, run_id, run_state, reason_resolved FROM task_results WHERE task_id = ?",
+                        (task_id,),
+                    ).fetchone()
+                    if row is None:
+                        logger.warning(f"  {task_id}: not in DB, skipping")
+                        continue
+                    category = self._update_category(
+                        task_id,
+                        row["worker_id"],
+                        row["run_state"],
+                        row["reason_resolved"],
+                        log_text,
+                    )
+                    if category:
+                        log_path.unlink()
+                        logger.info(f"  {task_id} ({row['worker_id']}): {target_category} → {category}")
+                        reclassified += 1
+                    else:
+                        logger.info(f"  {task_id}: still {target_category}")
+                        if save_unmatched_logs:
+                            (unmatched_dir / f"{task_id}.log").write_text(log_text)
+
+        # Pass 2: DB entries with no saved log — try re-fetching from TC.
+        db_rows = self.db.execute(
+            "SELECT task_id, worker_id, run_id, run_state, reason_resolved FROM task_results WHERE category = ?",
+            (target_category,),
+        ).fetchall()
+        for row in db_rows:
+            task_id = row["task_id"]
+            if task_id in saved_task_ids:
+                continue
+            run_id = row["run_id"]
+            if run_id is None:
+                continue
+            log_text = self._fetch_log_tail(task_id, run_id)
+            if not log_text:
+                continue
+            refetch_total += 1
+            category = self._update_category(
+                task_id,
+                row["worker_id"],
+                row["run_state"],
+                row["reason_resolved"],
+                log_text,
+            )
+            if category:
+                logger.info(f"  {task_id} ({row['worker_id']}): {target_category} → {category} (re-fetched)")
+                reclassified += 1
+            elif target_category == "unclassified":
+                self._save_unclassified(task_id, run_id, row["worker_id"], log_text)
+                logger.info(f"  {task_id}: still unclassified (log saved)")
+            else:
+                logger.info(f"  {task_id}: still {target_category} (no pattern match)")
+                if save_unmatched_logs:
+                    (unmatched_dir / f"{task_id}.log").write_text(log_text)
+
+        logger.info(f"Reclassified {reclassified} tasks ({refetch_total} required re-fetch).")
 
     def _save_unclassified(self, task_id: str, run_id: int, worker_id: str, log_text: str):
         unclassified_dir = self.results_dir / "unclassified"
@@ -652,11 +776,24 @@ class PoolClassifier:
             display = iso[:19].replace("T", " ") + " UTC"
             return f'<span class="utc-time" data-utc="{iso}">{display}</span>'
 
+        def _humanize(iso: str) -> str:
+            diff = (datetime.now(timezone.utc) - datetime.fromisoformat(iso)).total_seconds()
+            if diff < 60:
+                return f"{int(diff)}s ago"
+            if diff < 3600:
+                return f"{int(diff // 60)}m ago"
+            if diff < 86400:
+                return f"{int(diff // 3600)}h ago"
+            if diff < 604800:
+                return f"{int(diff // 86400)}d ago"
+            if diff < 2592000:
+                return f"{int(diff // 604800)}w ago"
+            return f"{int(diff // 2592000)}mo ago"
+
         def fmt_relative(iso: Optional[str]) -> str:
             if not iso:
                 return ""
-            display = iso[:19].replace("T", " ") + " UTC"
-            return f'<span class="relative-time" data-utc="{iso}">{display}</span>'
+            return f'<span class="relative-time" data-utc="{iso}">{_humanize(iso)}</span>'
 
         def wsr_td(wid: str, key: str) -> str:
             d = (windowed_sr or {}).get(wid, {})
@@ -685,7 +822,6 @@ class PoolClassifier:
             '<html lang="en">',
             "<head>",
             '<meta charset="utf-8">',
-            '<meta http-equiv="refresh" content="60">',
             f"<title>Pool Classifier: {self.provisioner}/{self.worker_type}</title>",
             "<style>",
             "  body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }",
@@ -729,6 +865,7 @@ class PoolClassifier:
             '<div class="tz-toggle">',
             '  <label><input type="radio" name="tz" value="local" checked> Local time</label>',
             '  <label><input type="radio" name="tz" value="utc"> UTC</label>',
+            '  <label style="margin-left:2rem"><input type="checkbox" id="autorefresh" checked> Auto-refresh (60s)</label>',
             "</div>",
         ]
 
@@ -804,16 +941,15 @@ class PoolClassifier:
 
         parts += [
             "<script>",
-            "  function humanizeTime(iso) {",
-            "    const diff = (Date.now() - new Date(iso)) / 1000;",
-            "    if (diff < 60) return Math.round(diff) + 's ago';",
-            "    if (diff < 3600) return Math.floor(diff/60) + 'm ago';",
-            "    if (diff < 86400) return Math.floor(diff/3600) + 'h ago';",
-            "    if (diff < 604800) return Math.floor(diff/86400) + 'd ago';",
-            "    if (diff < 2592000) return Math.floor(diff/604800) + 'w ago';",
-            "    return Math.floor(diff/2592000) + 'mo ago';",
-            "  }",
-            "  document.querySelectorAll('.relative-time').forEach(el => el.textContent = humanizeTime(el.dataset.utc));",
+            "  // Auto-refresh via localStorage so preference survives reloads.",
+            "  const arBox = document.getElementById('autorefresh');",
+            "  arBox.checked = localStorage.getItem('autorefresh') !== 'off';",
+            "  let arTimer = arBox.checked ? setTimeout(() => location.reload(), 60000) : null;",
+            "  arBox.addEventListener('change', () => {",
+            "    localStorage.setItem('autorefresh', arBox.checked ? 'on' : 'off');",
+            "    if (arBox.checked) { arTimer = setTimeout(() => location.reload(), 60000); }",
+            "    else { clearTimeout(arTimer); }",
+            "  });",
             "  function formatTime(iso, mode) {",
             "    const d = new Date(iso);",
             "    if (mode === 'utc') return iso.slice(0,19).replace('T',' ') + ' UTC';",
