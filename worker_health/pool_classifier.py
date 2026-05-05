@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import signal
+import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
@@ -25,7 +26,6 @@ DEFAULT_POLL_INTERVAL = 900  # seconds (15 minutes)
 WORKER_REFRESH_INTERVAL = 300  # seconds between re-listing workers
 WORKER_THREAD_COUNT = 8
 CONSECUTIVE_FAILURE_ALERT = 2
-SEEN_TASKS_CAP = 30  # max seen task IDs to persist per worker (recentTasks is ~20)
 
 # Patterns are checked in order; first match wins.
 # Edit these to match the failure modes you care about.
@@ -38,6 +38,33 @@ FAILURE_PATTERNS = [
     (r"DeviceDisconnectedError", "device_disconnected"),
     (r"[Tt]imeout\b", "timeout"),
 ]
+
+DB_SCHEMA = """
+CREATE TABLE IF NOT EXISTS workers (
+    worker_id              TEXT PRIMARY KEY,
+    successes              INTEGER NOT NULL DEFAULT 0,
+    failures               INTEGER NOT NULL DEFAULT 0,
+    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
+    last_active            TEXT,
+    last_success           TEXT,
+    last_failure           TEXT,
+    last_failure_category  TEXT
+);
+
+CREATE TABLE IF NOT EXISTS task_results (
+    task_id          TEXT NOT NULL,
+    worker_id        TEXT NOT NULL,
+    run_id           INTEGER,
+    run_state        TEXT NOT NULL,
+    category         TEXT,
+    reason_resolved  TEXT,
+    run_started      TEXT,
+    classified_at    TEXT NOT NULL,
+    PRIMARY KEY (task_id, worker_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_results_worker ON task_results (worker_id);
+"""
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +82,9 @@ class PoolClassifier:
         self.results_dir = results_dir
         self.poll_interval = poll_interval
         self.queue_base = f"{TC_ROOT}/api/queue/v1"
-        self.seen_tasks: Dict[str, set] = {}
+        self.seen_tasks: Dict[str, set] = {}  # in-memory cache, loaded from DB at startup
         self._interrupted = False
+        self.db: Optional[sqlite3.Connection] = None
         self._init_tc()
 
     def _init_tc(self):
@@ -69,6 +97,18 @@ class PoolClassifier:
                 "credentials": {"clientId": data["clientId"], "accessToken": data["accessToken"]},
             },
         )
+
+    def _init_db(self):
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+        db_path = self.results_dir / "pool_classifier.db"
+        self.db = sqlite3.connect(db_path)
+        self.db.row_factory = sqlite3.Row
+        self.db.executescript(DB_SCHEMA)
+        # load seen task IDs into memory so poll threads can check without hitting DB
+        for row in self.db.execute("SELECT worker_id, task_id FROM task_results"):
+            self.seen_tasks.setdefault(row["worker_id"], set()).add(row["task_id"])
+        seen_count = sum(len(s) for s in self.seen_tasks.values())
+        logger.info(f"DB: {db_path} ({seen_count} previously seen tasks across {len(self.seen_tasks)} workers)")
 
     # --- TC API calls ---
 
@@ -120,35 +160,6 @@ class PoolClassifier:
         if run_state == "exception" and reason_resolved:
             return f"exception_{reason_resolved}"
         return "unclassified"
-
-    # --- state ---
-
-    @property
-    def _state_file(self) -> Path:
-        return self.results_dir / "state.json"
-
-    def _load_state(self) -> dict:
-        if self._state_file.exists():
-            try:
-                state = json.loads(self._state_file.read_text())
-                # restore seen_tasks into memory
-                for worker_id, w in state.get("workers", {}).items():
-                    self.seen_tasks[worker_id] = set(w.get("seen_task_ids", []))
-                return state
-            except Exception as e:
-                logger.warning(f"Could not parse state file, starting fresh: {e}")
-        return {"workers": {}}
-
-    def _save_state(self, state: dict):
-        self.results_dir.mkdir(parents=True, exist_ok=True)
-        state["last_updated"] = datetime.now(timezone.utc).isoformat()
-        # persist seen task IDs (capped) so restarts don't reprocess old tasks
-        for worker_id, seen in self.seen_tasks.items():
-            if worker_id in state["workers"]:
-                state["workers"][worker_id]["seen_task_ids"] = list(seen)[-SEEN_TASKS_CAP:]
-        tmp = self._state_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, indent=2) + "\n")
-        tmp.replace(self._state_file)
 
     # --- polling ---
 
@@ -210,35 +221,18 @@ class PoolClassifier:
             logger.debug(f"  {worker_id}: {len(tasks)} new terminal task(s)")
         return worker_id, tasks
 
-    def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], state: dict, bar=None):
-        w = state["workers"].setdefault(
-            worker_id,
-            {
-                "successes": 0,
-                "failures": 0,
-                "failures_by_category": {},
-                "consecutive_failures": 0,
-                "last_active": None,
-                "last_success": None,
-                "last_failure": None,
-                "last_failure_category": None,
-            },
-        )
-
+    def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], bar=None):
         for task_id, run_id, run_state, run_started, reason_resolved in terminal_tasks:
             if self._interrupted:
                 logger.info(f"  {worker_id}: interrupted, skipping remaining tasks")
                 break
             if bar:
                 bar()
-            if run_started:
-                if w["last_active"] is None or run_started > w["last_active"]:
-                    w["last_active"] = run_started
+
+            classified_at = datetime.now(timezone.utc).isoformat()
 
             if run_state == "completed":
-                w["successes"] += 1
-                w["consecutive_failures"] = 0
-                w["last_success"] = run_started or w["last_success"]
+                category = None
                 logger.info(f"  {worker_id}: completed task={task_id} run={run_id}")
             else:
                 log_text = ""
@@ -250,19 +244,47 @@ class PoolClassifier:
                     else:
                         logger.info(f"  {worker_id}: task={task_id} no log available")
                 category = self._classify(log_text, run_state, reason_resolved)
-                w["failures"] += 1
-                w["failures_by_category"][category] = w["failures_by_category"].get(category, 0) + 1
-                w["consecutive_failures"] += 1
-                w["last_failure"] = run_started or w["last_failure"]
-                w["last_failure_category"] = category
                 logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} → {category}")
                 if category == "unclassified" and log_text:
                     self._save_unclassified(task_id, run_id, worker_id, log_text)
+
+            self.db.execute(
+                "INSERT OR IGNORE INTO task_results"
+                " (task_id, worker_id, run_id, run_state, category, reason_resolved, run_started, classified_at)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (task_id, worker_id, run_id, run_state, category, reason_resolved, run_started, classified_at),
+            )
+            self.db.execute("INSERT OR IGNORE INTO workers (worker_id) VALUES (?)", (worker_id,))
+
+            if run_state == "completed":
+                self.db.execute(
+                    """UPDATE workers SET
+                        successes = successes + 1,
+                        consecutive_failures = 0,
+                        last_active = MAX(COALESCE(last_active, ''), COALESCE(?, '')),
+                        last_success = MAX(COALESCE(last_success, ''), COALESCE(?, ''))
+                    WHERE worker_id = ?""",
+                    (run_started, run_started, worker_id),
+                )
+            else:
+                self.db.execute(
+                    """UPDATE workers SET
+                        failures = failures + 1,
+                        consecutive_failures = consecutive_failures + 1,
+                        last_active = MAX(COALESCE(last_active, ''), COALESCE(?, '')),
+                        last_failure = MAX(COALESCE(last_failure, ''), COALESCE(?, '')),
+                        last_failure_category = ?
+                    WHERE worker_id = ?""",
+                    (run_started, run_started, category, worker_id),
+                )
+
+            self.db.commit()
 
     # --- main loop ---
 
     def run(self):
         signal.signal(signal.SIGINT, self._handle_interrupt)
+        self._init_db()
         logger.info(f"Pool classifier starting: {self.provisioner}/{self.worker_type}")
         logger.info(f"Results dir: {self.results_dir.resolve()}")
 
@@ -278,8 +300,6 @@ class PoolClassifier:
                     logger.info(f"Worker list: {len(workers)} workers in pool")
                 except Exception as e:
                     logger.warning(f"Failed to refresh worker list: {e}")
-
-            state = self._load_state()
 
             total_workers = len(workers)
             logger.info(f"Scanning {total_workers} workers...")
@@ -314,20 +334,20 @@ class PoolClassifier:
                         if self._interrupted:
                             break
                         if terminal_tasks:
-                            self._process_results(worker_id, terminal_tasks, state, bar)
+                            self._process_results(worker_id, terminal_tasks, bar)
             else:
                 for worker_id, terminal_tasks in poll_results:
                     if self._interrupted:
                         break
                     if terminal_tasks:
-                        self._process_results(worker_id, terminal_tasks, state)
+                        self._process_results(worker_id, terminal_tasks)
 
-            self._save_state(state)
-            self._update_reports(state)
+            self._update_reports()
 
-            alerting_count = sum(
-                1 for w in state["workers"].values() if w.get("consecutive_failures", 0) >= CONSECUTIVE_FAILURE_ALERT
-            )
+            alerting_count = self.db.execute(
+                "SELECT COUNT(*) FROM workers WHERE consecutive_failures >= ?",
+                (CONSECUTIVE_FAILURE_ALERT,),
+            ).fetchone()[0]
             scan_summary = (
                 f"{scanned}/{total_workers} workers" if scanned < total_workers else f"{total_workers} workers"
             )
@@ -343,6 +363,8 @@ class PoolClassifier:
                 time.sleep(1)
 
         logger.info("Interrupted — exiting.")
+        if self.db:
+            self.db.close()
         sys.exit(0)
 
     def _save_unclassified(self, task_id: str, run_id: int, worker_id: str, log_text: str):
@@ -359,7 +381,23 @@ class PoolClassifier:
         self._interrupted = True
         print("\n[Ctrl-C] Will stop at next best time. Press again to exit immediately.", file=sys.stderr)
 
-    # --- report helpers ---
+    # --- reports ---
+
+    def _query_workers(self) -> Dict[str, dict]:
+        workers = {}
+        for row in self.db.execute("SELECT * FROM workers ORDER BY worker_id"):
+            w = dict(row)
+            cats = {}
+            for cat_row in self.db.execute(
+                "SELECT category, COUNT(*) as cnt FROM task_results"
+                " WHERE worker_id = ? AND run_state != 'completed' AND category IS NOT NULL"
+                " GROUP BY category ORDER BY cnt DESC",
+                (w["worker_id"],),
+            ):
+                cats[cat_row["category"]] = cat_row["cnt"]
+            w["failures_by_category"] = cats
+            workers[w["worker_id"]] = w
+        return workers
 
     def _fmt_dt(self, iso: Optional[str]) -> str:
         if not iso:
@@ -380,13 +418,13 @@ class PoolClassifier:
             return None
         return s / total
 
-    def _update_reports(self, state: dict):
-        self._write_md(state)
-        self._write_html(state)
+    def _update_reports(self):
+        workers = self._query_workers()
+        self._write_md(workers)
+        self._write_html(workers)
 
-    def _write_md(self, state: dict):
+    def _write_md(self, workers: Dict[str, dict]):
         now = datetime.now(timezone.utc)
-        workers = state.get("workers", {})
         total_failures = sum(w.get("failures", 0) for w in workers.values())
         total_successes = sum(w.get("successes", 0) for w in workers.values())
 
@@ -450,9 +488,8 @@ class PoolClassifier:
         self.results_dir.mkdir(parents=True, exist_ok=True)
         (self.results_dir / "OVERVIEW.md").write_text("\n".join(lines) + "\n")
 
-    def _write_html(self, state: dict):
+    def _write_html(self, workers: Dict[str, dict]):
         now = datetime.now(timezone.utc)
-        workers = state.get("workers", {})
         total_failures = sum(w.get("failures", 0) for w in workers.values())
         total_successes = sum(w.get("successes", 0) for w in workers.values())
 
