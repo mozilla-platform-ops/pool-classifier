@@ -440,6 +440,17 @@ class PoolClassifier:
         except Exception:
             return ""
 
+    def _top_offenders(self, workers: Dict[str, dict], category: str, n: int = 5) -> List[Tuple[str, int]]:
+        ranked = sorted(
+            [
+                (wid, w["failures_by_category"].get(category, 0))
+                for wid, w in workers.items()
+                if w["failures_by_category"].get(category, 0) > 0
+            ],
+            key=lambda x: -x[1],
+        )
+        return ranked[:n]
+
     def _sr_pct(self, worker_state: dict) -> Optional[float]:
         s = worker_state.get("successes", 0)
         f = worker_state.get("failures", 0)
@@ -510,7 +521,9 @@ class PoolClassifier:
         if category_totals:
             lines += ["## Failure Categories", ""]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                lines.append(f"- {cat}: {count}")
+                lines.append(f"- {cat}: **{count}**")
+                for wid, n in self._top_offenders(workers, cat):
+                    lines.append(f"  - {wid}: {n}")
             lines.append("")
 
         if alerting:
@@ -619,6 +632,8 @@ class PoolClassifier:
             "  ul { padding-left: 1.5rem; }",
             "  li.bad { color: #f44; margin-bottom: .3rem; }",
             "  .quarantine { color: #f90; font-size: .85em; margin-left: .4em; }",
+            "  ul.offenders { margin: .2rem 0 .4rem 1.2rem; padding: 0; list-style: none; font-size: .85em; color: #aaa; }",
+            "  ul.offenders li { padding: .1rem 0; }",
             "</style>",
             "</head>",
             "<body>",
@@ -642,7 +657,11 @@ class PoolClassifier:
         if category_totals:
             parts += ["<h2>Failure Categories</h2>", "<ul>"]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                parts.append(f"  <li>{cat}: <strong>{count}</strong></li>")
+                offenders = self._top_offenders(workers, cat)
+                offender_items = "".join(f"<li>{wid}: {n}</li>" for wid, n in offenders)
+                parts.append(
+                    f'  <li>{cat}: <strong>{count}</strong><ul class="offenders">{offender_items}</ul></li>',
+                )
             parts.append("</ul>")
 
         if alerting:
