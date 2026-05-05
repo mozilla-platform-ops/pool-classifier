@@ -20,6 +20,7 @@ from alive_progress import alive_bar
 from worker_health.utils import human_delta
 
 TC_ROOT = "https://firefox-ci-tc.services.mozilla.com"
+LOG_HEAD_BYTES = 20480  # 20 KB
 LOG_TAIL_BYTES = 51200  # 50 KB
 
 DEFAULT_PROVISIONER = "proj-autophone"
@@ -49,6 +50,24 @@ FAILURE_PATTERNS = [
     (r"WARNING - Got \d+ unexpected statuses", "test-failure-unexpected-statuses"),
     (r"Could not fetch from url https://hg\.[^ ]+ into file .* due to \(Permanent\) HTTP response code", "hg_error"),
     (r"abort: error applying bundle", "hg_error"),
+    (r"Must have exactly one connected Android USB device\. 0 found\.", "android-no-devices-found"),
+    (
+        r"TEST-UNEXPECTED-FAIL \| runtests\.py \| Timed out while waiting for server startup\.",
+        "test-failure-unexpected-server-start-timeout",
+    ),
+    (r"Exception: Difference in Images is too high, suspected faulty run", "test-exception-image-difference-too-high"),
+    (r"WARNING -  One or more unittests failed\.", "tests-failed"),
+    (r"Unimplemented streams encountered:", "app-crashed-minidump"),
+    (r"ERROR -  raptor-mitmproxy Error: Failed to download file", "raptor-mitmproxy-download-failed"),
+    (
+        r"task payload does not declare a required value, so content authenticity cannot be verified",
+        "tc-task-payload-invalid-missing-value",
+    ),
+    (r"raptor-browsertime Info:.*code: 'ECONNRESET'", "raptor-browsertime-econnreset"),
+    (
+        r"\[mozharness: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+Z\] Finished install step \(failed\)",
+        "mozharness-failed-to-install",
+    ),
 ]
 
 DB_SCHEMA = """
@@ -167,13 +186,19 @@ class PoolClassifier:
     def _fetch_log_tail(self, task_id: str, run_id: int) -> str:
         url = f"{self.queue_base}/task/{task_id}/runs/{run_id}/artifacts/public/logs/live_backing.log"
         try:
-            r = requests.get(
+            head_r = requests.get(
+                url,
+                headers={"Range": f"bytes=0-{LOG_HEAD_BYTES - 1}", "Accept-Encoding": "identity"},
+                timeout=60,
+            )
+            tail_r = requests.get(
                 url,
                 headers={"Range": f"bytes=-{LOG_TAIL_BYTES}", "Accept-Encoding": "identity"},
                 timeout=60,
             )
-            if r.status_code in (200, 206):
-                return r.text
+            head = head_r.text if head_r.status_code in (200, 206) else ""
+            tail = tail_r.text if tail_r.status_code in (200, 206) else ""
+            return head + tail
         except Exception as e:
             logger.debug(f"Log fetch failed for {task_id}/{run_id}: {e}")
         return ""
@@ -710,15 +735,6 @@ class PoolClassifier:
                 )
             lines.append("")
 
-        if category_totals:
-            lines += ["## Top Offenders by Category (last 1d)", ""]
-            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                lines.append(f"### {cat} ({count} total all-time)")
-                lines.append("")
-                for wid, n in self._top_offenders(cat, since=since_1d):
-                    lines.append(f"- {wid}: {n}")
-                lines.append("")
-
         if workers:
 
             def _wsr(wid, key):
@@ -748,6 +764,19 @@ class PoolClassifier:
                     f"{self._fmt_dt(w.get('last_active'))} |",
                 )
             lines.append("")
+
+        if category_totals:
+            lines += ["## Top Offenders by Category (last 1d)", ""]
+            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
+                lines.append(f"### {cat} ({count} total all-time)")
+                lines.append("")
+                for wid, n in self._top_offenders(cat, since=since_1d):
+                    q_flag = ""
+                    if quarantined and wid in quarantined:
+                        dur = self._quarantine_duration(quarantined[wid])
+                        q_flag = f" 🔒 ({dur})" if dur and dur != "expired" else " 🔒"
+                    lines.append(f"- {wid}{q_flag}: {n}")
+                lines.append("")
 
         self.results_dir.mkdir(parents=True, exist_ok=True)
         (self.results_dir / "OVERVIEW.md").write_text("\n".join(lines) + "\n")
@@ -887,21 +916,22 @@ class PoolClassifier:
                     q_badge = f' <span class="quarantine">&#x1F512; quarantined{dur_str}</span>'
                 else:
                     q_badge = ""
+                last_iso = w.get("last_failure")
+                last_age = (
+                    (datetime.now(timezone.utc) - datetime.fromisoformat(last_iso)).total_seconds() if last_iso else 0
+                )
+                if last_age > 7 * 86400:
+                    last_style = ' style="color:#666"'
+                elif last_age > 3 * 86400:
+                    last_style = ' style="color:#ccc"'
+                else:
+                    last_style = ""
                 parts.append(
                     f'  <li class="bad"><strong>{wid}</strong>: {w["consecutive_failures"]} consecutive failures '
-                    f"({w.get('last_failure_category', '?')}) — SR: {sr_display} — last: {fmt_relative(w.get('last_failure'))}{q_badge}</li>",
+                    f"({w.get('last_failure_category', '?')}) — SR: {sr_display} — "
+                    f"<span{last_style}>last: {fmt_relative(last_iso)}</span>{q_badge}</li>",
                 )
             parts.append("</ul>")
-
-        if category_totals:
-            parts += ["<h2>Top Offenders by Category <span class='cat-total'>(last 1d)</span></h2>"]
-            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                offenders = self._top_offenders(cat, since=since_1d)
-                offender_items = "".join(f"<li>{wid}: {n}</li>" for wid, n in offenders)
-                parts.append(
-                    f'<h3 class="cat-header">{cat} <span class="cat-total">({count} total all-time)</span></h3>'
-                    f'<ul class="offenders">{offender_items}</ul>',
-                )
 
         parts += [
             "<h2>All Workers</h2>",
@@ -940,6 +970,23 @@ class PoolClassifier:
             )
 
         parts += ["  </tbody>", "</table>"]
+
+        if category_totals:
+            parts += ["<h2>Top Offenders by Category <span class='cat-total'>(last 1d)</span></h2>"]
+            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
+                offenders = self._top_offenders(cat, since=since_1d)
+                offender_items = ""
+                for wid, n in offenders:
+                    q_badge = ""
+                    if quarantined and wid in quarantined:
+                        dur = self._quarantine_duration(quarantined[wid])
+                        dur_str = f" ({dur})" if dur and dur != "expired" else ""
+                        q_badge = f' <span class="quarantine">&#x1F512;{dur_str}</span>'
+                    offender_items += f"<li>{wid}{q_badge}: {n}</li>"
+                parts.append(
+                    f'<h3 class="cat-header">{cat} <span class="cat-total">({count} total all-time)</span></h3>'
+                    f'<ul class="offenders">{offender_items}</ul>',
+                )
 
         parts += [
             "<script>",
