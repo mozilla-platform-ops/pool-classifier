@@ -73,6 +73,7 @@ FAILURE_PATTERNS = [
 DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS workers (
     worker_id              TEXT PRIMARY KEY,
+    worker_group           TEXT,
     successes              INTEGER NOT NULL DEFAULT 0,
     failures               INTEGER NOT NULL DEFAULT 0,
     consecutive_failures   INTEGER NOT NULL DEFAULT 0,
@@ -144,6 +145,10 @@ class PoolClassifier:
         self.db = sqlite3.connect(db_path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(DB_SCHEMA)
+        try:
+            self.db.execute("ALTER TABLE workers ADD COLUMN worker_group TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         # load seen task IDs into memory so poll threads can check without hitting DB
         for row in self.db.execute("SELECT worker_id, task_id FROM task_results"):
             self.seen_tasks.setdefault(row["worker_id"], set()).add(row["task_id"])
@@ -262,16 +267,16 @@ class PoolClassifier:
 
         return results
 
-    def _poll_one_worker(self, worker: dict) -> Tuple[str, List[Tuple]]:
+    def _poll_one_worker(self, worker: dict) -> Tuple[str, str, List[Tuple]]:
         worker_id = worker["workerId"]
         worker_group = worker["workerGroup"]
         logger.debug(f"  polling {worker_id}")
         tasks = self._new_terminal_tasks(worker_id, worker_group)
         if tasks:
             logger.debug(f"  {worker_id}: {len(tasks)} new terminal task(s)")
-        return worker_id, tasks
+        return worker_id, worker_group, tasks
 
-    def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], bar=None):
+    def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], bar=None, worker_group: str = None):
         for task_id, run_id, run_state, run_started, reason_resolved in terminal_tasks:
             if self._interrupted:
                 logger.info(f"  {worker_id}: interrupted, skipping remaining tasks")
@@ -308,7 +313,11 @@ class PoolClassifier:
                 " VALUES (?,?,?,?,?,?,?,?)",
                 (task_id, worker_id, run_id, run_state, category, reason_resolved, run_started, classified_at),
             )
-            self.db.execute("INSERT OR IGNORE INTO workers (worker_id) VALUES (?)", (worker_id,))
+            self.db.execute(
+                "INSERT INTO workers (worker_id, worker_group) VALUES (?,?)"
+                " ON CONFLICT(worker_id) DO UPDATE SET worker_group=excluded.worker_group WHERE excluded.worker_group IS NOT NULL",
+                (worker_id, worker_group),
+            )
 
             if run_state == "completed":
                 self.db.execute(
@@ -363,10 +372,10 @@ class PoolClassifier:
             terminated = False
             try:
                 with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
-                    for worker_id, tasks in pool.imap_unordered(self._poll_one_worker, workers):
+                    for worker_id, worker_group, tasks in pool.imap_unordered(self._poll_one_worker, workers):
                         scanned += 1
                         bar()
-                        poll_results.append((worker_id, tasks))
+                        poll_results.append((worker_id, worker_group, tasks))
                         if self._interrupted:
                             pool.terminate()
                             terminated = True
@@ -380,21 +389,21 @@ class PoolClassifier:
                     pool.close()
                 pool.join()
 
-            new_total = sum(len(tasks) for _, tasks in poll_results if tasks)
+            new_total = sum(len(tasks) for _, _wg, tasks in poll_results if tasks)
 
             if new_total > 0 and not self._interrupted:
                 with alive_bar(new_total, title="processing tasks", enrich_print=False) as bar:
-                    for worker_id, terminal_tasks in poll_results:
+                    for worker_id, worker_group, terminal_tasks in poll_results:
                         if self._interrupted:
                             break
                         if terminal_tasks:
-                            self._process_results(worker_id, terminal_tasks, bar)
+                            self._process_results(worker_id, terminal_tasks, bar, worker_group)
             else:
-                for worker_id, terminal_tasks in poll_results:
+                for worker_id, worker_group, terminal_tasks in poll_results:
                     if self._interrupted:
                         break
                     if terminal_tasks:
-                        self._process_results(worker_id, terminal_tasks)
+                        self._process_results(worker_id, terminal_tasks, worker_group=worker_group)
 
             self._update_reports()
 
@@ -644,6 +653,38 @@ class PoolClassifier:
             result[row["worker_id"]] = dict(row)
         return result
 
+    def _query_heatmap(self, since: str) -> Dict[str, Dict[int, dict]]:
+        """Return per-worker, per-hour task counts for the last 12 hours."""
+        rows = self.db.execute(
+            """
+            SELECT
+                worker_id,
+                CAST((strftime('%s', 'now') - strftime('%s', run_started)) / 3600 AS INTEGER) AS hour_ago,
+                SUM(CASE WHEN run_state = 'completed' THEN 1 ELSE 0 END) AS successes,
+                SUM(CASE WHEN category = 'browsertime-device-timeout' THEN 1 ELSE 0 END) AS bdt,
+                SUM(CASE WHEN category = 'browsertime_samples' THEN 1 ELSE 0 END) AS bts,
+                SUM(CASE WHEN run_state != 'completed'
+                          AND (category NOT IN ('browsertime-device-timeout', 'browsertime_samples')
+                               OR category IS NULL)
+                         THEN 1 ELSE 0 END) AS other_fail
+            FROM task_results
+            WHERE run_started >= ?
+            GROUP BY worker_id, hour_ago
+            HAVING hour_ago BETWEEN 0 AND 11
+            ORDER BY worker_id, hour_ago
+            """,
+            (since,),
+        )
+        heatmap: Dict[str, Dict[int, dict]] = {}
+        for row in rows:
+            heatmap.setdefault(row["worker_id"], {})[row["hour_ago"]] = {
+                "s": row["successes"],
+                "bdt": row["bdt"],
+                "bts": row["bts"],
+                "o": row["other_fail"],
+            }
+        return heatmap
+
     def _list_quarantined_workers(self) -> Dict[str, Optional[str]]:
         """Return dict of worker_id -> quarantineUntil (ISO string) for quarantined workers."""
         quarantined: Dict[str, Optional[str]] = {}
@@ -668,13 +709,29 @@ class PoolClassifier:
         if self.db:
             self.db.close()
 
+    def _backfill_worker_groups(self):
+        try:
+            live_workers = self._list_workers()
+        except Exception as e:
+            logger.warning(f"Could not fetch worker list for group backfill: {e}")
+            return
+        for w in live_workers:
+            self.db.execute(
+                "UPDATE workers SET worker_group = ? WHERE worker_id = ? AND worker_group IS NULL",
+                (w["workerGroup"], w["workerId"]),
+            )
+
     def _update_reports(self):
+        self._backfill_worker_groups()
         workers = self._query_workers()
         quarantined = self._list_quarantined_workers()
         windowed_sr = self._query_windowed_sr()
-        since_1d = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        now = datetime.now(timezone.utc)
+        since_1d = (now - timedelta(days=1)).isoformat()
+        since_12h = (now - timedelta(hours=12)).isoformat()
+        heatmap = self._query_heatmap(since_12h)
         self._write_md(workers, quarantined, windowed_sr, since_1d)
-        self._write_html(workers, quarantined, windowed_sr, since_1d)
+        self._write_html(workers, quarantined, windowed_sr, since_1d, heatmap)
 
     def _write_md(
         self,
@@ -787,6 +844,7 @@ class PoolClassifier:
         quarantined: set = None,
         windowed_sr: Dict[str, dict] = None,
         since_1d: Optional[str] = None,
+        heatmap: Dict[str, Dict[int, dict]] = None,
     ):
         now = datetime.now(timezone.utc)
         total_failures = sum(w.get("failures", 0) for w in workers.values())
@@ -825,6 +883,16 @@ class PoolClassifier:
             if not iso:
                 return ""
             return f'<span class="relative-time" data-utc="{iso}">{_humanize(iso)}</span>'
+
+        def tc_link(wid: str, label: str = None) -> str:
+            wg = (workers.get(wid) or {}).get("worker_group")
+            if not wg:
+                return label or wid
+            url = (
+                f"https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}"
+                f"/worker-types/{self.worker_type}/workers/{wg}/{wid}?sortBy=started&sortDirection=desc"
+            )
+            return f'<a href="{url}" target="_blank">{label or wid}</a>'
 
         def wsr_td(wid: str, key: str) -> str:
             d = (windowed_sr or {}).get(wid, {})
@@ -879,10 +947,27 @@ class PoolClassifier:
             "  .cat-total { color: #666; font-weight: normal; }",
             "  ul.offenders { margin: 0 0 .6rem 1.2rem; padding: 0; list-style: none; font-size: .85em; color: #aaa; }",
             "  ul.offenders li { padding: .1rem 0; }",
+            "  a { color: inherit; text-decoration: none; }",
+            "  a:visited { color: #888; }",
+            "  a:hover { text-decoration: underline; }",
+            "  .hm-wrap { overflow-x: auto; margin-bottom: 2rem; }",
+            "  .hm-grid { border-collapse: collapse; width: auto; margin-bottom: 0; }",
+            "  .hm-grid th { background: #1e1e1e; color: #666; padding: .25rem .4rem; font-size: .75em; text-align: center; cursor: default; user-select: none; border: none; }",
+            "  .hm-grid th.hm-worker-hdr { text-align: left; color: #aaa; }",
+            "  .hm-grid td.hm-worker { padding: .15rem .6rem .15rem 0; font-size: .82em; white-space: nowrap; border: none; }",
+            "  .hm-cell { width: 2.2rem; min-width: 2.2rem; height: 1.5rem; padding: 0 !important; border: 2px solid #111 !important; border-radius: 3px; cursor: default; }",
+            "  .hm-empty { background: #1c1c1c; }",
+            "  .hm-ok { background: #1a4a20; }",
+            "  .hm-bts { background: #7a4400; }",
+            "  .hm-bdt { background: #7a1515; }",
+            "  .hm-both { background: #8a2800; }",
+            "  .hm-other { background: #2a2a4a; }",
+            "  .hm-legend { display: flex; gap: 1.5rem; font-size: .8em; color: #aaa; margin: .5rem 0 1.2rem; align-items: center; flex-wrap: wrap; }",
+            "  .hm-swatch { display: inline-block; width: .9rem; height: .9rem; margin-right: .35rem; vertical-align: middle; border-radius: 2px; border: 1px solid #333; }",
             "</style>",
             "</head>",
             "<body>",
-            f"<h1>Pool Failure Classifier: {self.provisioner}/{self.worker_type}</h1>",
+            f'<h1>Pool Failure Classifier: <a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a></h1>',
             f'<p class="gen">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
         ]
 
@@ -927,11 +1012,72 @@ class PoolClassifier:
                 else:
                     last_style = ""
                 parts.append(
-                    f'  <li class="bad"><strong>{wid}</strong>: {w["consecutive_failures"]} consecutive failures '
+                    f'  <li class="bad"><strong>{tc_link(wid)}</strong>: {w["consecutive_failures"]} consecutive failures '
                     f"({w.get('last_failure_category', '?')}) — SR: {sr_display} — "
                     f"<span{last_style}>last: {fmt_relative(last_iso)}</span>{q_badge}</li>",
                 )
             parts.append("</ul>")
+
+        if heatmap:
+
+            def hm_cell(data: Optional[dict]) -> str:
+                if not data:
+                    return '<td class="hm-cell hm-empty" title="no activity"></td>'
+                s, bdt, bts, o = data["s"], data["bdt"], data["bts"], data["o"]
+                parts_tip = []
+                if s:
+                    parts_tip.append(f"ok: {s}")
+                if bdt:
+                    parts_tip.append(f"device-timeout: {bdt}")
+                if bts:
+                    parts_tip.append(f"samples: {bts}")
+                if o:
+                    parts_tip.append(f"other: {o}")
+                tip = "  |  ".join(parts_tip) if parts_tip else "no activity"
+                if bdt and bts:
+                    cls = "hm-both"
+                elif bdt:
+                    cls = "hm-bdt"
+                elif bts:
+                    cls = "hm-bts"
+                elif o:
+                    cls = "hm-other"
+                else:
+                    cls = "hm-ok"
+                return f'<td class="hm-cell {cls}" title="{tip}"></td>'
+
+            # sort workers: most power-meter failures first, then alpha
+            def hm_sort_key(wid):
+                hours = heatmap[wid]
+                bad = sum(h["bdt"] + h["bts"] for h in hours.values())
+                return (-bad, wid)
+
+            hour_labels = ["&lt;1h", "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h"]
+            hm_header = "".join(f"<th>{hour_labels[i]}</th>" for i in range(12))
+            hm_rows = []
+            for wid in sorted(heatmap.keys(), key=hm_sort_key):
+                cells = "".join(hm_cell(heatmap[wid].get(h)) for h in range(12))
+                hm_rows.append(f'<tr><td class="hm-worker">{tc_link(wid)}</td>{cells}</tr>')
+
+            parts += [
+                "<h2>12h Heatmap</h2>",
+                '<div class="hm-legend">',
+                '  <span><span class="hm-swatch" style="background:#1a4a20"></span>success</span>',
+                '  <span><span class="hm-swatch" style="background:#7a1515"></span>device-timeout</span>',
+                '  <span><span class="hm-swatch" style="background:#7a4400"></span>samples</span>',
+                '  <span><span class="hm-swatch" style="background:#8a2800"></span>both</span>',
+                '  <span><span class="hm-swatch" style="background:#2a2a4a"></span>other failure</span>',
+                '  <span><span class="hm-swatch" style="background:#1c1c1c; border-color:#444"></span>no activity</span>',
+                "</div>",
+                '<div class="hm-wrap">',
+                '<table class="hm-grid">',
+                f'  <thead><tr><th class="hm-worker-hdr">Worker</th>{hm_header}</tr></thead>',
+                "  <tbody>",
+                *hm_rows,
+                "  </tbody>",
+                "</table>",
+                "</div>",
+            ]
 
         parts += [
             "<h2>All Workers</h2>",
@@ -956,9 +1102,10 @@ class PoolClassifier:
                 dur = self._quarantine_duration(quarantined[wid])
                 dur_str = f" ({dur})" if dur and dur != "expired" else ""
                 q_cell = f' <span class="quarantine">&#x1F512;{dur_str}</span>'
+            wid_cell = f"{tc_link(wid)}{q_cell}"
             parts.append(
                 f"  <tr{row_class}>"
-                f"<td>{wid}{q_cell}</td>"
+                f"<td>{wid_cell}</td>"
                 f"{wsr_td(wid, '1d')}{wsr_td(wid, '3d')}{wsr_td(wid, '7d')}"
                 f'<td class="{sr_class(w)}">{sr_str(w)}</td>'
                 f'<td class="ok">{w.get("successes", 0)}</td>'
@@ -982,7 +1129,7 @@ class PoolClassifier:
                         dur = self._quarantine_duration(quarantined[wid])
                         dur_str = f" ({dur})" if dur and dur != "expired" else ""
                         q_badge = f' <span class="quarantine">&#x1F512;{dur_str}</span>'
-                    offender_items += f"<li>{wid}{q_badge}: {n}</li>"
+                    offender_items += f"<li>{tc_link(wid)}{q_badge}: {n}</li>"
                 parts.append(
                     f'<h3 class="cat-header">{cat} <span class="cat-total">({count} total all-time)</span></h3>'
                     f'<ul class="offenders">{offender_items}</ul>',
