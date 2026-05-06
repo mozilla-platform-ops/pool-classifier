@@ -142,8 +142,9 @@ class PoolClassifier:
     def _init_db(self):
         self.results_dir.mkdir(parents=True, exist_ok=True)
         db_path = self.results_dir / "pool_classifier.db"
-        self.db = sqlite3.connect(db_path)
+        self.db = sqlite3.connect(db_path, timeout=30)
         self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(DB_SCHEMA)
         try:
             self.db.execute("ALTER TABLE workers ADD COLUMN worker_group TEXT")
@@ -361,6 +362,7 @@ class PoolClassifier:
                     workers = self._list_workers()
                     last_worker_refresh = now
                     logger.info(f"Worker list: {len(workers)} workers in pool")
+                    self._backfill_worker_groups(workers)
                 except Exception as e:
                     logger.warning(f"Failed to refresh worker list: {e}")
 
@@ -704,34 +706,46 @@ class PoolClassifier:
 
     def update_report(self):
         """One-shot: init DB, fetch quarantine state, write reports, exit."""
+        t0 = time.time()
+        logger.info(f"update_report: starting at {datetime.now(timezone.utc).strftime('%H:%M:%S.%f')[:-3]} UTC")
         self._init_db()
         self._update_reports()
         if self.db:
             self.db.close()
+        elapsed = time.time() - t0
+        logger.info(
+            f"update_report: done at {datetime.now(timezone.utc).strftime('%H:%M:%S.%f')[:-3]} UTC ({elapsed:.2f}s)",
+        )
 
-    def _backfill_worker_groups(self):
-        try:
-            live_workers = self._list_workers()
-        except Exception as e:
-            logger.warning(f"Could not fetch worker list for group backfill: {e}")
+    def _backfill_worker_groups(self, live_workers: List[dict]):
+        missing = self.db.execute("SELECT COUNT(*) FROM workers WHERE worker_group IS NULL").fetchone()[0]
+        if not missing:
             return
-        for w in live_workers:
-            self.db.execute(
-                "UPDATE workers SET worker_group = ? WHERE worker_id = ? AND worker_group IS NULL",
-                (w["workerGroup"], w["workerId"]),
-            )
+        try:
+            for w in live_workers:
+                self.db.execute(
+                    "UPDATE workers SET worker_group = ? WHERE worker_id = ? AND worker_group IS NULL",
+                    (w["workerGroup"], w["workerId"]),
+                )
+        except sqlite3.OperationalError:
+            logger.debug("DB locked during worker_group backfill, skipping")
 
     def _update_reports(self):
-        self._backfill_worker_groups()
-        workers = self._query_workers()
-        quarantined = self._list_quarantined_workers()
-        windowed_sr = self._query_windowed_sr()
+        def _timed(label, fn):
+            t = time.time()
+            result = fn()
+            logger.info(f"  {label}: {time.time() - t:.2f}s")
+            return result
+
+        workers = _timed("query_workers", self._query_workers)
+        quarantined = _timed("list_quarantined_workers", self._list_quarantined_workers)
+        windowed_sr = _timed("query_windowed_sr", self._query_windowed_sr)
         now = datetime.now(timezone.utc)
         since_1d = (now - timedelta(days=1)).isoformat()
         since_12h = (now - timedelta(hours=12)).isoformat()
-        heatmap = self._query_heatmap(since_12h)
-        self._write_md(workers, quarantined, windowed_sr, since_1d)
-        self._write_html(workers, quarantined, windowed_sr, since_1d, heatmap)
+        heatmap = _timed("query_heatmap", lambda: self._query_heatmap(since_12h))
+        _timed("write_md", lambda: self._write_md(workers, quarantined, windowed_sr, since_1d))
+        _timed("write_html", lambda: self._write_html(workers, quarantined, windowed_sr, since_1d, heatmap))
 
     def _write_md(
         self,
@@ -964,6 +978,9 @@ class PoolClassifier:
             "  .hm-other { background: #2a2a4a; }",
             "  .hm-legend { display: flex; gap: 1.5rem; font-size: .8em; color: #aaa; margin: .5rem 0 1.2rem; align-items: center; flex-wrap: wrap; }",
             "  .hm-swatch { display: inline-block; width: .9rem; height: .9rem; margin-right: .35rem; vertical-align: middle; border-radius: 2px; border: 1px solid #333; }",
+            "  .summary-grid { display: grid; grid-template-columns: max-content 1fr; gap: 0 3rem; }",
+            "  .summary-grid > div { min-width: 0; }",
+            "  .offenders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .25rem 2rem; }",
             "</style>",
             "</head>",
             "<body>",
@@ -985,14 +1002,21 @@ class PoolClassifier:
             "</div>",
         ]
 
+        if category_totals or alerting:
+            parts.append('<div class="summary-grid">')
+
         if category_totals:
-            parts += ["<h2>Failure Categories</h2>", "<ul>"]
+            parts += ["<div>", "<h2>Failure Categories</h2>", "<ul>"]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
                 parts.append(f"  <li>{cat}: <strong>{count}</strong></li>")
-            parts.append("</ul>")
+            parts += ["</ul>", "</div>"]
 
         if alerting:
-            parts += [f"<h2>&#x26A0; Needs Attention (≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures)</h2>", "<ul>"]
+            parts += [
+                "<div>",
+                f"<h2>&#x26A0; Needs Attention (≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures)</h2>",
+                "<ul>",
+            ]
             for wid, w in sorted(alerting.items(), key=lambda x: -x[1].get("consecutive_failures", 0)):
                 sr_display = f'<span class="{sr_class(w)}">{sr_str(w)}</span>'
                 if quarantined and wid in quarantined:
@@ -1016,7 +1040,10 @@ class PoolClassifier:
                     f"({w.get('last_failure_category', '?')}) — SR: {sr_display} — "
                     f"<span{last_style}>last: {fmt_relative(last_iso)}</span>{q_badge}</li>",
                 )
-            parts.append("</ul>")
+            parts += ["</ul>", "</div>"]
+
+        if category_totals or alerting:
+            parts.append("</div>")
 
         if heatmap:
 
@@ -1119,7 +1146,10 @@ class PoolClassifier:
         parts += ["  </tbody>", "</table>"]
 
         if category_totals:
-            parts += ["<h2>Top Offenders by Category <span class='cat-total'>(last 1d)</span></h2>"]
+            parts += [
+                "<h2>Top Offenders by Category <span class='cat-total'>(last 1d)</span></h2>",
+                '<div class="offenders-grid">',
+            ]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
                 offenders = self._top_offenders(cat, since=since_1d)
                 offender_items = ""
@@ -1131,9 +1161,10 @@ class PoolClassifier:
                         q_badge = f' <span class="quarantine">&#x1F512;{dur_str}</span>'
                     offender_items += f"<li>{tc_link(wid)}{q_badge}: {n}</li>"
                 parts.append(
-                    f'<h3 class="cat-header">{cat} <span class="cat-total">({count} total all-time)</span></h3>'
-                    f'<ul class="offenders">{offender_items}</ul>',
+                    f'<div><h3 class="cat-header">{cat} <span class="cat-total">({count} total all-time)</span></h3>'
+                    f'<ul class="offenders">{offender_items}</ul></div>',
                 )
+            parts.append("</div>")
 
         parts += [
             "<script>",
