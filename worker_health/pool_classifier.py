@@ -941,6 +941,8 @@ class PoolClassifier:
         now = datetime.now(timezone.utc)
         total_failures = sum(w.get("failures", 0) for w in workers.values())
         total_successes = sum(w.get("successes", 0) for w in workers.values())
+        oldest_row = self.db.execute("SELECT MIN(classified_at) FROM task_results").fetchone()
+        oldest_ts = oldest_row[0] if oldest_row and oldest_row[0] else None
         clipboard_svg = (
             '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512">'
             '<path fill="currentColor" d="M280 64l40 0c35.3 0 64 28.7 64 64l0 320c0 35.3-28.7 64-64 64L64 512'
@@ -1120,9 +1122,12 @@ class PoolClassifier:
         ]
 
         if workers:
+            total_tasks = total_failures + total_successes
+            sr_pct = f"{100 * total_successes / total_tasks:.1f}%" if total_tasks else "—"
+            since_str = f" since {fmt_relative(oldest_ts)}" if oldest_ts else ""
             parts.append(
                 f'<p class="gen">{total_failures} failures, {total_successes} successes '
-                f"across {len(workers)} observed workers.</p>",
+                f"across {len(workers)} observed workers{since_str} — success rate: <strong>{sr_pct}</strong></p>",
             )
 
         parts += [
