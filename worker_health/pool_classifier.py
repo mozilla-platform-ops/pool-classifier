@@ -17,6 +17,7 @@ import requests
 import taskcluster
 from alive_progress import alive_bar
 
+from worker_health import quarantine_graphql
 from worker_health.utils import human_delta
 
 TC_ROOT = "https://firefox-ci-tc.services.mozilla.com"
@@ -96,6 +97,15 @@ CREATE TABLE IF NOT EXISTS task_results (
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_results_worker ON task_results (worker_id);
+
+CREATE TABLE IF NOT EXISTS quarantine_cache (
+    worker_id        TEXT PRIMARY KEY,
+    quarantine_until TEXT NOT NULL,
+    reason           TEXT,
+    set_at           TEXT,
+    client_id        TEXT,
+    fetched_at       TEXT NOT NULL
+);
 """
 
 logger = logging.getLogger(__name__)
@@ -704,6 +714,69 @@ class PoolClassifier:
             logger.warning(f"Failed to fetch quarantined workers: {e}")
         return quarantined
 
+    def _update_quarantine_cache(self, quarantined: Dict[str, Optional[str]]) -> Dict[str, dict]:
+        """Return enriched quarantine data, fetching GraphQL details only for changed/new entries."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        cache = {row["worker_id"]: dict(row) for row in self.db.execute("SELECT * FROM quarantine_cache")}
+
+        to_fetch = []
+        for wid, until in quarantined.items():
+            if wid not in cache or cache[wid]["quarantine_until"] != until:
+                row = self.db.execute("SELECT worker_group FROM workers WHERE worker_id = ?", (wid,)).fetchone()
+                wg = row["worker_group"] if row else None
+                if wg:
+                    to_fetch.append((wid, wg, until))
+                else:
+                    logger.debug(f"  {wid}: no worker_group, skipping quarantine detail fetch")
+
+        if to_fetch:
+            logger.info(f"  fetching quarantine details for {len(to_fetch)} worker(s)...")
+
+            def fetch_one(args):
+                wid, wg, until = args
+                try:
+                    details = quarantine_graphql.view_quarantined_worker_details(
+                        provisionerId=self.provisioner,
+                        workerType=self.worker_type,
+                        workerGroup=wg,
+                        workerId=wid,
+                        workerPoolId=f"{self.provisioner}/{self.worker_type}",
+                    )
+                    if details:
+                        latest = details[-1]
+                        return wid, {
+                            "quarantine_until": until,
+                            "reason": latest.get("quarantineInfo", ""),
+                            "set_at": latest.get("updatedAt", ""),
+                            "client_id": latest.get("clientId", ""),
+                        }
+                except Exception as e:
+                    logger.warning(f"  {wid}: failed to fetch quarantine details: {e}")
+                return wid, None
+
+            with ThreadPool(min(8, len(to_fetch))) as pool:
+                for wid, data in pool.map(fetch_one, to_fetch):
+                    if data:
+                        self.db.execute(
+                            "INSERT OR REPLACE INTO quarantine_cache"
+                            " (worker_id, quarantine_until, reason, set_at, client_id, fetched_at)"
+                            " VALUES (?,?,?,?,?,?)",
+                            (wid, data["quarantine_until"], data["reason"], data["set_at"], data["client_id"], now_iso),
+                        )
+                        cache[wid] = {**data, "fetched_at": now_iso}
+            self.db.commit()
+
+        return {
+            wid: {
+                "quarantine_until": until,
+                "reason": cache.get(wid, {}).get("reason", ""),
+                "set_at": cache.get(wid, {}).get("set_at", ""),
+                "client_id": cache.get(wid, {}).get("client_id", ""),
+            }
+            for wid, until in quarantined.items()
+        }
+
     def update_report(self):
         """One-shot: init DB, fetch quarantine state, write reports, exit."""
         t0 = time.time()
@@ -739,13 +812,17 @@ class PoolClassifier:
 
         workers = _timed("query_workers", self._query_workers)
         quarantined = _timed("list_quarantined_workers", self._list_quarantined_workers)
+        quarantine_details = _timed("update_quarantine_cache", lambda: self._update_quarantine_cache(quarantined))
         windowed_sr = _timed("query_windowed_sr", self._query_windowed_sr)
         now = datetime.now(timezone.utc)
         since_1d = (now - timedelta(days=1)).isoformat()
         since_12h = (now - timedelta(hours=12)).isoformat()
         heatmap = _timed("query_heatmap", lambda: self._query_heatmap(since_12h))
         _timed("write_md", lambda: self._write_md(workers, quarantined, windowed_sr, since_1d))
-        _timed("write_html", lambda: self._write_html(workers, quarantined, windowed_sr, since_1d, heatmap))
+        _timed(
+            "write_html",
+            lambda: self._write_html(workers, quarantined, windowed_sr, since_1d, heatmap, quarantine_details),
+        )
 
     def _write_md(
         self,
@@ -859,10 +936,24 @@ class PoolClassifier:
         windowed_sr: Dict[str, dict] = None,
         since_1d: Optional[str] = None,
         heatmap: Dict[str, Dict[int, dict]] = None,
+        quarantine_details: Dict[str, dict] = None,
     ):
         now = datetime.now(timezone.utc)
         total_failures = sum(w.get("failures", 0) for w in workers.values())
         total_successes = sum(w.get("successes", 0) for w in workers.values())
+        clipboard_svg = (
+            '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512">'
+            '<path fill="currentColor" d="M280 64l40 0c35.3 0 64 28.7 64 64l0 320c0 35.3-28.7 64-64 64L64 512'
+            "c-35.3 0-64-28.7-64-64L0 128C0 92.7 28.7 64 64 64l40 0 9.6 0C121 27.5 153.3 0 192 0s71 27.5 78.4"
+            " 64l9.6 0zM64 112c-8.8 0-16 7.2-16 16l0 320c0 8.8 7.2 16 16 16l256 0c8.8 0 16-7.2 16-16l0-320"
+            "c0-8.8-7.2-16-16-16l-16 0 0 24c0 13.3-10.7 24-24 24l-88 0-88 0c-13.3 0-24-10.7-24-24l0-24-16 0"
+            'zm128-8a24 24 0 1 0 0-48 24 24 0 1 0 0 48z"></path></svg>'
+        )
+
+        def copy_btn(wid: str, label: str = None) -> str:
+            link = tc_link(wid, label)
+            btn = f'<span class="hm-copy" data-wid="{wid}" title="Copy hostname">{clipboard_svg}</span>'
+            return f'<span style="white-space:nowrap">{btn}{link}</span>'
 
         category_totals: Dict[str, int] = {}
         for w in workers.values():
@@ -897,6 +988,27 @@ class PoolClassifier:
             if not iso:
                 return ""
             return f'<span class="relative-time" data-utc="{iso}">{_humanize(iso)}</span>'
+
+        def _humanize_future(iso: str) -> str:
+            diff = (datetime.fromisoformat(iso.replace("Z", "+00:00")) - datetime.now(timezone.utc)).total_seconds()
+            if diff <= 0:
+                return "expired"
+            if diff < 60:
+                return f"in {int(diff)}s"
+            if diff < 3600:
+                return f"in {int(diff // 60)}m"
+            if diff < 86400:
+                return f"in {int(diff // 3600)}h"
+            if diff < 604800:
+                return f"in {int(diff // 86400)}d"
+            if diff < 2592000:
+                return f"in {int(diff // 604800)}w"
+            return f"in {int(diff // 2592000)}mo"
+
+        def fmt_expires(iso: Optional[str]) -> str:
+            if not iso:
+                return "—"
+            return f'<span data-utc="{iso}" title="{iso[:19].replace("T", " ")} UTC">{_humanize_future(iso)}</span>'
 
         def tc_link(wid: str, label: str = None) -> str:
             wg = (workers.get(wid) or {}).get("worker_group")
@@ -941,8 +1053,13 @@ class PoolClassifier:
             "  h1 { color: #fff; }",
             "  h2 { color: #f90; margin-top: 2rem; }",
             "  p.gen { color: #666; font-size: .85em; margin-bottom: .5rem; }",
-            "  .tz-toggle { margin: 1rem 0 1.5rem; font-size: .85em; color: #aaa; }",
+            "  .tz-toggle { margin: 1rem 0 .75rem; font-size: .85em; color: #aaa; }",
             "  .tz-toggle label { margin-right: 1rem; cursor: pointer; }",
+            "  .page-nav { display: flex; align-items: center; gap: 0; flex-wrap: wrap; width: fit-content; margin: 0 0 1.5rem; padding: .3rem .6rem; background: #1a1a1a; border-radius: 4px; font-size: .8em; }",
+            "  .page-nav a { color: #58a6ff; padding: .2rem .6rem; border-radius: 3px; }",
+            "  .page-nav a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }",
+            "  .page-nav a:visited { color: #58a6ff; }",
+            "  .page-nav span.sep { color: #444; user-select: none; }",
             "  table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }",
             "  th { background: #222; color: #aaa; text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #444; cursor: pointer; user-select: none; }",
             "  th:hover { color: #fff; }",
@@ -965,6 +1082,7 @@ class PoolClassifier:
             "  ul { padding-left: 1.5rem; }",
             "  li.bad { color: #f44; margin-bottom: .3rem; }",
             "  .quarantine { color: #f90; font-size: .85em; margin-left: .4em; }",
+            "  .reason-trunc { display: inline-block; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; cursor: default; }",
             "  h3.cat-header { color: #ccc; font-size: .95em; margin: 1rem 0 .2rem; }",
             "  .cat-total { color: #666; font-weight: normal; }",
             "  ul.offenders { margin: 0 0 .6rem 1.2rem; padding: 0; list-style: none; font-size: .85em; color: #aaa; }",
@@ -987,7 +1105,7 @@ class PoolClassifier:
             "  .hm-other { background: #2a2a4a; }",
             "  .hm-legend { display: flex; gap: 1.5rem; font-size: .8em; color: #aaa; margin: .5rem 0 1.2rem; align-items: center; flex-wrap: wrap; }",
             "  .hm-swatch { display: inline-block; width: .9rem; height: .9rem; margin-right: .35rem; vertical-align: middle; border-radius: 2px; border: 1px solid #333; }",
-            "  .hm-copy { cursor: pointer; color: #555; margin-left: .35rem; vertical-align: middle; display: inline-block; line-height: 1; }",
+            "  .hm-copy { cursor: pointer; color: #555; margin-right: .35rem; vertical-align: middle; display: inline-block; line-height: 1; }",
             "  .hm-copy:hover { color: #bbb; }",
             "  .hm-copy.copied { color: #4c4; }",
             "  .hm-copy svg { width: .7rem; height: .7rem; }",
@@ -1013,13 +1131,21 @@ class PoolClassifier:
             '  <label><input type="radio" name="tz" value="utc"> UTC</label>',
             '  <label style="margin-left:2rem"><input type="checkbox" id="autorefresh" checked> Auto-refresh (60s)</label>',
             "</div>",
+            '<nav class="page-nav">',
+            '  <a href="#s-categories">Failure Categories</a><span class="sep">|</span>',
+            '  <a href="#s-attention">Needs Attention</a><span class="sep">|</span>',
+            '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
+            '  <a href="#s-heatmap">Heatmap</a><span class="sep">|</span>',
+            '  <a href="#s-all">All Workers</a><span class="sep">|</span>',
+            '  <a href="#s-offenders">Top Offenders</a>',
+            "</nav>",
         ]
 
         if category_totals or alerting:
             parts.append('<div class="summary-grid">')
 
         if category_totals:
-            parts += ["<div>", "<h2>Failure Categories</h2>", "<ul>"]
+            parts += ["<div>", '<h2 id="s-categories">Failure Categories</h2>', "<ul>"]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
                 parts.append(f"  <li>{cat}: <strong>{count}</strong></li>")
             parts += ["</ul>", "</div>"]
@@ -1027,7 +1153,7 @@ class PoolClassifier:
         if alerting:
             parts += [
                 "<div>",
-                f"<h2>&#x26A0; Needs Attention (≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures)</h2>",
+                f'<h2 id="s-attention">&#x26A0; Needs Attention (≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures)</h2>',
                 "<ul>",
             ]
             for wid, w in sorted(alerting.items(), key=lambda x: -x[1].get("consecutive_failures", 0)):
@@ -1058,16 +1184,55 @@ class PoolClassifier:
         if category_totals or alerting:
             parts.append("</div>")
 
+        if quarantine_details:
+            parts += [
+                f'<h2 id="s-quarantined">&#x1F512; Quarantined Workers ({len(quarantine_details)})</h2>',
+                "<table>",
+                "  <thead><tr>",
+                "    <th>Worker</th><th>Reason</th><th>Set By</th><th>Set</th>"
+                "<th>Expires</th><th>Remaining</th><th>Consec Fails</th><th>Top Category</th>",
+                "  </tr></thead>",
+                "  <tbody>",
+            ]
+            for wid, qd in sorted(quarantine_details.items()):
+                w = workers.get(wid, {})
+                consec = w.get("consecutive_failures", 0)
+                consec_class = (
+                    ' class="bad"' if consec >= CONSECUTIVE_FAILURE_ALERT else (' class="warn"' if consec > 0 else "")
+                )
+                reason = qd.get("reason", "")
+                set_at = qd.get("set_at", "")
+                client_id = qd.get("client_id", "")
+                until = qd.get("quarantine_until", "")
+                try:
+                    set_by = client_id.split("|")[2] if client_id else "?"
+                except IndexError:
+                    set_by = client_id or "?"
+                remaining = self._quarantine_duration(until)
+                remaining_class = (
+                    ' class="warn"'
+                    if remaining and remaining != "expired"
+                    else ' class="bad"'
+                    if remaining == "expired"
+                    else ""
+                )
+                remaining_inner = f'<span data-utc="{until}">{remaining}</span>' if until else (remaining or "—")
+                parts.append(
+                    f"  <tr>"
+                    f"<td>{copy_btn(wid)}</td>"
+                    f'<td><span class="reason-trunc" title="{reason}">{reason}</span></td>'
+                    f"<td>{set_by}</td>"
+                    f"<td>{fmt_relative(set_at) if set_at else '—'}</td>"
+                    f"<td>{fmt_expires(until)}</td>"
+                    f"<td{remaining_class}>{remaining_inner}</td>"
+                    f"<td{consec_class}>{consec}</td>"
+                    f"<td>{self._top_category(w)}</td>"
+                    "</tr>",
+                )
+            parts += ["  </tbody>", "</table>"]
+
         if heatmap:
             hour_period = ["< 1h ago"] + [f"{i}–{i + 1}h ago" for i in range(1, 12)]
-            clipboard_svg = (
-                '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512">'
-                '<path fill="currentColor" d="M280 64l40 0c35.3 0 64 28.7 64 64l0 320c0 35.3-28.7 64-64 64L64 512'
-                "c-35.3 0-64-28.7-64-64L0 128C0 92.7 28.7 64 64 64l40 0 9.6 0C121 27.5 153.3 0 192 0s71 27.5 78.4"
-                " 64l9.6 0zM64 112c-8.8 0-16 7.2-16 16l0 320c0 8.8 7.2 16 16 16l256 0c8.8 0 16-7.2 16-16l0-320"
-                "c0-8.8-7.2-16-16-16l-16 0 0 24c0 13.3-10.7 24-24 24l-88 0-88 0c-13.3 0-24-10.7-24-24l0-24-16 0"
-                'zm128-8a24 24 0 1 0 0-48 24 24 0 1 0 0 48z"></path></svg>'
-            )
 
             def hm_cell(data: Optional[dict], h: int) -> str:
                 period = hour_period[h]
@@ -1105,10 +1270,7 @@ class PoolClassifier:
                 for wid in wids:
                     q_icon = ' <span class="quarantine">&#x1F512;</span>' if quarantined and wid in quarantined else ""
                     cells = "".join(hm_cell(heatmap[wid].get(h), h) for h in range(12))
-                    copy_btn = f'<span class="hm-copy" data-wid="{wid}" title="Copy hostname">{clipboard_svg}</span>'
-                    rows += (
-                        f'<tr data-wid="{wid}"><td class="hm-worker">{tc_link(wid)}{copy_btn}{q_icon}</td>{cells}</tr>'
-                    )
+                    rows += f'<tr data-wid="{wid}"><td class="hm-worker">{copy_btn(wid)}{q_icon}</td>{cells}</tr>'
                 return (
                     f'<div class="hm-block"><table class="hm-grid">'
                     f'<thead><tr><th class="hm-worker-hdr">Worker</th>{hm_header}</tr></thead>'
@@ -1116,7 +1278,7 @@ class PoolClassifier:
                 )
 
             parts += [
-                "<h2>12h Heatmap</h2>",
+                '<h2 id="s-heatmap">12h Heatmap</h2>',
                 '<div class="hm-legend">',
                 '  <span><span class="hm-swatch" style="background:#1a4a20"></span>success</span>',
                 '  <span><span class="hm-swatch" style="background:#7a1515"></span>device-timeout</span>',
@@ -1132,7 +1294,7 @@ class PoolClassifier:
             ]
 
         parts += [
-            "<h2>All Workers</h2>",
+            '<h2 id="s-all">All Workers</h2>',
             "<table>",
             "  <thead><tr>",
             "    <th>Worker</th><th>SR (1d)</th><th>SR (3d)</th><th>SR (7d)</th><th>SR (all)</th>"
@@ -1172,7 +1334,7 @@ class PoolClassifier:
 
         if category_totals:
             parts += [
-                "<h2>Top Offenders by Category <span class='cat-total'>(last 1d)</span></h2>",
+                "<h2 id=\"s-offenders\">Top Offenders by Category <span class='cat-total'>(last 1d)</span></h2>",
                 '<div class="offenders-grid">',
             ]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
@@ -1248,7 +1410,7 @@ class PoolClassifier:
             "  updateTimes();",
             "  function cellVal(tr, idx) {",
             "    const el = tr.children[idx];",
-            "    const u = el.querySelector('.utc-time');",
+            "    const u = el.querySelector('[data-utc]');",
             "    return u ? u.dataset.utc : el.textContent.trim();",
             "  }",
             "  function sortTable(th) {",
@@ -1260,6 +1422,8 @@ class PoolClassifier:
             "    const rows = [...tbody.querySelectorAll('tr')];",
             "    rows.sort((a, b) => {",
             "      const av = cellVal(a,idx), bv = cellVal(b,idx);",
+            "      const ad = Date.parse(av), bd = Date.parse(bv);",
+            "      if (!isNaN(ad) && !isNaN(bd)) { const cmp = ad - bd; return asc ? cmp : -cmp; }",
             "      const an = parseFloat(av.replace('%','')), bn = parseFloat(bv.replace('%',''));",
             "      const cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : av.localeCompare(bv);",
             "      return asc ? cmp : -cmp;",
