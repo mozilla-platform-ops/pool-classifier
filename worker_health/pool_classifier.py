@@ -949,8 +949,16 @@ class PoolClassifier:
             "  th[data-sort='asc']::after { content: ' ▲'; color: #f90; }",
             "  th[data-sort='desc']::after { content: ' ▼'; color: #f90; }",
             "  td { padding: .35rem .8rem; border-bottom: 1px solid #2a2a2a; }",
-            "  tr:hover td { background: #1a1a1a; }",
+            "  table:not(.hm-grid) tr:hover td { background: #1a1a1a; }",
             "  tr.alert td { background: #2a1a00; }",
+            "  .hm-cell:hover { outline: 2px solid #fff; outline-offset: -2px; z-index: 1; position: relative; }",
+            "  #hm-tip { position: fixed; background: #222; border: 1px solid #555; border-radius: 5px; padding: .5rem .8rem; font-size: .8em; color: #ccc; pointer-events: none; display: none; z-index: 200; line-height: 1.6; }",
+            "  #hm-tip .tip-worker { color: #fff; font-weight: bold; margin-bottom: .2rem; }",
+            "  #hm-tip .tip-period { color: #888; font-size: .85em; margin-bottom: .4rem; }",
+            "  #hm-tip .tip-ok { color: #4c4; }",
+            "  #hm-tip .tip-bad { color: #f44; }",
+            "  #hm-tip .tip-warn { color: #f90; }",
+            "  #hm-tip .tip-dim { color: #888; }",
             "  .ok { color: #4c4; }",
             "  .bad { color: #f44; }",
             "  .warn { color: #f90; }",
@@ -964,7 +972,8 @@ class PoolClassifier:
             "  a { color: inherit; text-decoration: none; }",
             "  a:visited { color: #888; }",
             "  a:hover { text-decoration: underline; }",
-            "  .hm-wrap { overflow-x: auto; margin-bottom: 2rem; }",
+            "  .hm-wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 2rem; margin-bottom: 2rem; }",
+            "  .hm-block { overflow-x: auto; }",
             "  .hm-grid { border-collapse: collapse; width: auto; margin-bottom: 0; }",
             "  .hm-grid th { background: #1e1e1e; color: #666; padding: .25rem .4rem; font-size: .75em; text-align: center; cursor: default; user-select: none; border: none; }",
             "  .hm-grid th.hm-worker-hdr { text-align: left; color: #aaa; }",
@@ -978,6 +987,10 @@ class PoolClassifier:
             "  .hm-other { background: #2a2a4a; }",
             "  .hm-legend { display: flex; gap: 1.5rem; font-size: .8em; color: #aaa; margin: .5rem 0 1.2rem; align-items: center; flex-wrap: wrap; }",
             "  .hm-swatch { display: inline-block; width: .9rem; height: .9rem; margin-right: .35rem; vertical-align: middle; border-radius: 2px; border: 1px solid #333; }",
+            "  .hm-copy { cursor: pointer; color: #555; margin-left: .35rem; vertical-align: middle; display: inline-block; line-height: 1; }",
+            "  .hm-copy:hover { color: #bbb; }",
+            "  .hm-copy.copied { color: #4c4; }",
+            "  .hm-copy svg { width: .7rem; height: .7rem; }",
             "  .summary-grid { display: grid; grid-template-columns: max-content 1fr; gap: 0 3rem; }",
             "  .summary-grid > div { min-width: 0; }",
             "  .offenders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .25rem 2rem; }",
@@ -1046,21 +1059,21 @@ class PoolClassifier:
             parts.append("</div>")
 
         if heatmap:
+            hour_period = ["< 1h ago"] + [f"{i}–{i + 1}h ago" for i in range(1, 12)]
+            clipboard_svg = (
+                '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512">'
+                '<path fill="currentColor" d="M280 64l40 0c35.3 0 64 28.7 64 64l0 320c0 35.3-28.7 64-64 64L64 512'
+                "c-35.3 0-64-28.7-64-64L0 128C0 92.7 28.7 64 64 64l40 0 9.6 0C121 27.5 153.3 0 192 0s71 27.5 78.4"
+                " 64l9.6 0zM64 112c-8.8 0-16 7.2-16 16l0 320c0 8.8 7.2 16 16 16l256 0c8.8 0 16-7.2 16-16l0-320"
+                "c0-8.8-7.2-16-16-16l-16 0 0 24c0 13.3-10.7 24-24 24l-88 0-88 0c-13.3 0-24-10.7-24-24l0-24-16 0"
+                'zm128-8a24 24 0 1 0 0-48 24 24 0 1 0 0 48z"></path></svg>'
+            )
 
-            def hm_cell(data: Optional[dict]) -> str:
+            def hm_cell(data: Optional[dict], h: int) -> str:
+                period = hour_period[h]
                 if not data:
-                    return '<td class="hm-cell hm-empty" title="no activity"></td>'
+                    return f'<td class="hm-cell hm-empty" data-info=\'{{"period":"{period}","ok":0,"bdt":0,"bts":0,"o":0}}\'></td>'
                 s, bdt, bts, o = data["s"], data["bdt"], data["bts"], data["o"]
-                parts_tip = []
-                if s:
-                    parts_tip.append(f"ok: {s}")
-                if bdt:
-                    parts_tip.append(f"device-timeout: {bdt}")
-                if bts:
-                    parts_tip.append(f"samples: {bts}")
-                if o:
-                    parts_tip.append(f"other: {o}")
-                tip = "  |  ".join(parts_tip) if parts_tip else "no activity"
                 if bdt and bts:
                     cls = "hm-both"
                 elif bdt:
@@ -1071,7 +1084,8 @@ class PoolClassifier:
                     cls = "hm-other"
                 else:
                     cls = "hm-ok"
-                return f'<td class="hm-cell {cls}" title="{tip}"></td>'
+                info = f'{{"period":"{period}","ok":{s},"bdt":{bdt},"bts":{bts},"o":{o}}}'
+                return f"<td class=\"hm-cell {cls}\" data-info='{info}'></td>"
 
             # sort workers: most power-meter failures first, then alpha
             def hm_sort_key(wid):
@@ -1081,10 +1095,25 @@ class PoolClassifier:
 
             hour_labels = ["&lt;1h", "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h"]
             hm_header = "".join(f"<th>{hour_labels[i]}</th>" for i in range(12))
-            hm_rows = []
-            for wid in sorted(heatmap.keys(), key=hm_sort_key):
-                cells = "".join(hm_cell(heatmap[wid].get(h)) for h in range(12))
-                hm_rows.append(f'<tr><td class="hm-worker">{tc_link(wid)}</td>{cells}</tr>')
+
+            sorted_wids = sorted(heatmap.keys(), key=hm_sort_key)
+            mid = (len(sorted_wids) + 1) // 2
+            halves = [sorted_wids[:mid], sorted_wids[mid:]]
+
+            def hm_table(wids):
+                rows = ""
+                for wid in wids:
+                    q_icon = ' <span class="quarantine">&#x1F512;</span>' if quarantined and wid in quarantined else ""
+                    cells = "".join(hm_cell(heatmap[wid].get(h), h) for h in range(12))
+                    copy_btn = f'<span class="hm-copy" data-wid="{wid}" title="Copy hostname">{clipboard_svg}</span>'
+                    rows += (
+                        f'<tr data-wid="{wid}"><td class="hm-worker">{tc_link(wid)}{copy_btn}{q_icon}</td>{cells}</tr>'
+                    )
+                return (
+                    f'<div class="hm-block"><table class="hm-grid">'
+                    f'<thead><tr><th class="hm-worker-hdr">Worker</th>{hm_header}</tr></thead>'
+                    f"<tbody>{rows}</tbody></table></div>"
+                )
 
             parts += [
                 "<h2>12h Heatmap</h2>",
@@ -1097,12 +1126,8 @@ class PoolClassifier:
                 '  <span><span class="hm-swatch" style="background:#1c1c1c; border-color:#444"></span>no activity</span>',
                 "</div>",
                 '<div class="hm-wrap">',
-                '<table class="hm-grid">',
-                f'  <thead><tr><th class="hm-worker-hdr">Worker</th>{hm_header}</tr></thead>',
-                "  <tbody>",
-                *hm_rows,
-                "  </tbody>",
-                "</table>",
+                hm_table(halves[0]),
+                hm_table(halves[1]),
                 "</div>",
             ]
 
@@ -1167,7 +1192,40 @@ class PoolClassifier:
             parts.append("</div>")
 
         parts += [
+            '<div id="hm-tip"></div>',
             "<script>",
+            "  // Heatmap hover card",
+            "  const tip = document.getElementById('hm-tip');",
+            "  document.querySelectorAll('.hm-cell').forEach(cell => {",
+            "    cell.addEventListener('mouseenter', e => {",
+            "      const d = JSON.parse(cell.dataset.info);",
+            "      const wid = cell.closest('tr').dataset.wid;",
+            "      const lines = [`<div class='tip-worker'>${wid}</div>`, `<div class='tip-period'>${d.period}</div>`];",
+            "      if (d.ok)  lines.push(`<div class='tip-ok'>✓ ok: ${d.ok}</div>`);",
+            "      if (d.bdt) lines.push(`<div class='tip-bad'>✗ device-timeout: ${d.bdt}</div>`);",
+            "      if (d.bts) lines.push(`<div class='tip-warn'>⚠ samples: ${d.bts}</div>`);",
+            "      if (d.o)   lines.push(`<div class='tip-dim'>• other: ${d.o}</div>`);",
+            "      if (!d.ok && !d.bdt && !d.bts && !d.o) lines.push(`<div class='tip-dim'>no activity</div>`);",
+            "      tip.innerHTML = lines.join('');",
+            "      tip.style.display = 'block';",
+            "    });",
+            "    cell.addEventListener('mousemove', e => {",
+            "      const x = e.clientX + 14, y = e.clientY + 14;",
+            "      tip.style.left = (x + tip.offsetWidth > window.innerWidth ? e.clientX - tip.offsetWidth - 8 : x) + 'px';",
+            "      tip.style.top  = (y + tip.offsetHeight > window.innerHeight ? e.clientY - tip.offsetHeight - 8 : y) + 'px';",
+            "    });",
+            "    cell.addEventListener('mouseleave', () => { tip.style.display = 'none'; });",
+            "  });",
+            "  // Heatmap clipboard copy",
+            "  document.querySelectorAll('.hm-copy').forEach(btn => {",
+            "    btn.addEventListener('click', e => {",
+            "      e.preventDefault(); e.stopPropagation();",
+            "      navigator.clipboard.writeText(btn.dataset.wid).then(() => {",
+            "        btn.classList.add('copied');",
+            "        setTimeout(() => btn.classList.remove('copied'), 1000);",
+            "      });",
+            "    });",
+            "  });",
             "  // Auto-refresh via localStorage so preference survives reloads.",
             "  const arBox = document.getElementById('autorefresh');",
             "  arBox.checked = localStorage.getItem('autorefresh') !== 'off';",
