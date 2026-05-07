@@ -866,7 +866,7 @@ class PoolClassifier:
             lines.append("")
 
         if alerting:
-            lines += [f"## Needs Attention (≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures)", ""]
+            lines += [f"## Consecutive Failures (≥{CONSECUTIVE_FAILURE_ALERT})", ""]
             for wid, w in sorted(alerting.items(), key=lambda x: -x[1].get("consecutive_failures", 0)):
                 sr = self._sr_pct(w)
                 sr_str = f"{sr:.0%}" if sr is not None else "—"
@@ -1117,7 +1117,13 @@ class PoolClassifier:
             "</style>",
             "</head>",
             "<body>",
-            f'<h1>Pool Failure Classifier: <a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a></h1>',
+            '<div style="display:flex;align-items:center;gap:1.5rem;margin:0 0 1.5rem">',
+            '<pre style="color:#0ff;line-height:1;margin:0;font-size:1rem">',
+            " ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀",
+            " ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ ",
+            "</pre>",
+            f'<span style="color:#ccc;font-size:1.1rem;letter-spacing:.02em;position:relative;top:4px"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a></span>',
+            "</div>",
             f'<p class="gen">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
         ]
 
@@ -1138,7 +1144,7 @@ class PoolClassifier:
             "</div>",
             '<nav class="page-nav">',
             '  <a href="#s-categories">Failure Categories</a><span class="sep">|</span>',
-            '  <a href="#s-attention">Needs Attention</a><span class="sep">|</span>',
+            '  <a href="#s-attention">Consecutive Failures</a><span class="sep">|</span>',
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
             '  <a href="#s-heatmap">Heatmap</a><span class="sep">|</span>',
             '  <a href="#s-all">All Workers</a><span class="sep">|</span>',
@@ -1158,7 +1164,7 @@ class PoolClassifier:
         if alerting:
             parts += [
                 "<div>",
-                f'<h2 id="s-attention">&#x26A0; Needs Attention (≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures)</h2>',
+                f'<h2 id="s-attention">&#x26A0; Consecutive Failures (≥{CONSECUTIVE_FAILURE_ALERT})</h2>',
                 "<ul>",
             ]
             for wid, w in sorted(alerting.items(), key=lambda x: -x[1].get("consecutive_failures", 0)):
@@ -1284,6 +1290,7 @@ class PoolClassifier:
 
             parts += [
                 '<h2 id="s-heatmap">12h Heatmap</h2>',
+                '<p class="gen">Only hosts with activity in the last 12 hours are shown.</p>',
                 '<div class="hm-legend">',
                 '  <span><span class="hm-swatch" style="background:#1a4a20"></span>success</span>',
                 '  <span><span class="hm-swatch" style="background:#7a1515"></span>device-timeout</span>',
