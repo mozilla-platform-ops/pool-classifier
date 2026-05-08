@@ -1305,8 +1305,13 @@ class PoolClassifier:
                 "</div>",
             ]
 
+        total_w = len(workers)
+        quarantined_w = sum(1 for wid in workers if wid in quarantined)
+        active_w = total_w - quarantined_w
+        active_pct = f"{100 * active_w / total_w:.1f}%" if total_w else "—"
         parts += [
             '<h2 id="s-all">All Workers</h2>',
+            f'<p class="gen">{active_w} of {total_w} workers available ({active_pct}), {quarantined_w} quarantined.</p>',
             "<table>",
             "  <thead><tr>",
             "    <th>Worker</th><th>SR (1d)</th><th>SR (3d)</th><th>SR (7d)</th><th>SR (all)</th>"
