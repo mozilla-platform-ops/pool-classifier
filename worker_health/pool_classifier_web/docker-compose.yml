@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: pool_classifier
+      POSTGRES_USER: pc
+      POSTGRES_PASSWORD: pc  # pragma: allowlist secret
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pc -d pool_classifier"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ../../:/app
+    environment:
+      DATABASE_URL: postgresql://pc:pc@postgres/pool_classifier  # pragma: allowlist secret
+    command: >
+      sh -c "pip install -q 'psycopg[binary]' &&
+             PYTHONPATH=/app python -m worker_health.pool_classifier_web.scripts.migrate"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

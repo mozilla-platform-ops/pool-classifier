@@ -1,0 +1,265 @@
+"""Parity tests: PostgresStorage vs SqliteStorage.
+
+Requires:
+  - psycopg[binary] installed
+  - PC_TEST_DATABASE_URL env var pointing at a live Postgres instance
+    (e.g. postgresql://pc:pc@127.0.0.1:5433/pool_classifier)
+
+To run locally:
+  docker compose -f worker_health/pool_classifier_web/docker-compose.yml up -d
+  DATABASE_URL=$PC_TEST_DATABASE_URL pipenv run python -m worker_health.pool_classifier_web.scripts.migrate
+  PC_TEST_DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier pipenv run pytest tests/test_postgres_storage.py -v
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+psycopg = pytest.importorskip("psycopg")
+
+from worker_health.pool_classifier_web.scripts.migrate import apply_migrations  # noqa: E402
+from worker_health.pool_classifier_web.storage import PostgresStorage, SqliteStorage  # noqa: E402
+
+DSN = os.environ.get("PC_TEST_DATABASE_URL", "")
+if not DSN:
+    pytest.skip("PC_TEST_DATABASE_URL not set", allow_module_level=True)
+
+POOL_ID = "test-pool/parity"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _apply_migrations():
+    apply_migrations(DSN)
+
+
+@pytest.fixture(autouse=True)
+def _truncate_pg():
+    """Wipe test pool rows before each test."""
+    with psycopg.connect(DSN) as conn:
+        with conn.cursor() as cur:
+            for tbl in ("task_results", "workers", "quarantine_cache", "unclassified_logs"):
+                cur.execute(f"DELETE FROM {tbl} WHERE pool_id = %s", (POOL_ID,))
+        conn.commit()
+    yield
+
+
+@pytest.fixture()
+def sqlite(tmp_path):
+    s = SqliteStorage(pool_id=POOL_ID, results_dir=tmp_path)
+    s.init_schema()
+    yield s
+    s.close()
+
+
+@pytest.fixture()
+def pg():
+    s = PostgresStorage(pool_id=POOL_ID, dsn=DSN)
+    s.init_schema()
+    yield s
+    s.close()
+
+
+def _now_iso(delta_hours=0):
+    return (datetime.now(timezone.utc) + timedelta(hours=delta_hours)).isoformat()
+
+
+def _seed(storage):
+    """Insert a worker + a few task results so query methods have data."""
+    storage.upsert_worker("w1", "grp-a")
+    storage.upsert_worker("w2", None)
+    storage.record_task_result("t1", "w1", 0, "completed", None, None, _now_iso(-1), _now_iso())
+    storage.record_task_result("t2", "w1", 1, "failed", "bad_device", "infra", _now_iso(-2), _now_iso())
+    storage.record_task_result("t3", "w2", 0, "failed", "bad_device", "infra", _now_iso(-3), _now_iso())
+    storage.increment_success("w1", _now_iso(-1))
+    storage.increment_failure("w1", _now_iso(-2), "bad_device")
+    storage.increment_failure("w2", _now_iso(-3), "bad_device")
+    storage.commit()
+
+
+# --- get_seen_tasks ---
+
+
+def test_get_seen_tasks(sqlite, pg):
+    _seed(sqlite)
+    _seed(pg)
+    sq = sqlite.get_seen_tasks()
+    pq = pg.get_seen_tasks()
+    assert set(sq.keys()) == set(pq.keys())
+    for wid in sq:
+        assert sq[wid] == pq[wid]
+
+
+# --- record_task_result idempotency (ON CONFLICT DO NOTHING) ---
+
+
+def test_record_task_result_idempotent(sqlite, pg):
+    for s in (sqlite, pg):
+        s.upsert_worker("w1", "g")
+        s.record_task_result("t1", "w1", 0, "completed", None, None, _now_iso(-1), _now_iso())
+        s.record_task_result("t1", "w1", 0, "completed", None, None, _now_iso(-1), _now_iso())
+        s.commit()
+    assert sqlite.get_seen_tasks()["w1"] == pg.get_seen_tasks()["w1"]
+
+
+# --- upsert_worker: worker_group not overwritten by None ---
+
+
+def test_upsert_worker_group_preserved(sqlite, pg):
+    for s in (sqlite, pg):
+        s.upsert_worker("w1", "grp-a")
+        s.upsert_worker("w1", None)
+        s.commit()
+    for s in (sqlite, pg):
+        workers = s.query_workers()
+        assert workers["w1"]["worker_group"] == "grp-a"
+
+
+# --- count_alerting ---
+
+
+def test_count_alerting(sqlite, pg):
+    for s in (sqlite, pg):
+        s.upsert_worker("w1", "g")
+        s.upsert_worker("w2", "g")
+        s.increment_failure("w1", _now_iso(-1), "x")
+        s.increment_failure("w1", _now_iso(-2), "x")
+        s.increment_failure("w1", _now_iso(-3), "x")
+        s.commit()
+    assert sqlite.count_alerting(3) == pg.count_alerting(3)
+    assert sqlite.count_alerting(4) == pg.count_alerting(4)
+
+
+# --- count_workers_without_group ---
+
+
+def test_count_workers_without_group(sqlite, pg):
+    for s in (sqlite, pg):
+        s.upsert_worker("w1", "grp")
+        s.upsert_worker("w2", None)
+        s.commit()
+    assert sqlite.count_workers_without_group() == pg.count_workers_without_group() == 1
+
+
+# --- backfill_worker_groups ---
+
+
+def test_backfill_worker_groups(sqlite, pg):
+    for s in (sqlite, pg):
+        s.upsert_worker("w1", None)
+        s.commit()
+        s.backfill_worker_groups([{"workerId": "w1", "workerGroup": "filled"}])
+        s.commit()
+    assert sqlite.get_worker_group("w1") == pg.get_worker_group("w1") == "filled"
+
+
+# --- quarantine_cache round-trip ---
+
+
+def test_quarantine_cache(sqlite, pg):
+    until = _now_iso(24)
+    for s in (sqlite, pg):
+        s.upsert_quarantine_entry("w1", until, "reason", _now_iso(-1), "client", _now_iso())
+        s.commit()
+    sc = sqlite.get_quarantine_cache()
+    pc = pg.get_quarantine_cache()
+    assert set(sc.keys()) == set(pc.keys())
+    # quarantine_until comparison (both should be parseable ISO strings)
+    assert sc["w1"]["reason"] == pc["w1"]["reason"]
+
+
+# --- update_task_category + update_worker_last_category ---
+
+
+def test_update_category(sqlite, pg):
+    ts = _now_iso(-1)  # same value for both record and increment so the WHERE match works
+    for s in (sqlite, pg):
+        s.upsert_worker("w1", "g")
+        s.record_task_result("t1", "w1", 0, "failed", "unclassified", None, ts, _now_iso())
+        s.increment_failure("w1", ts, "unclassified")
+        s.commit()
+        s.update_task_category("t1", "w1", "bad_device")
+        s.update_worker_last_category("t1", "w1", "bad_device")
+        s.commit()
+    sw = sqlite.query_workers()
+    pw = pg.query_workers()
+    assert sw["w1"]["last_failure_category"] == pw["w1"]["last_failure_category"] == "bad_device"
+
+
+# --- oldest_classified_at ---
+
+
+def test_oldest_classified_at(sqlite, pg):
+    _seed(sqlite)
+    _seed(pg)
+    sv = sqlite.oldest_classified_at()
+    pv = pg.oldest_classified_at()
+    assert sv is not None and pv is not None
+
+
+# --- unclassified log round-trip ---
+
+
+def test_unclassified_log_round_trip(sqlite, pg):
+    for s in (sqlite, pg):
+        s.save_unclassified_log("t99", 5, "w1", "log content here")
+        # list returns at least this entry
+        entries = list(s.list_unclassified_logs())
+        assert any(tid == "t99" and text == "log content here" for tid, text, _ in entries)
+
+
+def test_unclassified_log_unlink(pg):
+    """_PgLogRef.unlink() deletes the row."""
+    pg.save_unclassified_log("tdel", 1, "w1", "data")
+    entries = list(pg.list_unclassified_logs())
+    ref = next(ref for tid, _, ref in entries if tid == "tdel")
+    ref.unlink()
+    pg.commit()
+    assert not any(tid == "tdel" for tid, _, _ in pg.list_unclassified_logs())
+
+
+# --- get_task_info / db_rows_for_category ---
+
+
+def test_get_task_info(sqlite, pg):
+    _seed(sqlite)
+    _seed(pg)
+    si = sqlite.get_task_info("t1")
+    pi = pg.get_task_info("t1")
+    assert si["worker_id"] == pi["worker_id"] == "w1"
+    assert si["run_state"] == pi["run_state"] == "completed"
+
+
+def test_db_rows_for_category(sqlite, pg):
+    _seed(sqlite)
+    _seed(pg)
+    sr = sqlite.db_rows_for_category("bad_device")
+    pr = pg.db_rows_for_category("bad_device")
+    assert {r["task_id"] for r in sr} == {r["task_id"] for r in pr}
+
+
+# --- top_offenders ---
+
+
+def test_top_offenders(sqlite, pg):
+    _seed(sqlite)
+    _seed(pg)
+    st = sqlite.top_offenders("bad_device")
+    pt = pg.top_offenders("bad_device")
+    assert st == pt
+
+
+# --- query_windowed_sr ---
+
+
+def test_query_windowed_sr(sqlite, pg):
+    _seed(sqlite)
+    _seed(pg)
+    sv = sqlite.query_windowed_sr()
+    pv = pg.query_windowed_sr()
+    assert set(sv.keys()) == set(pv.keys())
+    for wid in sv:
+        for key in ("succ_1d", "fail_1d"):
+            assert sv[wid][key] == pv[wid][key], f"{wid}.{key}: sqlite={sv[wid][key]} pg={pv[wid][key]}"

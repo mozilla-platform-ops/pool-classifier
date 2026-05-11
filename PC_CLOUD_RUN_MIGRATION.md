@@ -56,7 +56,7 @@ Extract a `Storage` protocol so SQLite can be swapped for Postgres without touch
 
 ---
 
-### ⬜ Phase 2 — Postgres adapter + migrations
+### ✅ Phase 2 — Postgres adapter + migrations (DONE)
 
 Add `PostgresStorage` implementing the same interface as `SqliteStorage`, and a simple migration runner.
 
@@ -103,8 +103,36 @@ Add `PostgresStorage` implementing the same interface as `SqliteStorage`, and a 
   ```
 
 - **`worker_health/pool_classifier_web/scripts/migrate.py`** — apply SQL files in order, skip already-applied versions
-- **`worker_health/pool_classifier_web/docker-compose.yml`** — `postgres:16` for local dev
-- **`tests/test_postgres_storage.py`** — parity tests against docker-compose Postgres
+- **`worker_health/pool_classifier_web/docker-compose.yml`** — `postgres:16` for local dev (port 5433)
+- **`tests/test_postgres_storage.py`** — parity tests against docker-compose Postgres (skip unless `PC_TEST_DATABASE_URL` set)
+
+**Changes made:**
+
+- **`worker_health/pool_classifier_web/storage.py`** — `PostgresStorage` class appended; `_PgLogRef` unlink helper; `_to_iso()` helper; psycopg lazy import (graceful ImportError if not installed)
+- **`worker_health/pool_classifier_web/migrations/001_init.sql`** — Postgres schema (5 tables, 3 indexes)
+- **`worker_health/pool_classifier_web/scripts/__init__.py`** — empty package marker
+- **`worker_health/pool_classifier_web/scripts/migrate.py`** — migration runner (`apply_migrations(dsn)` + `__main__` entrypoint)
+- **`worker_health/pool_classifier_web/docker-compose.yml`** — postgres:16, port 5433
+- **`tests/test_postgres_storage.py`** — parity tests (skip when `PC_TEST_DATABASE_URL` unset)
+- **`Pipfile`** — added `psycopg = {extras = ["binary"], version = "*"}`
+
+**Note:** `save_unclassified_log` / `list_unclassified_logs` use the `unclassified_logs` DB table (not filesystem). `list_unclassified_logs` yields a `_PgLogRef` as the third element; its `.unlink()` deletes the DB row. All existing tests pass unchanged.
+
+**Testing:**
+
+```sh
+# 1. Existing tests (no Docker needed)
+cd worker_health
+pipenv run pytest tests/ --ignore=tests/test_runner.py -x -q
+
+# 2. Start Postgres and apply migrations
+docker compose -f worker_health/pool_classifier_web/docker-compose.yml up -d postgres
+docker compose -f worker_health/pool_classifier_web/docker-compose.yml run --rm migrate
+
+# 3. Run parity tests
+PC_TEST_DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier \  # pragma: allowlist secret
+  pipenv run pytest tests/test_postgres_storage.py -v
+```
 
 ---
 
