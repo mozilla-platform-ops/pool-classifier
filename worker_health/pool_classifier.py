@@ -5,7 +5,6 @@ import logging
 import os
 import re
 import signal
-import sqlite3
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -15,10 +14,24 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 import taskcluster
-from alive_progress import alive_bar
 
 from worker_health import quarantine_graphql
+from worker_health.pool_classifier_web.storage import SqliteStorage
 from worker_health.utils import human_delta
+
+try:
+    from alive_progress import alive_bar as _alive_bar
+
+    def alive_bar(*args, **kwargs):  # type: ignore[override]
+        return _alive_bar(*args, **kwargs)
+
+except ImportError:
+    from contextlib import contextmanager
+
+    @contextmanager  # type: ignore[no-redef]
+    def alive_bar(total, **kwargs):
+        yield lambda: None
+
 
 TC_ROOT = "https://firefox-ci-tc.services.mozilla.com"
 LOG_HEAD_BYTES = 20480  # 20 KB
@@ -71,43 +84,6 @@ FAILURE_PATTERNS = [
     ),
 ]
 
-DB_SCHEMA = """
-CREATE TABLE IF NOT EXISTS workers (
-    worker_id              TEXT PRIMARY KEY,
-    worker_group           TEXT,
-    successes              INTEGER NOT NULL DEFAULT 0,
-    failures               INTEGER NOT NULL DEFAULT 0,
-    consecutive_failures   INTEGER NOT NULL DEFAULT 0,
-    last_active            TEXT,
-    last_success           TEXT,
-    last_failure           TEXT,
-    last_failure_category  TEXT
-);
-
-CREATE TABLE IF NOT EXISTS task_results (
-    task_id          TEXT NOT NULL,
-    worker_id        TEXT NOT NULL,
-    run_id           INTEGER,
-    run_state        TEXT NOT NULL,
-    category         TEXT,
-    reason_resolved  TEXT,
-    run_started      TEXT,
-    classified_at    TEXT NOT NULL,
-    PRIMARY KEY (task_id, worker_id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_task_results_worker ON task_results (worker_id);
-
-CREATE TABLE IF NOT EXISTS quarantine_cache (
-    worker_id        TEXT PRIMARY KEY,
-    quarantine_until TEXT NOT NULL,
-    reason           TEXT,
-    set_at           TEXT,
-    client_id        TEXT,
-    fetched_at       TEXT NOT NULL
-);
-"""
-
 logger = logging.getLogger(__name__)
 
 
@@ -120,28 +96,38 @@ class PoolClassifier:
         self,
         provisioner: str,
         worker_type: str,
-        results_dir: Path,
+        results_dir: Optional[Path] = None,
         poll_interval: int = DEFAULT_POLL_INTERVAL,
         use_color: bool = True,
+        storage=None,
     ):
         self.provisioner = provisioner
         self.worker_type = worker_type
         self.results_dir = results_dir
         self.poll_interval = poll_interval
         self.queue_base = f"{TC_ROOT}/api/queue/v1"
-        self.seen_tasks: Dict[str, set] = {}  # in-memory cache, loaded from DB at startup
+        self.seen_tasks: Dict[str, set] = {}  # in-memory cache, reloaded from storage each cycle
         self._interrupted = False
-        self.db: Optional[sqlite3.Connection] = None
         self.use_color = use_color
+        if storage is not None:
+            self.storage = storage
+        else:
+            assert results_dir is not None, "results_dir required when no storage provided"
+            pool_id = f"{provisioner}/{worker_type}"
+            self.storage = SqliteStorage(pool_id=pool_id, results_dir=results_dir)
         self._init_tc()
 
     def _color(self, code: str, text: str) -> str:
         return _c(code, text, self.use_color)
 
     def _init_tc(self):
-        token_file = os.path.expanduser(os.environ.get("TC_TOKEN_FILE", "~/.tc_token"))
-        with open(token_file) as f:
-            data = json.load(f)
+        tc_token_json = os.environ.get("TC_TOKEN_JSON")
+        if tc_token_json:
+            data = json.loads(tc_token_json)
+        else:
+            token_file = os.path.expanduser(os.environ.get("TC_TOKEN_FILE", "~/.tc_token"))
+            with open(token_file) as f:
+                data = json.load(f)
         self.tc_queue = taskcluster.Queue(
             {
                 "rootUrl": TC_ROOT,
@@ -150,21 +136,10 @@ class PoolClassifier:
         )
 
     def _init_db(self):
-        self.results_dir.mkdir(parents=True, exist_ok=True)
-        db_path = self.results_dir / "pool_classifier.db"
-        self.db = sqlite3.connect(db_path, timeout=30)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.executescript(DB_SCHEMA)
-        try:
-            self.db.execute("ALTER TABLE workers ADD COLUMN worker_group TEXT")
-        except sqlite3.OperationalError:
-            pass  # column already exists
-        # load seen task IDs into memory so poll threads can check without hitting DB
-        for row in self.db.execute("SELECT worker_id, task_id FROM task_results"):
-            self.seen_tasks.setdefault(row["worker_id"], set()).add(row["task_id"])
+        self.storage.init_schema()
+        self.seen_tasks = self.storage.get_seen_tasks()
         seen_count = sum(len(s) for s in self.seen_tasks.values())
-        logger.info(f"DB: {db_path} ({seen_count} previously seen tasks across {len(self.seen_tasks)} workers)")
+        logger.info(f"Storage: {seen_count} previously seen tasks across {len(self.seen_tasks)} workers")
 
     # --- TC API calls ---
 
@@ -318,49 +293,96 @@ class PoolClassifier:
                 if category == "unclassified" and log_text:
                     self._save_unclassified(task_id, run_id, worker_id, log_text)
 
-            self.db.execute(
-                "INSERT OR IGNORE INTO task_results"
-                " (task_id, worker_id, run_id, run_state, category, reason_resolved, run_started, classified_at)"
-                " VALUES (?,?,?,?,?,?,?,?)",
-                (task_id, worker_id, run_id, run_state, category, reason_resolved, run_started, classified_at),
+            self.storage.record_task_result(
+                task_id,
+                worker_id,
+                run_id,
+                run_state,
+                category,
+                reason_resolved,
+                run_started,
+                classified_at,
             )
-            self.db.execute(
-                "INSERT INTO workers (worker_id, worker_group) VALUES (?,?)"
-                " ON CONFLICT(worker_id) DO UPDATE SET worker_group=excluded.worker_group WHERE excluded.worker_group IS NOT NULL",
-                (worker_id, worker_group),
-            )
+            self.storage.upsert_worker(worker_id, worker_group)
 
             if run_state == "completed":
-                self.db.execute(
-                    """UPDATE workers SET
-                        successes = successes + 1,
-                        consecutive_failures = 0,
-                        last_active = MAX(COALESCE(last_active, ''), COALESCE(?, '')),
-                        last_success = MAX(COALESCE(last_success, ''), COALESCE(?, ''))
-                    WHERE worker_id = ?""",
-                    (run_started, run_started, worker_id),
-                )
+                self.storage.increment_success(worker_id, run_started)
             else:
-                self.db.execute(
-                    """UPDATE workers SET
-                        failures = failures + 1,
-                        consecutive_failures = consecutive_failures + 1,
-                        last_active = MAX(COALESCE(last_active, ''), COALESCE(?, '')),
-                        last_failure = MAX(COALESCE(last_failure, ''), COALESCE(?, '')),
-                        last_failure_category = ?
-                    WHERE worker_id = ?""",
-                    (run_started, run_started, category, worker_id),
-                )
+                self.storage.increment_failure(worker_id, run_started, category)
 
-            self.db.commit()
+            self.storage.commit()
 
     # --- main loop ---
+
+    def classify_cycle(self, workers: Optional[List[dict]] = None) -> dict:
+        """One classify pass: poll all workers, process results, write reports. Returns summary dict."""
+        if workers is None:
+            workers = self._list_workers()
+            self._backfill_worker_groups(workers)
+
+        total_workers = len(workers)
+        logger.info(f"Scanning {total_workers} workers...")
+        poll_results = []
+        scanned = 0
+        thread_pool = ThreadPool(WORKER_THREAD_COUNT)
+        terminated = False
+        try:
+            with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
+                for worker_id, worker_group, tasks in thread_pool.imap_unordered(self._poll_one_worker, workers):
+                    scanned += 1
+                    bar()
+                    poll_results.append((worker_id, worker_group, tasks))
+                    if self._interrupted:
+                        thread_pool.terminate()
+                        terminated = True
+                        break
+        except Exception as e:
+            logger.warning(f"Poll error: {e}")
+            thread_pool.terminate()
+            terminated = True
+        finally:
+            if not terminated:
+                thread_pool.close()
+            thread_pool.join()
+
+        new_total = sum(len(tasks) for _, _wg, tasks in poll_results if tasks)
+
+        if new_total > 0 and not self._interrupted:
+            with alive_bar(new_total, title="processing tasks", enrich_print=False) as bar:
+                for worker_id, worker_group, terminal_tasks in poll_results:
+                    if self._interrupted:
+                        break
+                    if terminal_tasks:
+                        self._process_results(worker_id, terminal_tasks, bar, worker_group)
+        else:
+            for worker_id, worker_group, terminal_tasks in poll_results:
+                if self._interrupted:
+                    break
+                if terminal_tasks:
+                    self._process_results(worker_id, terminal_tasks, worker_group=worker_group)
+
+        self._update_reports()
+
+        alerting_count = self.storage.count_alerting(CONSECUTIVE_FAILURE_ALERT)
+        scan_summary = f"{scanned}/{total_workers} workers" if scanned < total_workers else f"{total_workers} workers"
+        alert_str = self._color("1;31" if alerting_count > 0 else "1;32", str(alerting_count))
+        logger.info(
+            f"Scan done: {scan_summary} scanned, {new_total} new terminal tasks, "
+            f"{alert_str} workers with ≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures.",
+        )
+        return {
+            "scanned": scanned,
+            "total_workers": total_workers,
+            "new_terminal": new_total,
+            "alerting": alerting_count,
+        }
 
     def run(self):
         signal.signal(signal.SIGINT, self._handle_interrupt)
         self._init_db()
         logger.info(f"Pool classifier starting: {self.provisioner}/{self.worker_type}")
-        logger.info(f"Results dir: {self.results_dir.resolve()}")
+        if self.results_dir:
+            logger.info(f"Results dir: {self.results_dir.resolve()}")
 
         workers: List[dict] = []
         last_worker_refresh = 0.0
@@ -376,59 +398,9 @@ class PoolClassifier:
                 except Exception as e:
                     logger.warning(f"Failed to refresh worker list: {e}")
 
-            total_workers = len(workers)
-            logger.info(f"Scanning {total_workers} workers...")
-            poll_results = []
-            scanned = 0
-            pool = ThreadPool(WORKER_THREAD_COUNT)
-            terminated = False
-            try:
-                with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
-                    for worker_id, worker_group, tasks in pool.imap_unordered(self._poll_one_worker, workers):
-                        scanned += 1
-                        bar()
-                        poll_results.append((worker_id, worker_group, tasks))
-                        if self._interrupted:
-                            pool.terminate()
-                            terminated = True
-                            break
-            except Exception as e:
-                logger.warning(f"Poll error: {e}")
-                pool.terminate()
-                terminated = True
-            finally:
-                if not terminated:
-                    pool.close()
-                pool.join()
-
-            new_total = sum(len(tasks) for _, _wg, tasks in poll_results if tasks)
-
-            if new_total > 0 and not self._interrupted:
-                with alive_bar(new_total, title="processing tasks", enrich_print=False) as bar:
-                    for worker_id, worker_group, terminal_tasks in poll_results:
-                        if self._interrupted:
-                            break
-                        if terminal_tasks:
-                            self._process_results(worker_id, terminal_tasks, bar, worker_group)
-            else:
-                for worker_id, worker_group, terminal_tasks in poll_results:
-                    if self._interrupted:
-                        break
-                    if terminal_tasks:
-                        self._process_results(worker_id, terminal_tasks, worker_group=worker_group)
-
-            self._update_reports()
-
-            alerting_count = self.db.execute(
-                "SELECT COUNT(*) FROM workers WHERE consecutive_failures >= ?",
-                (CONSECUTIVE_FAILURE_ALERT,),
-            ).fetchone()[0]
-            scan_summary = (
-                f"{scanned}/{total_workers} workers" if scanned < total_workers else f"{total_workers} workers"
-            )
-            alert_str = self._color("1;31" if alerting_count > 0 else "1;32", str(alerting_count))
+            summary = self.classify_cycle(workers)
+            alert_str = self._color("1;31" if summary["alerting"] > 0 else "1;32", str(summary["alerting"]))
             logger.info(
-                f"Scan done: {scan_summary} scanned, {new_total} new terminal tasks, "
                 f"{alert_str} workers with ≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures. "
                 f"{'Interrupted.' if self._interrupted else f'Sleeping {human_delta(self.poll_interval)}...'}",
             )
@@ -439,8 +411,7 @@ class PoolClassifier:
                 time.sleep(1)
 
         logger.info("Interrupted — exiting.")
-        if self.db:
-            self.db.close()
+        self.storage.close()
         sys.exit(0)
 
     def _update_category(
@@ -451,21 +422,13 @@ class PoolClassifier:
         reason_resolved: Optional[str],
         log_text: str,
     ) -> Optional[str]:
-        """Classify log_text and update DB if not still unclassified. Returns new category or None."""
+        """Classify log_text and update storage if not still unclassified. Returns new category or None."""
         category = self._classify(log_text, run_state, reason_resolved)
         if category == "unclassified":
             return None
-        self.db.execute(
-            "UPDATE task_results SET category = ? WHERE task_id = ? AND worker_id = ?",
-            (category, task_id, worker_id),
-        )
-        self.db.execute(
-            """UPDATE workers SET last_failure_category = ?
-               WHERE worker_id = ?
-                 AND last_failure = (SELECT run_started FROM task_results WHERE task_id = ? AND worker_id = ?)""",
-            (category, worker_id, task_id, worker_id),
-        )
-        self.db.commit()
+        self.storage.update_task_category(task_id, worker_id, category)
+        self.storage.update_worker_last_category(task_id, worker_id, category)
+        self.storage.commit()
         return category
 
     def reclassify_unclassified(self, target_category: str = "unclassified", save_unmatched_logs: bool = False):
@@ -474,8 +437,8 @@ class PoolClassifier:
         reclassified = 0
         refetch_total = 0
 
-        unmatched_dir = self.results_dir / "reclassify_logs" / target_category
-        if save_unmatched_logs:
+        unmatched_dir = self.results_dir / "reclassify_logs" / target_category if self.results_dir else None
+        if save_unmatched_logs and unmatched_dir:
             if unmatched_dir.exists():
                 for f in unmatched_dir.glob("*.log"):
                     f.unlink()
@@ -489,42 +452,30 @@ class PoolClassifier:
         # Pass 1: saved log files (only relevant when target is unclassified).
         saved_task_ids = set()
         if target_category == "unclassified":
-            unclassified_dir = self.results_dir / "unclassified"
-            if unclassified_dir.exists():
-                for log_path in unclassified_dir.glob("*.log"):
-                    task_id = log_path.stem
-                    saved_task_ids.add(task_id)
-                    raw = log_path.read_text()
-                    log_text = raw.split("\n", 2)[2] if raw.count("\n") >= 2 else raw
-                    row = self.db.execute(
-                        "SELECT worker_id, run_id, run_state, reason_resolved FROM task_results WHERE task_id = ?",
-                        (task_id,),
-                    ).fetchone()
-                    if row is None:
-                        logger.warning(f"  {task_id}: not in DB, skipping")
-                        continue
-                    category = self._update_category(
-                        task_id,
-                        row["worker_id"],
-                        row["run_state"],
-                        row["reason_resolved"],
-                        log_text,
-                    )
-                    if category:
-                        log_path.unlink()
-                        logger.info(f"  {task_id} ({row['worker_id']}): {target_category} → {category}")
-                        reclassified += 1
-                    else:
-                        logger.info(f"  {task_id}: still {target_category}")
-                        if save_unmatched_logs:
-                            (unmatched_dir / f"{task_id}.log").write_text(log_text)
+            for task_id, log_text, log_path in self.storage.list_unclassified_logs():
+                saved_task_ids.add(task_id)
+                row = self.storage.get_task_info(task_id)
+                if row is None:
+                    logger.warning(f"  {task_id}: not in DB, skipping")
+                    continue
+                category = self._update_category(
+                    task_id,
+                    row["worker_id"],
+                    row["run_state"],
+                    row["reason_resolved"],
+                    log_text,
+                )
+                if category:
+                    log_path.unlink()
+                    logger.info(f"  {task_id} ({row['worker_id']}): {target_category} → {category}")
+                    reclassified += 1
+                else:
+                    logger.info(f"  {task_id}: still {target_category}")
+                    if save_unmatched_logs and unmatched_dir:
+                        (unmatched_dir / f"{task_id}.log").write_text(log_text)
 
         # Pass 2: DB entries with no saved log — try re-fetching from TC.
-        db_rows = self.db.execute(
-            "SELECT task_id, worker_id, run_id, run_state, reason_resolved FROM task_results WHERE category = ?",
-            (target_category,),
-        ).fetchall()
-        for row in db_rows:
+        for row in self.storage.db_rows_for_category(target_category):
             task_id = row["task_id"]
             if task_id in saved_task_ids:
                 continue
@@ -550,18 +501,14 @@ class PoolClassifier:
                 logger.info(f"  {task_id}: still unclassified (log saved)")
             else:
                 logger.info(f"  {task_id}: still {target_category} (no pattern match)")
-                if save_unmatched_logs:
+                if save_unmatched_logs and unmatched_dir:
                     (unmatched_dir / f"{task_id}.log").write_text(log_text)
 
         logger.info(f"Reclassified {reclassified} tasks ({refetch_total} required re-fetch).")
 
     def _save_unclassified(self, task_id: str, run_id: int, worker_id: str, log_text: str):
-        unclassified_dir = self.results_dir / "unclassified"
-        unclassified_dir.mkdir(parents=True, exist_ok=True)
-        out = unclassified_dir / f"{task_id}.log"
-        header = f"# worker={worker_id} run={run_id} task={task_id}\n\n"
-        out.write_text(header + log_text)
-        logger.info(f"  saved unclassified log → {out}")
+        self.storage.save_unclassified_log(task_id, run_id, worker_id, log_text)
+        logger.info(f"  saved unclassified log for task={task_id}")
 
     def _handle_interrupt(self, sig, frame):
         if self._interrupted:
@@ -573,20 +520,7 @@ class PoolClassifier:
     # --- reports ---
 
     def _query_workers(self) -> Dict[str, dict]:
-        workers = {}
-        for row in self.db.execute("SELECT * FROM workers ORDER BY worker_id"):
-            w = dict(row)
-            cats = {}
-            for cat_row in self.db.execute(
-                "SELECT category, COUNT(*) as cnt FROM task_results"
-                " WHERE worker_id = ? AND run_state != 'completed' AND category IS NOT NULL"
-                " GROUP BY category ORDER BY cnt DESC",
-                (w["worker_id"],),
-            ):
-                cats[cat_row["category"]] = cat_row["cnt"]
-            w["failures_by_category"] = cats
-            workers[w["worker_id"]] = w
-        return workers
+        return self.storage.query_workers()
 
     def _fmt_dt(self, iso: Optional[str]) -> str:
         if not iso:
@@ -613,21 +547,7 @@ class PoolClassifier:
             return ""
 
     def _top_offenders(self, category: str, n: int = 5, since: Optional[str] = None) -> List[Tuple[str, int]]:
-        if since:
-            rows = self.db.execute(
-                "SELECT worker_id, COUNT(*) as cnt FROM task_results"
-                " WHERE category = ? AND run_state != 'completed' AND run_started >= ?"
-                " GROUP BY worker_id ORDER BY cnt DESC LIMIT ?",
-                (category, since, n),
-            )
-        else:
-            rows = self.db.execute(
-                "SELECT worker_id, COUNT(*) as cnt FROM task_results"
-                " WHERE category = ? AND run_state != 'completed'"
-                " GROUP BY worker_id ORDER BY cnt DESC LIMIT ?",
-                (category, n),
-            )
-        return [(row["worker_id"], row["cnt"]) for row in rows]
+        return self.storage.top_offenders(category, n=n, since=since)
 
     def _sr_pct(self, worker_state: dict) -> Optional[float]:
         s = worker_state.get("successes", 0)
@@ -641,61 +561,10 @@ class PoolClassifier:
         return succ / total
 
     def _query_windowed_sr(self) -> Dict[str, dict]:
-        """Return per-worker success/failure counts for 1d, 3d, and 7d windows."""
-        now = datetime.now(timezone.utc)
-        c1d = (now - timedelta(days=1)).isoformat()
-        c3d = (now - timedelta(days=3)).isoformat()
-        c7d = (now - timedelta(days=7)).isoformat()
-        result = {}
-        for row in self.db.execute(
-            """
-            SELECT
-                worker_id,
-                SUM(CASE WHEN run_state = 'completed' AND run_started >= :c1d THEN 1 ELSE 0 END) AS succ_1d,
-                SUM(CASE WHEN run_state != 'completed' AND run_started >= :c1d THEN 1 ELSE 0 END) AS fail_1d,
-                SUM(CASE WHEN run_state = 'completed' AND run_started >= :c3d THEN 1 ELSE 0 END) AS succ_3d,
-                SUM(CASE WHEN run_state != 'completed' AND run_started >= :c3d THEN 1 ELSE 0 END) AS fail_3d,
-                SUM(CASE WHEN run_state = 'completed' AND run_started >= :c7d THEN 1 ELSE 0 END) AS succ_7d,
-                SUM(CASE WHEN run_state != 'completed' AND run_started >= :c7d THEN 1 ELSE 0 END) AS fail_7d
-            FROM task_results
-            GROUP BY worker_id
-            """,
-            {"c1d": c1d, "c3d": c3d, "c7d": c7d},
-        ):
-            result[row["worker_id"]] = dict(row)
-        return result
+        return self.storage.query_windowed_sr()
 
     def _query_heatmap(self, since: str) -> Dict[str, Dict[int, dict]]:
-        """Return per-worker, per-hour task counts for the last 12 hours."""
-        rows = self.db.execute(
-            """
-            SELECT
-                worker_id,
-                CAST((strftime('%s', 'now') - strftime('%s', run_started)) / 3600 AS INTEGER) AS hour_ago,
-                SUM(CASE WHEN run_state = 'completed' THEN 1 ELSE 0 END) AS successes,
-                SUM(CASE WHEN category = 'browsertime-device-timeout' THEN 1 ELSE 0 END) AS bdt,
-                SUM(CASE WHEN category = 'browsertime_samples' THEN 1 ELSE 0 END) AS bts,
-                SUM(CASE WHEN run_state != 'completed'
-                          AND (category NOT IN ('browsertime-device-timeout', 'browsertime_samples')
-                               OR category IS NULL)
-                         THEN 1 ELSE 0 END) AS other_fail
-            FROM task_results
-            WHERE run_started >= ?
-            GROUP BY worker_id, hour_ago
-            HAVING hour_ago BETWEEN 0 AND 11
-            ORDER BY worker_id, hour_ago
-            """,
-            (since,),
-        )
-        heatmap: Dict[str, Dict[int, dict]] = {}
-        for row in rows:
-            heatmap.setdefault(row["worker_id"], {})[row["hour_ago"]] = {
-                "s": row["successes"],
-                "bdt": row["bdt"],
-                "bts": row["bts"],
-                "o": row["other_fail"],
-            }
-        return heatmap
+        return self.storage.query_heatmap(since)
 
     def _list_quarantined_workers(self) -> Dict[str, Optional[str]]:
         """Return dict of worker_id -> quarantineUntil (ISO string) for quarantined workers."""
@@ -717,14 +586,12 @@ class PoolClassifier:
     def _update_quarantine_cache(self, quarantined: Dict[str, Optional[str]]) -> Dict[str, dict]:
         """Return enriched quarantine data, fetching GraphQL details only for changed/new entries."""
         now_iso = datetime.now(timezone.utc).isoformat()
-
-        cache = {row["worker_id"]: dict(row) for row in self.db.execute("SELECT * FROM quarantine_cache")}
+        cache = self.storage.get_quarantine_cache()
 
         to_fetch = []
         for wid, until in quarantined.items():
             if wid not in cache or cache[wid]["quarantine_until"] != until:
-                row = self.db.execute("SELECT worker_group FROM workers WHERE worker_id = ?", (wid,)).fetchone()
-                wg = row["worker_group"] if row else None
+                wg = self.storage.get_worker_group(wid)
                 if wg:
                     to_fetch.append((wid, wg, until))
                 else:
@@ -758,14 +625,16 @@ class PoolClassifier:
             with ThreadPool(min(8, len(to_fetch))) as pool:
                 for wid, data in pool.map(fetch_one, to_fetch):
                     if data:
-                        self.db.execute(
-                            "INSERT OR REPLACE INTO quarantine_cache"
-                            " (worker_id, quarantine_until, reason, set_at, client_id, fetched_at)"
-                            " VALUES (?,?,?,?,?,?)",
-                            (wid, data["quarantine_until"], data["reason"], data["set_at"], data["client_id"], now_iso),
+                        self.storage.upsert_quarantine_entry(
+                            wid,
+                            data["quarantine_until"],
+                            data["reason"],
+                            data["set_at"],
+                            data["client_id"],
+                            now_iso,
                         )
                         cache[wid] = {**data, "fetched_at": now_iso}
-            self.db.commit()
+            self.storage.commit()
 
         return {
             wid: {
@@ -778,30 +647,42 @@ class PoolClassifier:
         }
 
     def update_report(self):
-        """One-shot: init DB, fetch quarantine state, write reports, exit."""
+        """One-shot: init storage, fetch quarantine state, write reports, exit."""
         t0 = time.time()
         logger.info(f"update_report: starting at {datetime.now(timezone.utc).strftime('%H:%M:%S.%f')[:-3]} UTC")
         self._init_db()
         self._update_reports()
-        if self.db:
-            self.db.close()
+        self.storage.close()
         elapsed = time.time() - t0
         logger.info(
             f"update_report: done at {datetime.now(timezone.utc).strftime('%H:%M:%S.%f')[:-3]} UTC ({elapsed:.2f}s)",
         )
 
     def _backfill_worker_groups(self, live_workers: List[dict]):
-        missing = self.db.execute("SELECT COUNT(*) FROM workers WHERE worker_group IS NULL").fetchone()[0]
-        if not missing:
+        if not self.storage.count_workers_without_group():
             return
-        try:
-            for w in live_workers:
-                self.db.execute(
-                    "UPDATE workers SET worker_group = ? WHERE worker_id = ? AND worker_group IS NULL",
-                    (w["workerGroup"], w["workerId"]),
-                )
-        except sqlite3.OperationalError:
-            logger.debug("DB locked during worker_group backfill, skipping")
+        self.storage.backfill_worker_groups(live_workers)
+
+    def render_html(self) -> str:
+        """Return the HTML dashboard string for this pool (does not write to disk)."""
+        now = datetime.now(timezone.utc)
+        since_1d = (now - timedelta(days=1)).isoformat()
+        since_12h = (now - timedelta(hours=12)).isoformat()
+        workers = self._query_workers()
+        quarantined = self._list_quarantined_workers()
+        quarantine_details = self._update_quarantine_cache(quarantined)
+        windowed_sr = self._query_windowed_sr()
+        heatmap = self._query_heatmap(since_12h)
+        return self._write_html(workers, quarantined, windowed_sr, since_1d, heatmap, quarantine_details)
+
+    def render_md(self) -> str:
+        """Return the Markdown report string for this pool (does not write to disk)."""
+        now = datetime.now(timezone.utc)
+        since_1d = (now - timedelta(days=1)).isoformat()
+        workers = self._query_workers()
+        quarantined = self._list_quarantined_workers()
+        windowed_sr = self._query_windowed_sr()
+        return self._write_md(workers, quarantined, windowed_sr, since_1d)
 
     def _update_reports(self):
         def _timed(label, fn):
@@ -818,11 +699,15 @@ class PoolClassifier:
         since_1d = (now - timedelta(days=1)).isoformat()
         since_12h = (now - timedelta(hours=12)).isoformat()
         heatmap = _timed("query_heatmap", lambda: self._query_heatmap(since_12h))
-        _timed("write_md", lambda: self._write_md(workers, quarantined, windowed_sr, since_1d))
-        _timed(
+        md = _timed("write_md", lambda: self._write_md(workers, quarantined, windowed_sr, since_1d))
+        html = _timed(
             "write_html",
             lambda: self._write_html(workers, quarantined, windowed_sr, since_1d, heatmap, quarantine_details),
         )
+        if self.results_dir:
+            self.results_dir.mkdir(parents=True, exist_ok=True)
+            (self.results_dir / "OVERVIEW.md").write_text(md)
+            (self.results_dir / "OVERVIEW.html").write_text(html)
 
     def _write_md(
         self,
@@ -926,8 +811,7 @@ class PoolClassifier:
                     lines.append(f"- {wid}{q_flag}: {n}")
                 lines.append("")
 
-        self.results_dir.mkdir(parents=True, exist_ok=True)
-        (self.results_dir / "OVERVIEW.md").write_text("\n".join(lines) + "\n")
+        return "\n".join(lines) + "\n"
 
     def _write_html(
         self,
@@ -941,8 +825,7 @@ class PoolClassifier:
         now = datetime.now(timezone.utc)
         total_failures = sum(w.get("failures", 0) for w in workers.values())
         total_successes = sum(w.get("successes", 0) for w in workers.values())
-        oldest_row = self.db.execute("SELECT MIN(classified_at) FROM task_results").fetchone()
-        oldest_ts = oldest_row[0] if oldest_row and oldest_row[0] else None
+        oldest_ts = self.storage.oldest_classified_at()
         clipboard_svg = (
             '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512">'
             '<path fill="currentColor" d="M280 64l40 0c35.3 0 64 28.7 64 64l0 320c0 35.3-28.7 64-64 64L64 512'
@@ -1454,5 +1337,4 @@ class PoolClassifier:
             "",
         ]
 
-        self.results_dir.mkdir(parents=True, exist_ok=True)
-        (self.results_dir / "OVERVIEW.html").write_text("\n".join(parts))
+        return "\n".join(parts)
