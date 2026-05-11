@@ -1,0 +1,127 @@
+# Failure classification patterns for pool_classifier.
+# Rules:
+#   - Patterns are checked in order; first match wins.
+#   - `severity` controls heatmap cell color: critical (red) > high (orange) > low (blue).
+#   - `enabled` defaults to true; set false to mute a pattern without deleting it.
+#   - `tags` are informational only (not used for filtering yet).
+#   - `description` is optional human-readable context shown in the UI.
+
+patterns:
+  - name: browsertime_samples
+    regex: "TypeError: Cannot read properties of undefined \\(reading 'samples'\\)"
+    severity: high
+    tags: [android]
+    description: Browsertime returned no samples; benchmark output was empty.
+
+  - name: adb_no_ack
+    regex: "ADB server didn't ACK"
+    severity: critical
+    tags: [android]
+    description: ADB server failed to acknowledge; device communication lost.
+
+  - name: device_unavailable
+    regex: "DEVICE_UNAVAILABLE"
+    severity: critical
+    tags: [android]
+
+  - name: device_error
+    regex: "mozdevice\\.DeviceError"
+    severity: critical
+    tags: [android]
+
+  - name: device_not_found
+    regex: "error: device .* not found"
+    severity: critical
+    tags: [android]
+
+  - name: device_disconnected
+    regex: "DeviceDisconnectedError"
+    severity: critical
+    tags: [android]
+
+  - name: test-unexpected-timeout
+    regex: "TEST-UNEXPECTED-TIMEOUT \\|.+\\| Test timed out"
+    severity: high
+    tags: [android]
+
+  - name: browsertime-device-timeout
+    regex: "CRITICAL -  raptor-browsertime Critical: Browsertime process timed out after waiting \\d+ seconds for output"
+    severity: critical
+    tags: [android]
+
+  - name: raptor-no-data-to-collect
+    regex: "raptor-browsertime Critical: No data to collect"
+    severity: high
+    tags: [android]
+
+  - name: mozinfo-import-error
+    regex: "FileNotFoundError:.*mozinfo/android_os_to_api_map\\.yaml"
+    severity: low
+    tags: [android]
+
+  - name: test-failure-unexpected-crashes
+    regex: "WARNING - Got \\d+ unexpected crashes"
+    severity: high
+    tags: [android]
+
+  - name: test-failure-unexpected-statuses
+    regex: "WARNING - Got \\d+ unexpected statuses"
+    severity: high
+    tags: [android]
+
+  - name: hg_error
+    regex: "Could not fetch from url https://hg\\.[^ ]+ into file .* due to \\(Permanent\\) HTTP response code"
+    severity: low
+    tags: [android]
+    description: Mercurial fetch failed with a permanent HTTP error.
+
+  - name: hg_error
+    regex: "abort: error applying bundle"
+    severity: low
+    tags: [android]
+
+  - name: android-no-devices-found
+    regex: "Must have exactly one connected Android USB device\\. 0 found\\."
+    severity: critical
+    tags: [android]
+
+  - name: test-failure-unexpected-server-start-timeout
+    regex: "TEST-UNEXPECTED-FAIL \\| runtests\\.py \\| Timed out while waiting for server startup\\."
+    severity: high
+    tags: [android]
+
+  - name: test-exception-image-difference-too-high
+    regex: "Exception: Difference in Images is too high, suspected faulty run"
+    severity: high
+    tags: [android]
+
+  - name: tests-failed
+    regex: "WARNING -  One or more unittests failed\\."
+    severity: high
+    tags: [android]
+
+  - name: app-crashed-minidump
+    regex: "Unimplemented streams encountered:"
+    severity: critical
+    tags: [android]
+    description: App crashed and produced a minidump with unimplemented streams.
+
+  - name: raptor-mitmproxy-download-failed
+    regex: "ERROR -  raptor-mitmproxy Error: Failed to download file"
+    severity: high
+    tags: [android]
+
+  - name: tc-task-payload-invalid-missing-value
+    regex: "task payload does not declare a required value, so content authenticity cannot be verified"
+    severity: low
+    tags: [android]
+
+  - name: raptor-browsertime-econnreset
+    regex: "raptor-browsertime Info:.*code: 'ECONNRESET'"
+    severity: low
+    tags: [android]
+
+  - name: mozharness-failed-to-install
+    regex: "\\[mozharness: \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d+Z\\] Finished install step \\(failed\\)"
+    severity: high
+    tags: [android]

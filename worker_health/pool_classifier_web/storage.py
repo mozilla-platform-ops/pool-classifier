@@ -239,22 +239,28 @@ class SqliteStorage:
             result[row["worker_id"]] = dict(row)
         return result
 
-    def query_heatmap(self, since: str) -> Dict[str, Dict[int, dict]]:
+    def query_heatmap(
+        self,
+        since: str,
+        severity_map: Optional[Dict[str, List[str]]] = None,
+    ) -> Dict[str, Dict[int, dict]]:
+        cat_to_sev: Dict[str, str] = {}
+        if severity_map:
+            for sev, cats in severity_map.items():
+                for cat in cats:
+                    cat_to_sev[cat] = sev
+
         rows = self.db.execute(
             """
             SELECT
                 worker_id,
                 CAST((strftime('%s', 'now') - strftime('%s', run_started)) / 3600 AS INTEGER) AS hour_ago,
-                SUM(CASE WHEN run_state = 'completed' THEN 1 ELSE 0 END) AS successes,
-                SUM(CASE WHEN category = 'browsertime-device-timeout' THEN 1 ELSE 0 END) AS bdt,
-                SUM(CASE WHEN category = 'browsertime_samples' THEN 1 ELSE 0 END) AS bts,
-                SUM(CASE WHEN run_state != 'completed'
-                          AND (category NOT IN ('browsertime-device-timeout', 'browsertime_samples')
-                               OR category IS NULL)
-                         THEN 1 ELSE 0 END) AS other_fail
+                run_state,
+                COALESCE(category, 'unclassified') AS category,
+                COUNT(*) AS cnt
             FROM task_results
             WHERE run_started >= ?
-            GROUP BY worker_id, hour_ago
+            GROUP BY worker_id, hour_ago, run_state, category
             HAVING hour_ago BETWEEN 0 AND 11
             ORDER BY worker_id, hour_ago
             """,
@@ -262,12 +268,17 @@ class SqliteStorage:
         )
         heatmap: Dict[str, Dict[int, dict]] = {}
         for row in rows:
-            heatmap.setdefault(row["worker_id"], {})[row["hour_ago"]] = {
-                "s": row["successes"],
-                "bdt": row["bdt"],
-                "bts": row["bts"],
-                "o": row["other_fail"],
-            }
+            cell = heatmap.setdefault(row["worker_id"], {}).setdefault(
+                row["hour_ago"],
+                {"s": 0, "critical": 0, "high": 0, "low": 0, "cats": {}},
+            )
+            if row["run_state"] == "completed":
+                cell["s"] += row["cnt"]
+            else:
+                cat = row["category"]
+                cell["cats"][cat] = cell["cats"].get(cat, 0) + row["cnt"]
+                sev = cat_to_sev.get(cat, "low")
+                cell[sev] += row["cnt"]
         return heatmap
 
     def top_offenders(self, category: str, n: int = 5, since: Optional[str] = None) -> List[Tuple[str, int]]:
@@ -612,23 +623,29 @@ class PostgresStorage:
             )
             return {row["worker_id"]: dict(row) for row in cur.fetchall()}
 
-    def query_heatmap(self, since: str) -> Dict[str, Dict[int, dict]]:
+    def query_heatmap(
+        self,
+        since: str,
+        severity_map: Optional[Dict[str, List[str]]] = None,
+    ) -> Dict[str, Dict[int, dict]]:
+        cat_to_sev: Dict[str, str] = {}
+        if severity_map:
+            for sev, cats in severity_map.items():
+                for cat in cats:
+                    cat_to_sev[cat] = sev
+
         with self._db.cursor() as cur:
             cur.execute(
                 """
                 SELECT
                     worker_id,
                     CAST(EXTRACT(EPOCH FROM (now() - run_started)) / 3600 AS INTEGER) AS hour_ago,
-                    SUM(CASE WHEN run_state = 'completed' THEN 1 ELSE 0 END) AS successes,
-                    SUM(CASE WHEN category = 'browsertime-device-timeout' THEN 1 ELSE 0 END) AS bdt,
-                    SUM(CASE WHEN category = 'browsertime_samples' THEN 1 ELSE 0 END) AS bts,
-                    SUM(CASE WHEN run_state != 'completed'
-                              AND (category NOT IN ('browsertime-device-timeout', 'browsertime_samples')
-                                   OR category IS NULL)
-                             THEN 1 ELSE 0 END) AS other_fail
+                    run_state,
+                    COALESCE(category, 'unclassified') AS category,
+                    COUNT(*) AS cnt
                 FROM task_results
                 WHERE pool_id = %s AND run_started >= %s::timestamptz
-                GROUP BY worker_id, hour_ago
+                GROUP BY worker_id, hour_ago, run_state, category
                 HAVING CAST(EXTRACT(EPOCH FROM (now() - run_started)) / 3600 AS INTEGER) BETWEEN 0 AND 11
                 ORDER BY worker_id, hour_ago
                 """,
@@ -636,12 +653,17 @@ class PostgresStorage:
             )
             heatmap: Dict[str, Dict[int, dict]] = {}
             for row in cur.fetchall():
-                heatmap.setdefault(row["worker_id"], {})[row["hour_ago"]] = {
-                    "s": row["successes"],
-                    "bdt": row["bdt"],
-                    "bts": row["bts"],
-                    "o": row["other_fail"],
-                }
+                cell = heatmap.setdefault(row["worker_id"], {}).setdefault(
+                    row["hour_ago"],
+                    {"s": 0, "critical": 0, "high": 0, "low": 0, "cats": {}},
+                )
+                if row["run_state"] == "completed":
+                    cell["s"] += row["cnt"]
+                else:
+                    cat = row["category"]
+                    cell["cats"][cat] = cell["cats"].get(cat, 0) + row["cnt"]
+                    sev = cat_to_sev.get(cat, "low")
+                    cell[sev] += row["cnt"]
         return heatmap
 
     def top_offenders(self, category: str, n: int = 5, since: Optional[str] = None) -> List[Tuple[str, int]]:

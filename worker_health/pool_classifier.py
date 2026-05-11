@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import re
 import signal
 import sys
 import time
@@ -16,6 +15,7 @@ import requests
 import taskcluster
 
 from worker_health import quarantine_graphql
+from worker_health.pool_classifier_web.patterns_registry import all_patterns, categories_by_severity
 from worker_health.pool_classifier_web.storage import SqliteStorage
 from worker_health.utils import human_delta
 
@@ -44,45 +44,6 @@ WORKER_REFRESH_INTERVAL = 300  # seconds between re-listing workers
 WORKER_THREAD_COUNT = 8
 CONSECUTIVE_FAILURE_ALERT = 2
 
-# Patterns are checked in order; first match wins.
-# Edit these to match the failure modes you care about.
-FAILURE_PATTERNS = [
-    (r"TypeError: Cannot read properties of undefined \(reading 'samples'\)", "browsertime_samples"),
-    (r"ADB server didn't ACK", "adb_no_ack"),
-    (r"DEVICE_UNAVAILABLE", "device_unavailable"),
-    (r"mozdevice\.DeviceError", "device_error"),
-    (r"error: device .* not found", "device_not_found"),
-    (r"DeviceDisconnectedError", "device_disconnected"),
-    (r"TEST-UNEXPECTED-TIMEOUT \|.+\| Test timed out", "test-unexpected-timeout"),
-    (
-        r"CRITICAL -  raptor-browsertime Critical: Browsertime process timed out after waiting \d+ seconds for output",
-        "browsertime-device-timeout",
-    ),
-    (r"raptor-browsertime Critical: No data to collect", "raptor-no-data-to-collect"),
-    (r"FileNotFoundError:.*mozinfo/android_os_to_api_map\.yaml", "mozinfo-import-error"),
-    (r"WARNING - Got \d+ unexpected crashes", "test-failure-unexpected-crashes"),
-    (r"WARNING - Got \d+ unexpected statuses", "test-failure-unexpected-statuses"),
-    (r"Could not fetch from url https://hg\.[^ ]+ into file .* due to \(Permanent\) HTTP response code", "hg_error"),
-    (r"abort: error applying bundle", "hg_error"),
-    (r"Must have exactly one connected Android USB device\. 0 found\.", "android-no-devices-found"),
-    (
-        r"TEST-UNEXPECTED-FAIL \| runtests\.py \| Timed out while waiting for server startup\.",
-        "test-failure-unexpected-server-start-timeout",
-    ),
-    (r"Exception: Difference in Images is too high, suspected faulty run", "test-exception-image-difference-too-high"),
-    (r"WARNING -  One or more unittests failed\.", "tests-failed"),
-    (r"Unimplemented streams encountered:", "app-crashed-minidump"),
-    (r"ERROR -  raptor-mitmproxy Error: Failed to download file", "raptor-mitmproxy-download-failed"),
-    (
-        r"task payload does not declare a required value, so content authenticity cannot be verified",
-        "tc-task-payload-invalid-missing-value",
-    ),
-    (r"raptor-browsertime Info:.*code: 'ECONNRESET'", "raptor-browsertime-econnreset"),
-    (
-        r"\[mozharness: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+Z\] Finished install step \(failed\)",
-        "mozharness-failed-to-install",
-    ),
-]
 
 logger = logging.getLogger(__name__)
 
@@ -205,9 +166,9 @@ class PoolClassifier:
         return ""
 
     def _classify(self, log_text: str, run_state: str, reason_resolved: Optional[str]) -> str:
-        for pattern, category in FAILURE_PATTERNS:
-            if re.search(pattern, log_text):
-                return category
+        for pattern in all_patterns():
+            if pattern.search(log_text):
+                return pattern.name
         if run_state == "exception" and reason_resolved:
             return f"exception_{reason_resolved}"
         return "unclassified"
@@ -577,7 +538,12 @@ class PoolClassifier:
         return self.storage.query_windowed_sr()
 
     def _query_heatmap(self, since: str) -> Dict[str, Dict[int, dict]]:
-        return self.storage.query_heatmap(since)
+        severity_map = {
+            "critical": categories_by_severity("critical"),
+            "high": categories_by_severity("high"),
+            "low": categories_by_severity("low"),
+        }
+        return self.storage.query_heatmap(since, severity_map=severity_map)
 
     def _list_quarantined_workers(self) -> Dict[str, Optional[str]]:
         """Return dict of worker_id -> quarantineUntil (ISO string) for quarantined workers."""
@@ -971,8 +937,9 @@ class PoolClassifier:
             "  #hm-tip .tip-worker { color: #fff; font-weight: bold; margin-bottom: .2rem; }",
             "  #hm-tip .tip-period { color: #888; font-size: .85em; margin-bottom: .4rem; }",
             "  #hm-tip .tip-ok { color: #4c4; }",
-            "  #hm-tip .tip-bad { color: #f44; }",
-            "  #hm-tip .tip-warn { color: #f90; }",
+            "  #hm-tip .tip-critical { color: #f44; }",
+            "  #hm-tip .tip-high { color: #f90; }",
+            "  #hm-tip .tip-low { color: #88a; }",
             "  #hm-tip .tip-dim { color: #888; }",
             "  .ok { color: #4c4; }",
             "  .bad { color: #f44; }",
@@ -997,10 +964,9 @@ class PoolClassifier:
             "  .hm-cell { width: 2.2rem; min-width: 2.2rem; height: 1.5rem; padding: 0 !important; border: 2px solid #111 !important; border-radius: 3px; cursor: default; }",
             "  .hm-empty { background: #1c1c1c; }",
             "  .hm-ok { background: #1a4a20; }",
-            "  .hm-bts { background: #7a4400; }",
-            "  .hm-bdt { background: #7a1515; }",
-            "  .hm-both { background: #8a2800; }",
-            "  .hm-other { background: #2a2a4a; }",
+            "  .hm-sev-critical { background: #7a1515; }",
+            "  .hm-sev-high { background: #7a4400; }",
+            "  .hm-sev-low { background: #2a2a4a; }",
             "  .hm-legend { display: flex; gap: 1.5rem; font-size: .8em; color: #aaa; margin: .5rem 0 1.2rem; align-items: center; flex-wrap: wrap; }",
             "  .hm-swatch { display: inline-block; width: .9rem; height: .9rem; margin-right: .35rem; vertical-align: middle; border-radius: 2px; border: 1px solid #333; }",
             "  .hm-copy { cursor: pointer; color: #555; margin-right: .35rem; vertical-align: middle; display: inline-block; line-height: 1; }",
@@ -1144,25 +1110,33 @@ class PoolClassifier:
             def hm_cell(data: Optional[dict], h: int) -> str:
                 period = hour_period[h]
                 if not data:
-                    return f'<td class="hm-cell hm-empty" data-info=\'{{"period":"{period}","ok":0,"bdt":0,"bts":0,"o":0}}\'></td>'
-                s, bdt, bts, o = data["s"], data["bdt"], data["bts"], data["o"]
-                if bdt and bts:
-                    cls = "hm-both"
-                elif bdt:
-                    cls = "hm-bdt"
-                elif bts:
-                    cls = "hm-bts"
-                elif o:
-                    cls = "hm-other"
+                    info = json.dumps({"period": period, "ok": 0, "critical": 0, "high": 0, "low": 0, "cats": {}})
+                    return f"<td class=\"hm-cell hm-empty\" data-info='{info}'></td>"
+                s, critical, high, low = data["s"], data["critical"], data["high"], data["low"]
+                if critical:
+                    cls = "hm-sev-critical"
+                elif high:
+                    cls = "hm-sev-high"
+                elif low:
+                    cls = "hm-sev-low"
                 else:
                     cls = "hm-ok"
-                info = f'{{"period":"{period}","ok":{s},"bdt":{bdt},"bts":{bts},"o":{o}}}'
+                info = json.dumps(
+                    {
+                        "period": period,
+                        "ok": s,
+                        "critical": critical,
+                        "high": high,
+                        "low": low,
+                        "cats": data.get("cats", {}),
+                    },
+                )
                 return f"<td class=\"hm-cell {cls}\" data-info='{info}'></td>"
 
-            # sort workers: most power-meter failures first, then alpha
+            # sort workers: highest-severity failures first, then alpha
             def hm_sort_key(wid):
                 hours = heatmap[wid]
-                bad = sum(h["bdt"] + h["bts"] for h in hours.values())
+                bad = sum(h["critical"] * 2 + h["high"] for h in hours.values())
                 return (-bad, wid)
 
             hour_labels = ["&lt;1h", "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h"]
@@ -1189,10 +1163,9 @@ class PoolClassifier:
                 '<p class="gen">Only hosts with activity in the last 12 hours are shown.</p>',
                 '<div class="hm-legend">',
                 '  <span><span class="hm-swatch" style="background:#1a4a20"></span>success</span>',
-                '  <span><span class="hm-swatch" style="background:#7a1515"></span>device-timeout</span>',
-                '  <span><span class="hm-swatch" style="background:#7a4400"></span>samples</span>',
-                '  <span><span class="hm-swatch" style="background:#8a2800"></span>both</span>',
-                '  <span><span class="hm-swatch" style="background:#2a2a4a"></span>other failure</span>',
+                '  <span><span class="hm-swatch" style="background:#7a1515"></span>critical</span>',
+                '  <span><span class="hm-swatch" style="background:#7a4400"></span>high</span>',
+                '  <span><span class="hm-swatch" style="background:#2a2a4a"></span>low</span>',
                 '  <span><span class="hm-swatch" style="background:#1c1c1c; border-color:#444"></span>no activity</span>',
                 "</div>",
                 '<div class="hm-wrap">',
@@ -1266,9 +1239,14 @@ class PoolClassifier:
                 )
             parts.append("</div>")
 
+        hm_sev_map = {cat: sev for sev in ("critical", "high", "low") for cat in categories_by_severity(sev)}
         parts += [
             '<div id="hm-tip"></div>',
             "<script>",
+            f"  const HM_SEV = {json.dumps(hm_sev_map)};",
+            "  const SEV_ORDER = {critical: 0, high: 1, low: 2};",
+            "  const SEV_CLASS = {critical: 'tip-critical', high: 'tip-high', low: 'tip-low'};",
+            "  const SEV_ICON  = {critical: '✗', high: '⚠', low: '•'};",
             "  // Heatmap hover card",
             "  const tip = document.getElementById('hm-tip');",
             "  document.querySelectorAll('.hm-cell').forEach(cell => {",
@@ -1276,11 +1254,17 @@ class PoolClassifier:
             "      const d = JSON.parse(cell.dataset.info);",
             "      const wid = cell.closest('tr').dataset.wid;",
             "      const lines = [`<div class='tip-worker'>${wid}</div>`, `<div class='tip-period'>${d.period}</div>`];",
-            "      if (d.ok)  lines.push(`<div class='tip-ok'>✓ ok: ${d.ok}</div>`);",
-            "      if (d.bdt) lines.push(`<div class='tip-bad'>✗ device-timeout: ${d.bdt}</div>`);",
-            "      if (d.bts) lines.push(`<div class='tip-warn'>⚠ samples: ${d.bts}</div>`);",
-            "      if (d.o)   lines.push(`<div class='tip-dim'>• other: ${d.o}</div>`);",
-            "      if (!d.ok && !d.bdt && !d.bts && !d.o) lines.push(`<div class='tip-dim'>no activity</div>`);",
+            "      if (d.ok) lines.push(`<div class='tip-ok'>✓ ok: ${d.ok}</div>`);",
+            "      const cats = Object.entries(d.cats || {});",
+            "      cats.sort((a, b) => {",
+            "        const sa = SEV_ORDER[HM_SEV[a[0]]] ?? 3, sb = SEV_ORDER[HM_SEV[b[0]]] ?? 3;",
+            "        return sa !== sb ? sa - sb : b[1] - a[1];",
+            "      });",
+            "      for (const [cat, cnt] of cats) {",
+            "        const sev = HM_SEV[cat] || 'low';",
+            "        lines.push(`<div class='${SEV_CLASS[sev]}'>${SEV_ICON[sev]} ${cat}: ${cnt}</div>`);",
+            "      }",
+            "      if (!d.ok && cats.length === 0) lines.push(`<div class='tip-dim'>no activity</div>`);",
             "      tip.innerHTML = lines.join('');",
             "      tip.style.display = 'block';",
             "    });",
