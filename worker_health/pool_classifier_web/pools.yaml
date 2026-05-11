@@ -1,6 +1,33 @@
 pools:
+  - id: bitbar-gw-perf-a55
+    provisioner: proj-autophone
+    worker_type: gecko-t-bitbar-gw-perf-a55
+    schedule: "*/15 * * * *"
+  - id: bitbar-gw-perf-p6
+    provisioner: proj-autophone
+    worker_type: gecko-t-bitbar-gw-perf-p6
+    schedule: "*/15 * * * *"
+  - id: bitbar-gw-perf-s24
+    provisioner: proj-autophone
+    worker_type: gecko-t-bitbar-gw-perf-s24
+    schedule: "*/15 * * * *"
+  - id: bitbar-gw-unit-p5
+    provisioner: proj-autophone
+    worker_type: gecko-t-bitbar-gw-unit-p5
+    schedule: "*/15 * * * *"
+  - id: lambda-alpha-a55
+    provisioner: proj-autophone
+    worker_type: gecko-t-lambda-alpha-a55
+    schedule: "*/15 * * * *"
   - id: lambda-perf-a55
     provisioner: proj-autophone
     worker_type: gecko-t-lambda-perf-a55
-    display_name: "Lambda Perf A55"
+    schedule: "*/15 * * * *"
+  - id: talos-2404
+    provisioner: releng-hardware
+    worker_type: gecko-t-linux-talos-2404
+    schedule: "*/15 * * * *"
+  - id: talos-1804
+    provisioner: releng-hardware
+    worker_type: gecko-t-linux-talos-1804
     schedule: "*/15 * * * *"

@@ -7,7 +7,6 @@
 <style>
   body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }
   h1 { color: #fff; }
-  h2 { color: #f90; margin-top: 2rem; }
   p.gen { color: #666; font-size: .85em; margin-bottom: .5rem; }
   a { color: inherit; text-decoration: none; }
   a:visited { color: #888; }
@@ -16,7 +15,10 @@
   .bad { color: #f44; }
   .warn { color: #f90; }
   table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
-  th { background: #222; color: #aaa; text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #444; }
+  th { background: #222; color: #aaa; text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #444; cursor: pointer; user-select: none; }
+  th:hover { color: #fff; }
+  th[data-sort='asc']::after  { content: ' ▲'; color: #f90; }
+  th[data-sort='desc']::after { content: ' ▼'; color: #f90; }
   td { padding: .35rem .8rem; border-bottom: 1px solid #2a2a2a; }
   tr:hover td { background: #1a1a1a; }
   .pool-name { color: #fff; font-size: 1.05em; }
@@ -25,19 +27,20 @@
 </head>
 <body>
 <div style="display:flex;align-items:center;gap:1.5rem;margin:0 0 1.5rem">
-<pre style="color:#0ff;line-height:1;margin:0;font-size:1rem">
- ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀
- ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⼁ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ </pre>
+<a href="/" style="text-decoration:none"><pre style="color:#0ff;line-height:1;margin:0;font-size:1rem"> ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀
+ ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ </pre></a>
 <span style="color:#ccc;font-size:1.1rem;letter-spacing:.02em;position:relative;top:4px">Dashboard</span>
 </div>
 <p class="gen">Generated: {{ generated }}</p>
 
-<table>
+<table id="pools-table">
   <thead>
     <tr>
       <th>Pool</th>
-      <th>Provisioner / Worker Type</th>
+      <th>Provisioner</th>
+      <th>Hosts</th>
       <th>Alerting</th>
+      <th>Errors (1h)</th>
       <th>Oldest Data</th>
       <th>Schedule</th>
     </tr>
@@ -45,28 +48,51 @@
   <tbody>
     {% for row in pools %}
     <tr>
-      <td><a class="pool-name" href="/pools/{{ row.pool.provisioner }}/{{ row.pool.worker_type }}">{{ row.pool.display_name }}</a></td>
-      <td><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{{ row.pool.provisioner }}/worker-types/{{ row.pool.worker_type }}" target="_blank">{{ row.pool.provisioner }}/{{ row.pool.worker_type }}</a></td>
+      <td><a class="pool-name" href="/pools/{{ row.pool.provisioner }}/{{ row.pool.worker_type }}">{{ row.pool.worker_type }}</a></td>
+      <td>{{ row.pool.provisioner }}</td>
       <td>
-        {% if row.alerting is none %}
-          <span class="no-data">—</span>
-        {% elif row.alerting > 0 %}
-          <span class="bad">{{ row.alerting }}</span>
-        {% else %}
-          <span class="ok">0</span>
-        {% endif %}
+        {% if row.workers is none %}<span class="no-data">—</span>
+        {% else %}{{ row.workers }}{% endif %}
       </td>
       <td>
-        {% if row.oldest %}
-          {{ row.oldest[:19] | replace("T", " ") }} UTC
-        {% else %}
-          <span class="no-data">no data</span>
-        {% endif %}
+        {% if row.alerting is none %}<span class="no-data">—</span>
+        {% elif row.alerting > 0 %}<span class="bad">{{ row.alerting }}</span>
+        {% else %}<span class="ok">0</span>{% endif %}
       </td>
-      <td>{{ row.pool.schedule }}</td>
+      <td>
+        {% if row.errors_1h is none %}<span class="no-data">—</span>
+        {% elif row.errors_1h > 0 %}<span class="warn">{{ row.errors_1h }}</span>
+        {% else %}<span class="ok">0</span>{% endif %}
+      </td>
+      <td>
+        {% if row.oldest %}{{ row.oldest[:19] | replace("T", " ") }} UTC
+        {% else %}<span class="no-data">no data</span>{% endif %}
+      </td>
+      <td>{{ row.pool.schedule | humanize_cron }}</td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+<script>
+  function cellVal(tr, idx) {
+    return tr.children[idx].textContent.trim();
+  }
+  function sortTable(th) {
+    const tbody = th.closest('table').querySelector('tbody');
+    const idx = [...th.parentElement.children].indexOf(th);
+    const asc = th.dataset.sort === 'desc';
+    th.closest('thead').querySelectorAll('th').forEach(h => delete h.dataset.sort);
+    th.dataset.sort = asc ? 'asc' : 'desc';
+    const rows = [...tbody.querySelectorAll('tr')];
+    rows.sort((a, b) => {
+      const av = cellVal(a, idx), bv = cellVal(b, idx);
+      const an = parseFloat(av), bn = parseFloat(bv);
+      const cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : av.localeCompare(bv);
+      return asc ? cmp : -cmp;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+  }
+  document.querySelectorAll('#pools-table th').forEach(th => th.addEventListener('click', () => sortTable(th)));
+</script>
 </body>
 </html>

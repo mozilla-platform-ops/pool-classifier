@@ -17,7 +17,6 @@ class Pool:
     id: str
     provisioner: str
     worker_type: str
-    display_name: str
     schedule: str
 
 

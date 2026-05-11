@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, Response, abort, jsonify, render_template
 
@@ -41,8 +41,26 @@ def _get_classifier(provisioner: str, worker_type: str) -> PoolClassifier | None
     return _classifiers[key]
 
 
+def _humanize_cron(expr: str) -> str:
+    parts = expr.strip().split()
+    if len(parts) != 5:
+        return expr
+    minute, hour, dom, month, dow = parts
+    if dom == "*" and month == "*" and dow == "*":
+        if minute.startswith("*/") and hour == "*":
+            return f"every {minute[2:]}m"
+        if minute == "0" and hour.startswith("*/"):
+            return f"every {hour[2:]}h"
+        if minute == "0" and hour == "0":
+            return "daily"
+        if minute == "0" and hour == "*":
+            return "every 1h"
+    return expr
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
+    app.jinja_env.filters["humanize_cron"] = _humanize_cron
 
     # Warn at startup if TC credentials are missing, but don't fail.
     try:
@@ -63,18 +81,26 @@ def create_app() -> Flask:
 
     @app.get("/")
     def index():
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        since_1h = (now_dt.replace(microsecond=0) - timedelta(hours=1)).isoformat()
         rows = []
         for pool in registry.all_pools():
             try:
                 pc = _get_classifier(pool.provisioner, pool.worker_type)
                 alerting = pc.storage.count_alerting(CONSECUTIVE_FAILURE_ALERT) if pc else None
                 oldest = pc.storage.oldest_classified_at() if pc else None
+                workers = pc.storage.count_workers() if pc else None
+                errors_1h = pc.storage.count_recent_errors(since_1h) if pc else None
             except Exception as e:
                 logger.warning("Failed to fetch summary for pool %s/%s: %s", pool.provisioner, pool.worker_type, e)
                 alerting = None
                 oldest = None
-            rows.append({"pool": pool, "alerting": alerting, "oldest": oldest})
+                workers = None
+                errors_1h = None
+            rows.append(
+                {"pool": pool, "alerting": alerting, "oldest": oldest, "workers": workers, "errors_1h": errors_1h},
+            )
         return render_template("index.html", pools=rows, generated=now)
 
     @app.get("/pools/<provisioner>/<worker_type>")
