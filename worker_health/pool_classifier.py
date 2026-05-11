@@ -115,7 +115,11 @@ class PoolClassifier:
             assert results_dir is not None, "results_dir required when no storage provided"
             pool_id = f"{provisioner}/{worker_type}"
             self.storage = SqliteStorage(pool_id=pool_id, results_dir=results_dir)
-        self._init_tc()
+        self.tc_queue = None
+        try:
+            self._init_tc()
+        except Exception as e:
+            logger.warning("TC credentials unavailable at startup (%s). classify_cycle() will fail without them.", e)
 
     def _color(self, code: str, text: str) -> str:
         return _c(code, text, self.use_color)
@@ -135,6 +139,11 @@ class PoolClassifier:
             },
         )
 
+    def _ensure_tc(self):
+        """Initialize TC client if not already done; raises if credentials are unavailable."""
+        if self.tc_queue is None:
+            self._init_tc()
+
     def _init_db(self):
         self.storage.init_schema()
         self.seen_tasks = self.storage.get_seen_tasks()
@@ -144,6 +153,7 @@ class PoolClassifier:
     # --- TC API calls ---
 
     def _list_workers(self) -> List[dict]:
+        self._ensure_tc()
         workers = []
         query: dict = {}
         while True:
@@ -316,66 +326,69 @@ class PoolClassifier:
 
     def classify_cycle(self, workers: Optional[List[dict]] = None) -> dict:
         """One classify pass: poll all workers, process results, write reports. Returns summary dict."""
-        if workers is None:
-            workers = self._list_workers()
-            self._backfill_worker_groups(workers)
+        with self.storage.classify_lock():
+            if workers is None:
+                workers = self._list_workers()
+                self._backfill_worker_groups(workers)
 
-        total_workers = len(workers)
-        logger.info(f"Scanning {total_workers} workers...")
-        poll_results = []
-        scanned = 0
-        thread_pool = ThreadPool(WORKER_THREAD_COUNT)
-        terminated = False
-        try:
-            with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
-                for worker_id, worker_group, tasks in thread_pool.imap_unordered(self._poll_one_worker, workers):
-                    scanned += 1
-                    bar()
-                    poll_results.append((worker_id, worker_group, tasks))
-                    if self._interrupted:
-                        thread_pool.terminate()
-                        terminated = True
-                        break
-        except Exception as e:
-            logger.warning(f"Poll error: {e}")
-            thread_pool.terminate()
-            terminated = True
-        finally:
-            if not terminated:
-                thread_pool.close()
-            thread_pool.join()
+            total_workers = len(workers)
+            logger.info(f"Scanning {total_workers} workers...")
+            poll_results = []
+            scanned = 0
+            thread_pool = ThreadPool(WORKER_THREAD_COUNT)
+            terminated = False
+            try:
+                with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
+                    for worker_id, worker_group, tasks in thread_pool.imap_unordered(self._poll_one_worker, workers):
+                        scanned += 1
+                        bar()
+                        poll_results.append((worker_id, worker_group, tasks))
+                        if self._interrupted:
+                            thread_pool.terminate()
+                            terminated = True
+                            break
+            except Exception as e:
+                logger.warning(f"Poll error: {e}")
+                thread_pool.terminate()
+                terminated = True
+            finally:
+                if not terminated:
+                    thread_pool.close()
+                thread_pool.join()
 
-        new_total = sum(len(tasks) for _, _wg, tasks in poll_results if tasks)
+            new_total = sum(len(tasks) for _, _wg, tasks in poll_results if tasks)
 
-        if new_total > 0 and not self._interrupted:
-            with alive_bar(new_total, title="processing tasks", enrich_print=False) as bar:
+            if new_total > 0 and not self._interrupted:
+                with alive_bar(new_total, title="processing tasks", enrich_print=False) as bar:
+                    for worker_id, worker_group, terminal_tasks in poll_results:
+                        if self._interrupted:
+                            break
+                        if terminal_tasks:
+                            self._process_results(worker_id, terminal_tasks, bar, worker_group)
+            else:
                 for worker_id, worker_group, terminal_tasks in poll_results:
                     if self._interrupted:
                         break
                     if terminal_tasks:
-                        self._process_results(worker_id, terminal_tasks, bar, worker_group)
-        else:
-            for worker_id, worker_group, terminal_tasks in poll_results:
-                if self._interrupted:
-                    break
-                if terminal_tasks:
-                    self._process_results(worker_id, terminal_tasks, worker_group=worker_group)
+                        self._process_results(worker_id, terminal_tasks, worker_group=worker_group)
 
-        self._update_reports()
+            self._update_reports()
 
-        alerting_count = self.storage.count_alerting(CONSECUTIVE_FAILURE_ALERT)
-        scan_summary = f"{scanned}/{total_workers} workers" if scanned < total_workers else f"{total_workers} workers"
-        alert_str = self._color("1;31" if alerting_count > 0 else "1;32", str(alerting_count))
-        logger.info(
-            f"Scan done: {scan_summary} scanned, {new_total} new terminal tasks, "
-            f"{alert_str} workers with ≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures.",
-        )
-        return {
-            "scanned": scanned,
-            "total_workers": total_workers,
-            "new_terminal": new_total,
-            "alerting": alerting_count,
-        }
+            alerting_count = self.storage.count_alerting(CONSECUTIVE_FAILURE_ALERT)
+            scan_summary = (
+                f"{scanned}/{total_workers} workers" if scanned < total_workers else f"{total_workers} workers"
+            )
+            alert_str = self._color("1;31" if alerting_count > 0 else "1;32", str(alerting_count))
+            logger.info(
+                f"Scan done: {scan_summary} scanned, {new_total} new terminal tasks, "
+                f"{alert_str} workers with ≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures.",
+            )
+            return {
+                "scanned": scanned,
+                "total_workers": total_workers,
+                "new_terminal": new_total,
+                "alerting": alerting_count,
+            }
 
     def run(self):
         signal.signal(signal.SIGINT, self._handle_interrupt)

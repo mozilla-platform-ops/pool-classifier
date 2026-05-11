@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
+
+
+class ClassifyLockBusy(Exception):
+    """Raised when a classify cycle is already running for this pool."""
+
 
 DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS workers (
@@ -309,6 +315,11 @@ class SqliteStorage:
                 (category,),
             ).fetchall()
         ]
+
+    @contextmanager
+    def classify_lock(self):
+        """No-op for SQLite; single-process CLI has no concurrent callers."""
+        yield
 
     def close(self) -> None:
         if self._db:
@@ -691,6 +702,23 @@ class PostgresStorage:
                 (self.pool_id, category),
             )
             return [dict(row) for row in cur.fetchall()]
+
+    @contextmanager
+    def classify_lock(self):
+        """Postgres advisory lock scoped to this pool. Raises ClassifyLockBusy if already held."""
+        lock_conn = psycopg.connect(self._dsn)
+        try:
+            with lock_conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_try_advisory_lock(hashtext('classify:' || %s)::bigint)",
+                    (self.pool_id,),
+                )
+                acquired = cur.fetchone()[0]
+            if not acquired:
+                raise ClassifyLockBusy(f"classify cycle already running for {self.pool_id}")
+            yield
+        finally:
+            lock_conn.close()
 
     def close(self) -> None:
         if self._conn:

@@ -130,13 +130,13 @@ docker compose -f worker_health/pool_classifier_web/docker-compose.yml up -d pos
 docker compose -f worker_health/pool_classifier_web/docker-compose.yml run --rm migrate
 
 # 3. Run parity tests
-PC_TEST_DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier \  # pragma: allowlist secret
-  pipenv run pytest tests/test_postgres_storage.py -v
+export PC_TEST_DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier  # pragma: allowlist secret
+pipenv run pytest tests/test_postgres_storage.py -v
 ```
 
 ---
 
-### ⬜ Phase 3 — Web layer (Flask)
+### ✅ Phase 3 — Web layer (Flask) (DONE)
 
 Add the Flask app with multi-pool index and per-pool routes.
 
@@ -166,13 +166,31 @@ Add the Flask app with multi-pool index and per-pool routes.
 - **`worker_health/pool_classifier_web/templates/index.html`** — multi-pool summary page (dark theme, matching per-pool style)
 - **`worker_health/pool_classifier_web/requirements.txt`** — pinned prod subset: `flask`, `gunicorn`, `requests`, `taskcluster`, `pyyaml`, `psycopg[binary]`, `sentry-sdk`
 
+**Changes made:**
+
+- **`worker_health/pool_classifier_web/pools.yaml`** — pool registry (lambda-perf-a55 initial entry)
+- **`worker_health/pool_classifier_web/registry.py`** — `Pool` dataclass, `all_pools()`, `get_pool(slug)`; cached at import from `POOLS_FILE` env or package-relative `pools.yaml`
+- **`worker_health/pool_classifier_web/app.py`** — Flask app factory `create_app()` with all 6 routes; module-level `_classifiers` cache; startup warning if TC creds absent
+- **`worker_health/pool_classifier_web/templates/index.html`** — dark-theme Jinja template: banner, per-pool table with alerting count and oldest data timestamp
+- **`worker_health/pool_classifier_web/requirements.txt`** — prod subset for Docker image
+- **`worker_health/pool_classifier_web/storage.py`** — `ClassifyLockBusy` exception; `classify_lock()` context manager on both `SqliteStorage` (no-op) and `PostgresStorage` (`pg_try_advisory_lock` on a separate connection, released on context exit)
+- **`worker_health/pool_classifier.py`** — TC init made lazy: `_init_tc()` wrapped in try/except at `__init__`, `_ensure_tc()` added, `_list_workers()` calls it; `classify_cycle()` body wrapped with `with self.storage.classify_lock():`; `ClassifyLockBusy` imported
+- **`Pipfile`** — added `flask`, `gunicorn`
+- **`tests/test_web_app.py`** — Flask test client tests (skip without `PC_TEST_DATABASE_URL`): healthz, index, pool HTML, 404, lock conflict → 409, unclassified log found/missing
+
+**All 19 existing tests pass unchanged.**
+
 Local dev smoke test:
 ```sh
-docker compose up -d postgres
-python scripts/migrate.py
-TC_TOKEN_FILE=~/.tc_token DATABASE_URL=postgresql://... flask --app worker_health.pool_classifier_web.app run -p 8080
-curl -X POST localhost:8080/classify/lambda-perf-a55 | jq .
+docker compose -f worker_health/pool_classifier_web/docker-compose.yml up -d postgres
+docker compose -f worker_health/pool_classifier_web/docker-compose.yml run --rm migrate
+export TC_TOKEN_FILE=~/.tc_token
+export DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier  # pragma: allowlist secret
+pipenv run flask --app worker_health.pool_classifier_web.app:create_app run -p 8080
+curl -sf localhost:8080/healthz
+curl -sf -X POST localhost:8080/classify/lambda-perf-a55 | jq .
 open http://localhost:8080/pools/lambda-perf-a55
+open http://localhost:8080/
 ```
 
 ---

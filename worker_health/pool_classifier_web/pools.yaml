@@ -1,0 +1,6 @@
+pools:
+  - id: lambda-perf-a55
+    provisioner: proj-autophone
+    worker_type: gecko-t-lambda-perf-a55
+    display_name: "Lambda Perf A55"
+    schedule: "*/15 * * * *"

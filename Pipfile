@@ -32,3 +32,5 @@ sentry-sdk = "*"
 rstr = "*"
 rich = "*"
 psycopg = {extras = ["binary"], version = "*"}
+flask = "*"
+gunicorn = "*"

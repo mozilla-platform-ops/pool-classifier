@@ -1,0 +1,7 @@
+flask
+gunicorn
+requests
+taskcluster
+pyyaml
+psycopg[binary]
+sentry-sdk
