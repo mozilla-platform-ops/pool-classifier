@@ -38,6 +38,7 @@
     <tr>
       <th>Pool</th>
       <th>Provisioner</th>
+      <th>OS</th>
       <th>Hosts</th>
       <th>Alerting</th>
       <th>Errors (1h)</th>
@@ -50,6 +51,7 @@
     <tr>
       <td><a class="pool-name" href="/pools/{{ row.pool.provisioner }}/{{ row.pool.worker_type }}">{{ row.pool.worker_type }}</a></td>
       <td>{{ row.pool.provisioner }}</td>
+      <td>{{ row.os }}</td>
       <td>
         {% if row.workers is none %}<span class="no-data">—</span>
         {% else %}{{ row.workers }}{% endif %}

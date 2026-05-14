@@ -1,24 +1,20 @@
 #!/bin/bash
 #
 # pc_fetch_data.sh
-# Version: 1.1
-# Date: 2026-05-11
+# Version: 1.2
+# Date: 2026-05-14
 
 set -e
 #set -x
 
 BASE_URL="${PC_BASE_URL:-http://localhost:8080}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+POOLS_YAML="${POOLS_FILE:-$SCRIPT_DIR/worker_health/pool_classifier_web/pools.yaml}"
 
-pools=(
-  proj-autophone/gecko-t-bitbar-gw-perf-a55
-  proj-autophone/gecko-t-bitbar-gw-perf-p6
-  proj-autophone/gecko-t-bitbar-gw-perf-s24
-  proj-autophone/gecko-t-bitbar-gw-unit-p5
-  proj-autophone/gecko-t-lambda-alpha-a55
-  proj-autophone/gecko-t-lambda-perf-a55
-  releng-hardware/gecko-t-linux-talos-1804
-  releng-hardware/gecko-t-linux-talos-2404
-)
+pools=()
+while IFS= read -r pool; do
+  pools+=("$pool")
+done < <(yq '.pools[] | .provisioner + "/" + .worker_type' "$POOLS_YAML")
 
 for pool in "${pools[@]}"; do
   echo "==> classifying $pool"

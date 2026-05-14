@@ -32,6 +32,17 @@ def _load_pools() -> Tuple[List[Pool], dict]:
 _pools, _by_prov_wt = _load_pools()
 
 
+def detect_os(pool: "Pool") -> str:
+    if pool.provisioner == "proj-autophone":
+        return "android"
+    wt = pool.worker_type.lower()
+    if any(x in wt for x in ("osx", "arm64", "m4", "m-vms", "macos")):
+        return "macos"
+    if any(x in wt for x in ("win",)):
+        return "windows"
+    return "linux"
+
+
 def all_pools() -> List[Pool]:
     return _pools
 

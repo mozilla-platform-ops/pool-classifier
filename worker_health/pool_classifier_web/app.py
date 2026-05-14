@@ -10,6 +10,7 @@ from flask import Flask, Response, abort, jsonify, render_template
 
 from worker_health.pool_classifier import CONSECUTIVE_FAILURE_ALERT, PoolClassifier
 from worker_health.pool_classifier_web import registry
+from worker_health.pool_classifier_web.registry import detect_os
 from worker_health.pool_classifier_web.storage import ClassifyLockBusy, PostgresStorage
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,14 @@ def create_app() -> Flask:
                 workers = None
                 errors_1h = None
             rows.append(
-                {"pool": pool, "alerting": alerting, "oldest": oldest, "workers": workers, "errors_1h": errors_1h},
+                {
+                    "pool": pool,
+                    "os": detect_os(pool),
+                    "alerting": alerting,
+                    "oldest": oldest,
+                    "workers": workers,
+                    "errors_1h": errors_1h,
+                },
             )
         return render_template("index.html", pools=rows, generated=now)
 
@@ -108,7 +116,9 @@ def create_app() -> Flask:
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:
             abort(404)
-        return Response(pc.render_html(), content_type="text/html; charset=utf-8")
+        pool = registry.get_pool(provisioner, worker_type)
+        os_label = detect_os(pool) if pool else ""
+        return Response(pc.render_html(os_label=os_label), content_type="text/html; charset=utf-8")
 
     @app.get("/pools/<provisioner>/<worker_type>/overview.md")
     def pool_md(provisioner: str, worker_type: str):

@@ -642,7 +642,7 @@ class PoolClassifier:
             return
         self.storage.backfill_worker_groups(live_workers)
 
-    def render_html(self) -> str:
+    def render_html(self, os_label: str = "") -> str:
         """Return the HTML dashboard string for this pool (does not write to disk)."""
         now = datetime.now(timezone.utc)
         since_1d = (now - timedelta(days=1)).isoformat()
@@ -652,7 +652,15 @@ class PoolClassifier:
         quarantine_details = self._update_quarantine_cache(quarantined)
         windowed_sr = self._query_windowed_sr()
         heatmap = self._query_heatmap(since_12h)
-        return self._write_html(workers, quarantined, windowed_sr, since_1d, heatmap, quarantine_details)
+        return self._write_html(
+            workers,
+            quarantined,
+            windowed_sr,
+            since_1d,
+            heatmap,
+            quarantine_details,
+            os_label=os_label,
+        )
 
     def render_md(self) -> str:
         """Return the Markdown report string for this pool (does not write to disk)."""
@@ -800,6 +808,7 @@ class PoolClassifier:
         since_1d: Optional[str] = None,
         heatmap: Dict[str, Dict[int, dict]] = None,
         quarantine_details: Dict[str, dict] = None,
+        os_label: str = "",
     ):
         now = datetime.now(timezone.utc)
         total_failures = sum(w.get("failures", 0) for w in workers.values())
@@ -984,7 +993,13 @@ class PoolClassifier:
             " ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀",
             " ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ ",
             "</pre></a>",
-            f'<span style="color:#ccc;font-size:1.1rem;letter-spacing:.02em;position:relative;top:4px"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a></span>',
+            f'<span style="color:#ccc;font-size:1.1rem;letter-spacing:.02em;position:relative;top:4px"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a>'
+            + (
+                f' <span style="font-size:.75rem;background:#333;color:#aaa;border-radius:3px;padding:1px 6px;vertical-align:middle;position:relative;top:-1px">{os_label}</span>'
+                if os_label
+                else ""
+            )
+            + "</span>",
             "</div>",
             f'<p class="gen">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
         ]
