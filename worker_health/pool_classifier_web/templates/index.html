@@ -104,15 +104,16 @@
   </tbody>
 </table>
 <script>
+  const SORT_KEY = 'pc-index-sort';
   function cellVal(tr, idx) {
     return tr.children[idx].textContent.trim();
   }
-  function sortTable(th) {
-    const tbody = th.closest('table').querySelector('tbody');
-    const idx = [...th.parentElement.children].indexOf(th);
-    const asc = th.dataset.sort === 'desc';
-    th.closest('thead').querySelectorAll('th').forEach(h => delete h.dataset.sort);
-    th.dataset.sort = asc ? 'asc' : 'desc';
+  function applySort(idx, asc) {
+    const table = document.getElementById('pools-table');
+    const tbody = table.querySelector('tbody');
+    const ths = [...table.querySelectorAll('thead th')];
+    ths.forEach(h => delete h.dataset.sort);
+    ths[idx].dataset.sort = asc ? 'asc' : 'desc';
     const rows = [...tbody.querySelectorAll('tr')];
     rows.sort((a, b) => {
       const av = cellVal(a, idx), bv = cellVal(b, idx);
@@ -122,7 +123,17 @@
     });
     rows.forEach(r => tbody.appendChild(r));
   }
+  function sortTable(th) {
+    const idx = [...th.parentElement.children].indexOf(th);
+    const asc = th.dataset.sort === 'desc';
+    applySort(idx, asc);
+    try { localStorage.setItem(SORT_KEY, JSON.stringify({idx, asc})); } catch(_) {}
+  }
   document.querySelectorAll('#pools-table th').forEach(th => th.addEventListener('click', () => sortTable(th)));
+  try {
+    const saved = JSON.parse(localStorage.getItem(SORT_KEY));
+    if (saved) applySort(saved.idx, saved.asc);
+  } catch(_) {}
 </script>
 </body>
 </html>
