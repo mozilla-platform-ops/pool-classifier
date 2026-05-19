@@ -103,7 +103,7 @@ Add `PostgresStorage` implementing the same interface as `SqliteStorage`, and a 
   ```
 
 - **`worker_health/pool_classifier_web/scripts/migrate.py`** — apply SQL files in order, skip already-applied versions
-- **`worker_health/pool_classifier_web/docker-compose.yml`** — `postgres:16` for local dev (port 5433)
+- **`worker_health/pool_classifier_web/docker-compose.yml`** — `postgres:16` for local dev (port 5433); data bind-mounted to `./pgdata/` on the host (not a named volume, so `docker compose down -v` won't destroy it)
 - **`tests/test_postgres_storage.py`** — parity tests against docker-compose Postgres (skip unless `PC_TEST_DATABASE_URL` set)
 
 **Changes made:**
@@ -168,13 +168,13 @@ Add the Flask app with multi-pool index and per-pool routes.
 
 **Changes made:**
 
-- **`worker_health/pool_classifier_web/pools.yaml`** — pool registry (lambda-perf-a55 initial entry)
-- **`worker_health/pool_classifier_web/registry.py`** — `Pool` dataclass, `all_pools()`, `get_pool(slug)`; cached at import from `POOLS_FILE` env or package-relative `pools.yaml`
-- **`worker_health/pool_classifier_web/app.py`** — Flask app factory `create_app()` with all 6 routes; module-level `_classifiers` cache; startup warning if TC creds absent
-- **`worker_health/pool_classifier_web/templates/index.html`** — dark-theme Jinja template: banner, per-pool table with alerting count and oldest data timestamp
+- **`worker_health/pool_classifier_web/pools.yaml`** — pool registry; all `proj-autophone` and `releng-hardware` pools registered; supports `enabled: false` + `reason:` fields to suppress a pool without removing it
+- **`worker_health/pool_classifier_web/registry.py`** — `Pool` dataclass (`enabled`, `reason` optional fields), `all_pools()` (enabled only), `all_pools_including_disabled()`, `get_pool()`, `detect_os()` (provisioner-first heuristic: autophone→android, then name-based macOS/Windows/Linux); cached at import from `POOLS_FILE` env or package-relative `pools.yaml`
+- **`worker_health/pool_classifier_web/app.py`** — Flask app factory `create_app()` with all 6 routes; module-level `_classifiers` cache; startup warning if TC creds absent; index passes per-pool OS, errors-per-host and success-rate for 1h and 24h windows; disabled pools shown greyed-out with reason page
+- **`worker_health/pool_classifier_web/templates/index.html`** — dark-theme Jinja template: banner, per-pool table with OS, alerting count, errors/host (1h/24h), success rate (1h/24h), oldest data timestamp; all columns sortable
 - **`worker_health/pool_classifier_web/requirements.txt`** — prod subset for Docker image
 - **`worker_health/pool_classifier_web/storage.py`** — `ClassifyLockBusy` exception; `classify_lock()` context manager on both `SqliteStorage` (no-op) and `PostgresStorage` (`pg_try_advisory_lock` on a separate connection, released on context exit)
-- **`worker_health/pool_classifier.py`** — TC init made lazy: `_init_tc()` wrapped in try/except at `__init__`, `_ensure_tc()` added, `_list_workers()` calls it; `classify_cycle()` body wrapped with `with self.storage.classify_lock():`; `ClassifyLockBusy` imported
+- **`worker_health/pool_classifier.py`** — TC init made lazy: `_init_tc()` wrapped in try/except at `__init__`, `_ensure_tc()` added, `_list_workers()` calls it; `classify_cycle()` body wrapped with `with self.storage.classify_lock():`; `ClassifyLockBusy` imported; `render_html(os_label="")` passes OS badge to `_write_html()` for display in page header
 - **`Pipfile`** — added `flask`, `gunicorn`
 - **`tests/test_web_app.py`** — Flask test client tests (skip without `PC_TEST_DATABASE_URL`): healthz, index, pool HTML, 404, lock conflict → 409, unclassified log found/missing
 
@@ -188,9 +188,12 @@ export TC_TOKEN_FILE=~/.tc_token
 export DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier  # pragma: allowlist secret
 pipenv run flask --app worker_health.pool_classifier_web.app:create_app run -p 8080
 curl -sf localhost:8080/healthz
-curl -sf -X POST localhost:8080/classify/lambda-perf-a55 | jq .
-open http://localhost:8080/pools/lambda-perf-a55
+curl -sf -X POST localhost:8080/classify/proj-autophone/gecko-t-lambda-perf-a55 | jq .
+open http://localhost:8080/pools/proj-autophone/gecko-t-lambda-perf-a55
 open http://localhost:8080/
+
+# Trigger all pools at once (local dev only):
+bash pc_fetch_data.sh
 ```
 
 ---
