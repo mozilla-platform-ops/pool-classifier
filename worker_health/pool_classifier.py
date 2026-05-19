@@ -1,5 +1,6 @@
 """Pool failure classifier: monitors all workers in a TC pool and classifies task failures from logs."""
 
+import collections
 import json
 import logging
 import os
@@ -19,6 +20,17 @@ from worker_health.pool_classifier_web.patterns_registry import all_patterns, ca
 from worker_health.pool_classifier_web.storage import SqliteStorage
 from worker_health.utils import human_delta
 
+TC_REQUEST_TIMEOUT = 30  # seconds; SDK has no built-in timeout
+
+
+class _TimeoutSession(requests.Session):
+    """requests.Session that enforces a default timeout on every request."""
+
+    def request(self, *args, **kwargs):
+        kwargs.setdefault("timeout", TC_REQUEST_TIMEOUT)
+        return super().request(*args, **kwargs)
+
+
 try:
     from alive_progress import alive_bar as _alive_bar
 
@@ -36,6 +48,11 @@ except ImportError:
 TC_ROOT = "https://firefox-ci-tc.services.mozilla.com"
 LOG_HEAD_BYTES = 20480  # 20 KB
 LOG_TAIL_BYTES = 51200  # 50 KB
+# Gzipped-artifact size at which we refuse to stream the log (GCS gunzips on the fly
+# without honoring Range, so anything large means downloading the entire decompressed log).
+LOG_MAX_GZIP_BYTES = 20 * 1024 * 1024  # 20 MB compressed (~100+ MB uncompressed)
+LOG_FETCH_MAX_SECONDS = 30  # hard wall-clock cap for the streamed read
+LOG_FETCH_MAX_BYTES = 5 * 1024 * 1024  # hard byte cap for the streamed read
 
 DEFAULT_PROVISIONER = "proj-autophone"
 DEFAULT_WORKER_TYPE = "gecko-t-lambda-perf-a55"
@@ -70,6 +87,11 @@ class PoolClassifier:
         self.seen_tasks: Dict[str, set] = {}  # in-memory cache, reloaded from storage each cycle
         self._interrupted = False
         self.use_color = use_color
+        self._cached_workers: List[dict] = []
+        self._last_worker_refresh: float = 0.0
+        self._cached_quarantined: Optional[Dict] = None
+        self._cached_quarantine_details: Optional[Dict] = None
+        self._last_quarantine_refresh: float = 0.0
         if storage is not None:
             self.storage = storage
         else:
@@ -98,6 +120,7 @@ class PoolClassifier:
                 "rootUrl": TC_ROOT,
                 "credentials": {"clientId": data["clientId"], "accessToken": data["accessToken"]},
             },
+            session=_TimeoutSession(),
         )
 
     def _ensure_tc(self):
@@ -117,53 +140,124 @@ class PoolClassifier:
         self._ensure_tc()
         workers = []
         query: dict = {}
+        page = 0
         while True:
+            t = time.time()
             resp = self.tc_queue.listWorkers(self.provisioner, self.worker_type, query=query)
+            logger.info(f"listWorkers page={page} {time.time() - t:.2f}s ({len(resp.get('workers', []))} workers)")
             workers.extend(resp.get("workers", []))
             token = resp.get("continuationToken")
             if not token:
                 break
             query = {"continuationToken": token}
+            page += 1
         return workers
 
     def _get_recent_tasks(self, worker_group: str, worker_id: str) -> List[dict]:
-        url = (
-            f"{self.queue_base}/provisioners/{self.provisioner}"
-            f"/worker-types/{self.worker_type}/workers/{worker_group}/{worker_id}"
-        )
-        r = requests.get(url, timeout=30)
-        if r.status_code == 404:
-            return []
-        r.raise_for_status()
-        return r.json().get("recentTasks", [])
+        self._ensure_tc()
+        try:
+            t = time.time()
+            resp = self.tc_queue.getWorker(self.provisioner, self.worker_type, worker_group, worker_id)
+            logger.info(f"getWorker {worker_id} {time.time() - t:.2f}s")
+            return resp.get("recentTasks", [])
+        except taskcluster.exceptions.TaskclusterRestFailure as e:
+            if e.status_code == 404:
+                return []
+            raise
 
     def _get_task_status(self, task_id: str) -> Optional[dict]:
-        url = f"{self.queue_base}/task/{task_id}/status"
-        r = requests.get(url, timeout=30)
-        if r.status_code == 404:
-            return None
-        r.raise_for_status()
-        return r.json()
-
-    def _fetch_log_tail(self, task_id: str, run_id: int) -> str:
-        url = f"{self.queue_base}/task/{task_id}/runs/{run_id}/artifacts/public/logs/live_backing.log"
+        self._ensure_tc()
         try:
-            head_r = requests.get(
-                url,
-                headers={"Range": f"bytes=0-{LOG_HEAD_BYTES - 1}", "Accept-Encoding": "identity"},
-                timeout=60,
+            t = time.time()
+            resp = self.tc_queue.status(task_id)
+            logger.info(f"status {task_id} {time.time() - t:.2f}s")
+            return resp
+        except taskcluster.exceptions.TaskclusterRestFailure as e:
+            if e.status_code == 404:
+                return None
+            raise
+
+    def _fetch_log_tail(self, task_id: str, run_id: int) -> Tuple[str, str]:
+        """Fetch head+tail of the task log with size, time, and byte caps.
+
+        Returns (log_text, status):
+          - "ok":         log fetched (possibly truncated by caps)
+          - "too_large":  gzipped artifact exceeds LOG_MAX_GZIP_BYTES; skipped
+          - "empty":      fetch failed or produced nothing
+        """
+        url = f"{self.queue_base}/task/{task_id}/runs/{run_id}/artifacts/public/logs/live_backing.log"
+
+        # HEAD-first size gate. GCS transparently gunzips on egress for these artifacts and
+        # silently ignores Range, so a large log means downloading the entire decompressed
+        # stream. Check the stored (gzipped) size and bail out if it's huge.
+        try:
+            t = time.time()
+            h = requests.head(url, allow_redirects=True, timeout=(10, 15))
+            gz_len = h.headers.get("x-goog-stored-content-length")
+            gz_enc = h.headers.get("x-goog-stored-content-encoding")
+            logger.info(
+                f"fetch_log {task_id}/{run_id} head_check {time.time() - t:.2f}s "
+                f"status={h.status_code} stored_len={gz_len} stored_enc={gz_enc} url={h.url}",
             )
-            tail_r = requests.get(
-                url,
-                headers={"Range": f"bytes=-{LOG_TAIL_BYTES}", "Accept-Encoding": "identity"},
-                timeout=60,
-            )
-            head = head_r.text if head_r.status_code in (200, 206) else ""
-            tail = tail_r.text if tail_r.status_code in (200, 206) else ""
-            return head + tail
+            if gz_len is not None:
+                try:
+                    if int(gz_len) > LOG_MAX_GZIP_BYTES:
+                        logger.warning(
+                            f"fetch_log {task_id}/{run_id} skipping: gzipped artifact "
+                            f"{int(gz_len) / (1024 * 1024):.1f} MB > "
+                            f"{LOG_MAX_GZIP_BYTES / (1024 * 1024):.0f} MB cap",
+                        )
+                        return "", "too_large"
+                except ValueError:
+                    pass
         except Exception as e:
-            logger.debug(f"Log fetch failed for {task_id}/{run_id}: {e}")
-        return ""
+            logger.warning(f"fetch_log {task_id}/{run_id} HEAD failed: {e}")
+            # fall through and try the streamed fetch anyway
+
+        # Streamed read with wall-clock + byte caps. Keep first LOG_HEAD_BYTES bytes and
+        # the rolling last LOG_TAIL_BYTES bytes. If we hit a cap we still return what we have.
+        head_buf = bytearray()
+        tail_buf: "collections.deque[int]" = collections.deque(maxlen=LOG_TAIL_BYTES)
+        total = 0
+        start = time.monotonic()
+        aborted = None
+        try:
+            with requests.get(url, stream=True, timeout=(10, 15)) as r:
+                if r.status_code not in (200, 206):
+                    logger.warning(
+                        f"fetch_log {task_id}/{run_id} stream status={r.status_code}",
+                    )
+                    return "", "empty"
+                for chunk in r.iter_content(chunk_size=65536):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if len(head_buf) < LOG_HEAD_BYTES:
+                        head_buf.extend(chunk[: LOG_HEAD_BYTES - len(head_buf)])
+                    tail_buf.extend(chunk)
+                    if total >= LOG_FETCH_MAX_BYTES:
+                        aborted = "byte_cap"
+                        break
+                    if time.monotonic() - start > LOG_FETCH_MAX_SECONDS:
+                        aborted = "time_cap"
+                        break
+        except Exception as e:
+            logger.warning(
+                f"fetch_log {task_id}/{run_id} stream failed after {time.monotonic() - start:.2f}s, total={total}: {e}",
+            )
+            if total == 0:
+                return "", "empty"
+
+        elapsed = time.monotonic() - start
+        logger.info(
+            f"fetch_log {task_id}/{run_id} stream {elapsed:.2f}s total={total} "
+            f"head={len(head_buf)} tail={len(tail_buf)} aborted={aborted}",
+        )
+        if total == 0:
+            return "", "empty"
+        head_str = bytes(head_buf).decode("utf-8", errors="replace")
+        tail_str = bytes(tail_buf).decode("utf-8", errors="replace")
+        return head_str + tail_str, "ok"
 
     def _classify(self, log_text: str, run_state: str, reason_resolved: Optional[str]) -> str:
         for pattern in all_patterns():
@@ -197,7 +291,7 @@ class PoolClassifier:
                 logger.debug(f"  {worker_id}: fetching status for {task_id}")
                 status_resp = self._get_task_status(task_id)
             except Exception as e:
-                logger.debug(f"{task_id}: status fetch error: {e}")
+                logger.warning(f"{task_id}: status fetch error: {e}")
                 continue
             if not status_resp:
                 seen.add(task_id)
@@ -248,14 +342,19 @@ class PoolClassifier:
                 logger.info(f"  {worker_id}: {self._color('1;32', 'completed')} task={task_id} run={run_id}")
             else:
                 log_text = ""
+                fetch_status = "empty"
                 if run_id is not None:
-                    logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} — fetching log tail")
-                    log_text = self._fetch_log_tail(task_id, run_id)
+                    log_url = f"{self.queue_base}/task/{task_id}/runs/{run_id}/artifacts/public/logs/live_backing.log"
+                    logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} — fetching log tail {log_url}")
+                    log_text, fetch_status = self._fetch_log_tail(task_id, run_id)
                     if log_text:
                         logger.info(f"  {worker_id}: task={task_id} log tail fetched ({len(log_text)} bytes)")
                     else:
-                        logger.info(f"  {worker_id}: task={task_id} no log available")
-                category = self._classify(log_text, run_state, reason_resolved)
+                        logger.info(f"  {worker_id}: task={task_id} no log available ({fetch_status})")
+                if fetch_status == "too_large":
+                    category = "log_too_large"
+                else:
+                    category = self._classify(log_text, run_state, reason_resolved)
                 if category == "unclassified":
                     cat_colored = self._color("1;35", category)  # magenta
                 else:
@@ -289,8 +388,13 @@ class PoolClassifier:
         """One classify pass: poll all workers, process results, write reports. Returns summary dict."""
         with self.storage.classify_lock():
             if workers is None:
-                workers = self._list_workers()
-                self._backfill_worker_groups(workers)
+                now = time.time()
+                if now - self._last_worker_refresh > WORKER_REFRESH_INTERVAL or not self._cached_workers:
+                    self._cached_workers = self._list_workers()
+                    self._last_worker_refresh = now
+                    self._backfill_worker_groups(self._cached_workers)
+                    logger.info(f"Worker list refreshed: {len(self._cached_workers)} workers")
+                workers = self._cached_workers
 
             total_workers = len(workers)
             logger.info(f"Scanning {total_workers} workers...")
@@ -456,7 +560,7 @@ class PoolClassifier:
             run_id = row["run_id"]
             if run_id is None:
                 continue
-            log_text = self._fetch_log_tail(task_id, run_id)
+            log_text, _ = self._fetch_log_tail(task_id, run_id)
             if not log_text:
                 continue
             refetch_total += 1
@@ -648,8 +752,18 @@ class PoolClassifier:
         since_1d = (now - timedelta(days=1)).isoformat()
         since_12h = (now - timedelta(hours=12)).isoformat()
         workers = self._query_workers()
-        quarantined = self._list_quarantined_workers()
-        quarantine_details = self._update_quarantine_cache(quarantined)
+        if (
+            self._cached_quarantined is not None
+            and time.time() - self._last_quarantine_refresh < WORKER_REFRESH_INTERVAL
+        ):
+            quarantined = self._cached_quarantined
+            quarantine_details = self._cached_quarantine_details
+        else:
+            quarantined = self._list_quarantined_workers()
+            quarantine_details = self._update_quarantine_cache(quarantined)
+            self._cached_quarantined = quarantined
+            self._cached_quarantine_details = quarantine_details
+            self._last_quarantine_refresh = time.time()
         windowed_sr = self._query_windowed_sr()
         heatmap = self._query_heatmap(since_12h)
         return self._write_html(
@@ -681,6 +795,9 @@ class PoolClassifier:
         workers = _timed("query_workers", self._query_workers)
         quarantined = _timed("list_quarantined_workers", self._list_quarantined_workers)
         quarantine_details = _timed("update_quarantine_cache", lambda: self._update_quarantine_cache(quarantined))
+        self._cached_quarantined = quarantined
+        self._cached_quarantine_details = quarantine_details
+        self._last_quarantine_refresh = time.time()
         windowed_sr = _timed("query_windowed_sr", self._query_windowed_sr)
         now = datetime.now(timezone.utc)
         since_1d = (now - timedelta(days=1)).isoformat()
