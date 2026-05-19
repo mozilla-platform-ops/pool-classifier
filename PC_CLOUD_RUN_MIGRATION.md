@@ -198,11 +198,33 @@ bash pc_fetch_data.sh
 
 ---
 
-### ⬜ Phase 4 — Terraform
+### ✅ Phase 4 — Terraform (DONE)
 
-Clone `~/git/hangar/terraform/` and adapt for pool-classifier. Flat root config, no modules.
+Flat root config under `worker_health/pool_classifier_web/terraform/`, mirroring `~/git/hangar/terraform/` with the noted deltas.
 
-**Files** (mirroring hangar, with noted deltas):
+**Changes made:**
+
+- **`main.tf`** — providers, required APIs incl. `cloudscheduler.googleapis.com`, `data.google_project`
+- **`variables.tf`** — `project_id`, `region` (default `us-west1`), `domain`, `db_password`, IAP OAuth client id/secret, `iap_authorized_members` (default `["domain:mozilla.com"]`), `cloud_run_min_instances` (default 0 — Scheduler wakes the service), `cloud_run_max_instances`, `cloud_run_image`, `pools` (list of `{id, provisioner, worker_type, schedule}`), `scheduler_attempt_deadline` (default `1800s`)
+- **`outputs.tf`** — `load_balancer_ip`, `artifact_registry_hostname`, `cloud_run_url`, `db_private_ip` (sensitive), `populate_secrets_commands`
+- **`network.tf`** — VPC, subnet (`10.9.0.0/24`), Service Networking peering, Serverless VPC Access connector
+- **`sql.tf`** — Postgres 16 REGIONAL HA, private IP, SSL-only, PITR, `deletion_protection_enabled = true`; db `pool_classifier`, user `pc`
+- **`secrets.tf`** — two secrets: `pc-db-url` (TF-populated from SQL private IP + `db_password`), `pc-tc-token` (manual `gcloud secrets versions add`) <!-- pragma: allowlist secret -->
+- **`artifact_registry.tf`** — Docker repo `pool-classifier`, keep-last-10 cleanup
+- **`iam.tf`** — runtime SA `pool-classifier-run` (secret accessor, cloudsql.client, log writer, AR reader); scheduler SA `pool-classifier-scheduler` (`roles/run.invoker` on the Cloud Run service); Cloud Build SA roles; IAP binding on the default backend to `var.iap_authorized_members`
+- **`run.tf`** — Cloud Run v2; `ingress = INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER`; `timeout = 1800s`; `cpu_idle = true` (no in-process scheduler); env: `DATABASE_URL`, `TC_TOKEN_JSON`, `TC_ROOT_URL`, `POOLS_FILE`, `LOG_JSON`
+- **`armor.tf`** — Cloud Armor: 100 req/min/IP throttle + OWASP XSS/SQLi/RFI rules + default allow
+- **`lb.tf`** — global IP, managed SSL cert, serverless NEG, **two backends sharing the NEG**: `pc` (IAP-protected default) and `pc_classify` (no IAP); URL map `path_matcher` routes `/classify/*` → `pc_classify`, everything else → `pc`; HTTPS forwarding rule + HTTP→HTTPS redirect
+- **`scheduler.tf`** — `for_each` over `var.pools`, one `google_cloud_scheduler_job` per pool, POST to `https://${domain}/classify/${provisioner}/${worker_type}`, OIDC via scheduler SA, `attempt_deadline = var.scheduler_attempt_deadline`
+- **`terraform.tfvars.example`** — example values + all enabled `pools.yaml` entries pre-populated
+
+**Notes:**
+
+- Scheduler hits the LB (not the Cloud Run URL directly) — Cloud Run ingress is `INTERNAL_LOAD_BALANCER`. The `/classify/*` URL-map path-matcher routes to a no-IAP backend pointed at the same NEG. The app validates the OIDC bearer to keep `/classify/*` honest.
+- `cloud_run_min_instances = 0` is fine: classify cycles are infrequent and tolerate cold start. Bump to 1 if oldest-data lag becomes a concern.
+- Keep `terraform.tfvars` `pools` in sync with `pools.yaml`. Disabled pools (`enabled: false`) should NOT appear in `var.pools` — they have no Scheduler job.
+
+**Files in original spec (kept for reference):**
 
 | File | Notes vs hangar |
 |---|---|
