@@ -60,6 +60,7 @@ def _humanize_cron(expr: str) -> str:
 
 
 def create_app() -> Flask:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = Flask(__name__)
     app.jinja_env.filters["humanize_cron"] = _humanize_cron
 
@@ -85,20 +86,45 @@ def create_app() -> Flask:
         now_dt = datetime.now(timezone.utc)
         now = now_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
         since_1h = (now_dt.replace(microsecond=0) - timedelta(hours=1)).isoformat()
+        since_24h = (now_dt.replace(microsecond=0) - timedelta(hours=24)).isoformat()
         rows = []
-        for pool in registry.all_pools():
+        for pool in registry.all_pools_including_disabled():
+            if not pool.enabled:
+                rows.append(
+                    {
+                        "pool": pool,
+                        "os": detect_os(pool),
+                        "alerting": None,
+                        "oldest": None,
+                        "workers": None,
+                        "errors_per_host_1h": None,
+                        "success_rate_1h": None,
+                        "errors_per_host_24h": None,
+                        "success_rate_24h": None,
+                    },
+                )
+                continue
             try:
                 pc = _get_classifier(pool.provisioner, pool.worker_type)
                 alerting = pc.storage.count_alerting(CONSECUTIVE_FAILURE_ALERT) if pc else None
                 oldest = pc.storage.oldest_classified_at() if pc else None
                 workers = pc.storage.count_workers() if pc else None
-                errors_1h = pc.storage.count_recent_errors(since_1h) if pc else None
+
+                def _rates(since):
+                    errors = pc.storage.count_recent_errors(since)
+                    successes = pc.storage.count_recent_successes(since)
+                    eph = round(errors / workers, 2) if workers and errors is not None else None
+                    total = (errors or 0) + (successes or 0)
+                    sr = round(successes / total * 100, 1) if total > 0 else None
+                    return eph, sr
+
+                errors_per_host_1h, success_rate_1h = _rates(since_1h) if pc else (None, None)
+                errors_per_host_24h, success_rate_24h = _rates(since_24h) if pc else (None, None)
             except Exception as e:
                 logger.warning("Failed to fetch summary for pool %s/%s: %s", pool.provisioner, pool.worker_type, e)
-                alerting = None
-                oldest = None
-                workers = None
-                errors_1h = None
+                alerting = oldest = workers = None
+                errors_per_host_1h = success_rate_1h = None
+                errors_per_host_24h = success_rate_24h = None
             rows.append(
                 {
                     "pool": pool,
@@ -106,18 +132,36 @@ def create_app() -> Flask:
                     "alerting": alerting,
                     "oldest": oldest,
                     "workers": workers,
-                    "errors_1h": errors_1h,
+                    "errors_per_host_1h": errors_per_host_1h,
+                    "success_rate_1h": success_rate_1h,
+                    "errors_per_host_24h": errors_per_host_24h,
+                    "success_rate_24h": success_rate_24h,
                 },
             )
         return render_template("index.html", pools=rows, generated=now)
 
     @app.get("/pools/<provisioner>/<worker_type>")
     def pool_html(provisioner: str, worker_type: str):
+        pool = registry.get_pool(provisioner, worker_type)
+        if pool is None:
+            abort(404)
+        if not pool.enabled:
+            reason_html = f"<p><strong>Reason:</strong> {pool.reason}</p>" if pool.reason else ""
+            return Response(
+                f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{pool.worker_type} — disabled</title>"
+                f"<style>body{{font-family:monospace;background:#111;color:#ccc;padding:1.5rem}}"
+                f"h1{{color:#f90}}a{{color:#888}}</style></head><body>"
+                f"<p><a href='/'>← back</a></p>"
+                f"<h1>{pool.worker_type}</h1>"
+                f"<p>This pool is <strong>disabled</strong> and is not being classified.</p>"
+                f"{reason_html}"
+                f"</body></html>",
+                content_type="text/html; charset=utf-8",
+            )
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:
             abort(404)
-        pool = registry.get_pool(provisioner, worker_type)
-        os_label = detect_os(pool) if pool else ""
+        os_label = detect_os(pool)
         return Response(pc.render_html(os_label=os_label), content_type="text/html; charset=utf-8")
 
     @app.get("/pools/<provisioner>/<worker_type>/overview.md")

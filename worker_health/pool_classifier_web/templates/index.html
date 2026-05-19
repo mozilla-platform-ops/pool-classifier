@@ -23,6 +23,9 @@
   tr:hover td { background: #1a1a1a; }
   .pool-name { color: #fff; font-size: 1.05em; }
   .no-data { color: #555; font-style: italic; }
+  .disabled-row td { color: #444; }
+  .disabled-label { color: #666; font-style: italic; font-size: .9em; }
+  .disabled-reason { color: #555; font-size: .85em; font-style: italic; }
 </style>
 </head>
 <body>
@@ -41,15 +44,23 @@
       <th>OS</th>
       <th>Hosts</th>
       <th>Alerting</th>
-      <th>Errors (1h)</th>
+      <th>Err/Host (1h)</th>
+      <th>Success % (1h)</th>
+      <th>Err/Host (24h)</th>
+      <th>Success % (24h)</th>
       <th>Oldest Data</th>
       <th>Schedule</th>
     </tr>
   </thead>
   <tbody>
     {% for row in pools %}
-    <tr>
-      <td><a class="pool-name" href="/pools/{{ row.pool.provisioner }}/{{ row.pool.worker_type }}">{{ row.pool.worker_type }}</a></td>
+    <tr{% if not row.pool.enabled %} class="disabled-row"{% endif %}>
+      <td>
+        <a class="pool-name" href="/pools/{{ row.pool.provisioner }}/{{ row.pool.worker_type }}"
+          {% if not row.pool.enabled %}style="color:#555"{% endif %}>{{ row.pool.worker_type }}</a>
+        {% if not row.pool.enabled %}<span class="disabled-label"> — disabled</span>{% endif %}
+        {% if not row.pool.enabled and row.pool.reason %}<br><span class="disabled-reason">{{ row.pool.reason }}</span>{% endif %}
+      </td>
       <td>{{ row.pool.provisioner }}</td>
       <td>{{ row.os }}</td>
       <td>
@@ -62,9 +73,26 @@
         {% else %}<span class="ok">0</span>{% endif %}
       </td>
       <td>
-        {% if row.errors_1h is none %}<span class="no-data">—</span>
-        {% elif row.errors_1h > 0 %}<span class="warn">{{ row.errors_1h }}</span>
+        {% if row.errors_per_host_1h is none %}<span class="no-data">—</span>
+        {% elif row.errors_per_host_1h > 0 %}<span class="warn">{{ row.errors_per_host_1h }}</span>
         {% else %}<span class="ok">0</span>{% endif %}
+      </td>
+      <td>
+        {% if row.success_rate_1h is none %}<span class="no-data">—</span>
+        {% elif row.success_rate_1h >= 95 %}<span class="ok">{{ row.success_rate_1h }}%</span>
+        {% elif row.success_rate_1h >= 80 %}<span class="warn">{{ row.success_rate_1h }}%</span>
+        {% else %}<span class="bad">{{ row.success_rate_1h }}%</span>{% endif %}
+      </td>
+      <td>
+        {% if row.errors_per_host_24h is none %}<span class="no-data">—</span>
+        {% elif row.errors_per_host_24h > 0 %}<span class="warn">{{ row.errors_per_host_24h }}</span>
+        {% else %}<span class="ok">0</span>{% endif %}
+      </td>
+      <td>
+        {% if row.success_rate_24h is none %}<span class="no-data">—</span>
+        {% elif row.success_rate_24h >= 95 %}<span class="ok">{{ row.success_rate_24h }}%</span>
+        {% elif row.success_rate_24h >= 80 %}<span class="warn">{{ row.success_rate_24h }}%</span>
+        {% else %}<span class="bad">{{ row.success_rate_24h }}%</span>{% endif %}
       </td>
       <td>
         {% if row.oldest %}{{ row.oldest[:19] | replace("T", " ") }} UTC

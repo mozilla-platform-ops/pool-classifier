@@ -163,6 +163,12 @@ class SqliteStorage:
             (since,),
         ).fetchone()[0]
 
+    def count_recent_successes(self, since: str) -> int:
+        return self.db.execute(
+            "SELECT COUNT(*) FROM task_results WHERE run_state = 'completed' AND classified_at >= ?",
+            (since,),
+        ).fetchone()[0]
+
     def count_workers_without_group(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM workers WHERE worker_group IS NULL").fetchone()[0]
 
@@ -744,6 +750,15 @@ class PostgresStorage:
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM task_results"
                 " WHERE pool_id = %s AND run_state IN ('failed','exception') AND classified_at >= %s",
+                (self.pool_id, since),
+            )
+            return cur.fetchone()["cnt"]
+
+    def count_recent_successes(self, since: str) -> int:
+        with self._db.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM task_results"
+                " WHERE pool_id = %s AND run_state = 'completed' AND classified_at >= %s",
                 (self.pool_id, since),
             )
             return cur.fetchone()["cnt"]

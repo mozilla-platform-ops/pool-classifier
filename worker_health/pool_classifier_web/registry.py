@@ -18,6 +18,8 @@ class Pool:
     provisioner: str
     worker_type: str
     schedule: str
+    enabled: bool = True
+    reason: str = ""
 
 
 def _load_pools() -> Tuple[List[Pool], dict]:
@@ -44,6 +46,10 @@ def detect_os(pool: "Pool") -> str:
 
 
 def all_pools() -> List[Pool]:
+    return [p for p in _pools if p.enabled]
+
+
+def all_pools_including_disabled() -> List[Pool]:
     return _pools
 
 
