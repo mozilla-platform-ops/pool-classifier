@@ -125,3 +125,8 @@ patterns:
     regex: "\\[mozharness: \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d+Z\\] Finished install step \\(failed\\)"
     severity: high
     tags: [android]
+
+  - name: task-aborted-max-run-time
+    regex: "Task aborted - max run time exceeded"
+    severity: high
+    tags: [android]
