@@ -34,3 +34,4 @@ rich = "*"
 psycopg = {extras = ["binary"], version = "*"}
 flask = "*"
 gunicorn = "*"
+google-auth = "*"

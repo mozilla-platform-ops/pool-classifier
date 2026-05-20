@@ -74,6 +74,18 @@ resource "google_cloud_run_v2_service" "pc" {
         name  = "LOG_JSON"
         value = "true"
       }
+
+      # OIDC validation for /classify/* — Cloud Scheduler signs each request
+      # with a JWT (aud=audience, email=scheduler SA). Unset audience disables
+      # validation, so always set it in production.
+      env {
+        name  = "CLASSIFY_OIDC_AUDIENCE"
+        value = "https://${var.domain}/"
+      }
+      env {
+        name  = "CLASSIFY_OIDC_SA_EMAIL"
+        value = google_service_account.pc_scheduler.email
+      }
     }
   }
 

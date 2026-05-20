@@ -5,3 +5,4 @@ taskcluster
 pyyaml
 psycopg[binary]
 sentry-sdk
+google-auth

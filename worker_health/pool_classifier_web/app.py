@@ -10,6 +10,7 @@ from flask import Flask, Response, abort, jsonify, render_template
 
 from worker_health.pool_classifier import CONSECUTIVE_FAILURE_ALERT, PoolClassifier
 from worker_health.pool_classifier_web import registry
+from worker_health.pool_classifier_web.auth import require_scheduler_oidc
 from worker_health.pool_classifier_web.registry import detect_os
 from worker_health.pool_classifier_web.storage import ClassifyLockBusy, PostgresStorage
 
@@ -172,6 +173,7 @@ def create_app() -> Flask:
         return Response(pc.render_md(), content_type="text/markdown; charset=utf-8")
 
     @app.post("/classify/<provisioner>/<worker_type>")
+    @require_scheduler_oidc
     def classify(provisioner: str, worker_type: str):
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:

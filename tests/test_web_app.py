@@ -119,3 +119,17 @@ def test_unclassified_log_found(client):
 def test_unclassified_log_missing_returns_404(client):
     r = client.get(f"{POOL_URL_PREFIX}/unclassified/no-such-task.log")
     assert r.status_code == 404
+
+
+def test_classify_missing_oidc_returns_401(client, monkeypatch):
+    """With CLASSIFY_OIDC_AUDIENCE set, a request without a Bearer token is rejected."""
+    monkeypatch.setenv("CLASSIFY_OIDC_AUDIENCE", "https://example.com/")
+    r = client.post(CLASSIFY_URL)
+    assert r.status_code == 401
+
+
+def test_classify_invalid_oidc_returns_401(client, monkeypatch):
+    """A garbage Bearer token fails verification."""
+    monkeypatch.setenv("CLASSIFY_OIDC_AUDIENCE", "https://example.com/")
+    r = client.post(CLASSIFY_URL, headers={"Authorization": "Bearer not-a-real-jwt"})
+    assert r.status_code == 401

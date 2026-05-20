@@ -243,9 +243,19 @@ Flat root config under `worker_health/pool_classifier_web/terraform/`, mirroring
 
 ---
 
-### ⬜ Phase 5 — Containerize & deploy
+### 🟡 Phase 5 — Containerize & deploy (IN PROGRESS)
 
-**To do:**
+**Done so far — OIDC validation on `/classify/*`:**
+
+The `/classify/*` URL path bypasses IAP at the LB so Cloud Scheduler can reach it. Without app-level checks the endpoint would be open to the internet (rate-limited, but open). Added Google OIDC validation that mirrors what Scheduler already signs in `scheduler.tf`.
+
+- **`worker_health/pool_classifier_web/auth.py`** — new. `require_scheduler_oidc` decorator: reads `Authorization: Bearer <jwt>`, calls `google.oauth2.id_token.verify_oauth2_token` with `aud = CLASSIFY_OIDC_AUDIENCE`, then optionally checks `email == CLASSIFY_OIDC_SA_EMAIL`. No-op when `CLASSIFY_OIDC_AUDIENCE` is unset (local dev).
+- **`worker_health/pool_classifier_web/app.py`** — `/classify/<provisioner>/<worker_type>` wrapped with `@require_scheduler_oidc`.
+- **`worker_health/pool_classifier_web/requirements.txt`** + **`Pipfile`** — added `google-auth`.
+- **`worker_health/pool_classifier_web/terraform/run.tf`** — env vars `CLASSIFY_OIDC_AUDIENCE = "https://${var.domain}/"` and `CLASSIFY_OIDC_SA_EMAIL = google_service_account.pc_scheduler.email`. Audience matches the `oidc_token.audience` in `scheduler.tf`.
+- **`tests/test_web_app.py`** — added `test_classify_missing_oidc_returns_401` and `test_classify_invalid_oidc_returns_401`. All 9 web tests pass.
+
+**Still to do:**
 
 - **`worker_health/Dockerfile`** — `python:3.11-slim`, install from `requirements.txt`, `pip install -e .`, gunicorn entrypoint
 - **`worker_health/cloudbuild.yaml`** — build → push to Artifact Registry → `gcloud run deploy` (mirrors hangar pattern)
