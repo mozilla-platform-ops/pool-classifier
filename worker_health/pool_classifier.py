@@ -1079,7 +1079,7 @@ class PoolClassifier:
             "  ul.offenders { margin: 0 0 .6rem 1.2rem; padding: 0; list-style: none; font-size: .85em; color: #aaa; }",
             "  ul.offenders li { padding: .1rem 0; }",
             "  a { color: inherit; text-decoration: none; }",
-            "  a:visited { color: #888; }",
+            "  a:visited { color: inherit; }",
             "  a:hover { text-decoration: underline; }",
             "  .hm-wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 2rem; margin-bottom: 2rem; }",
             "  .hm-block { overflow-x: auto; }",
