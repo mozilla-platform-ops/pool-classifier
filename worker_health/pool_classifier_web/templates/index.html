@@ -118,7 +118,10 @@
     rows.sort((a, b) => {
       const av = cellVal(a, idx), bv = cellVal(b, idx);
       const an = parseFloat(av), bn = parseFloat(bv);
-      const cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : av.localeCompare(bv);
+      const aNum = !isNaN(an), bNum = !isNaN(bn);
+      // In numeric columns, push "—" / blank rows to the end regardless of direction.
+      if (aNum !== bNum) return aNum ? -1 : 1;
+      const cmp = aNum ? an - bn : av.localeCompare(bv);
       return asc ? cmp : -cmp;
     });
     rows.forEach(r => tbody.appendChild(r));
