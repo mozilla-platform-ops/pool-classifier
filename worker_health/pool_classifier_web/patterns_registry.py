@@ -13,6 +13,7 @@ import yaml
 _DEFAULT_PATTERNS_FILE = Path(__file__).parent / "patterns.yaml"
 
 _VALID_SEVERITIES = {"critical", "high", "low"}
+_SEVERITY_RANK = {"critical": 0, "high": 1, "low": 2}
 
 
 @dataclass
@@ -64,8 +65,13 @@ _patterns, _severity_map = _load_patterns()
 
 
 def all_patterns() -> List[Pattern]:
-    """Return enabled patterns in match order (first match wins)."""
-    return [p for p in _patterns if p.enabled]
+    """Return enabled patterns in match order: highest severity first, file order within a tier.
+
+    Callers do first-match-wins; the sort ensures a critical pattern always beats a
+    high pattern even if the high pattern appears earlier in patterns.yaml.
+    """
+    enabled = [p for p in _patterns if p.enabled]
+    return sorted(enabled, key=lambda p: _SEVERITY_RANK[p.severity])
 
 
 def severity_of(category_name: str) -> Optional[str]:

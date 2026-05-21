@@ -1,6 +1,8 @@
 # Failure classification patterns for pool_classifier.
 # Rules:
-#   - Patterns are checked in order; first match wins.
+#   - Patterns are sorted by severity (critical > high > low), then file order
+#     within a tier; the first match wins. A critical pattern always beats a
+#     high pattern even if the high pattern appears earlier in this file.
 #   - `severity` controls heatmap cell color: critical (red) > high (orange) > low (blue).
 #   - `enabled` defaults to true; set false to mute a pattern without deleting it.
 #   - `tags` are informational only (not used for filtering yet).
@@ -130,3 +132,8 @@ patterns:
     regex: "Task aborted - max run time exceeded"
     severity: high
     tags: [android]
+
+  - name: build-commands-failed
+    regex: "The following build commands failed"
+    severity: high
+    description: One or more build commands in the task exited non-zero.
