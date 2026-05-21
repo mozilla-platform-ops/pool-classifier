@@ -26,6 +26,11 @@
   .disabled-row td { color: #444; }
   .disabled-label { color: #666; font-style: italic; font-size: .9em; }
   .disabled-reason { color: #555; font-size: .85em; font-style: italic; }
+  .os-filters { margin: 0 0 1rem; display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; font-size: .85em; }
+  .os-filters .label { color: #666; margin-right: .25rem; }
+  .os-filters .chip { padding: .2rem .55rem; border-radius: 3px; background: #1a1a1a; color: #aaa; cursor: pointer; border: 1px solid #2a2a2a; user-select: none; }
+  .os-filters .chip:hover { color: #fff; border-color: #444; }
+  .os-filters .chip.active { color: #f90; border-color: #f90; }
 </style>
 </head>
 <body>
@@ -35,6 +40,8 @@
 <span style="color:#ccc;font-size:1.1rem;letter-spacing:.02em;position:relative;top:4px">Dashboard</span>
 </div>
 <p class="gen">Generated: {{ generated }}</p>
+
+<div id="os-filters" class="os-filters"><span class="label">OS:</span></div>
 
 <table id="pools-table">
   <thead>
@@ -54,7 +61,7 @@
   </thead>
   <tbody>
     {% for row in pools %}
-    <tr{% if not row.pool.enabled %} class="disabled-row"{% endif %}>
+    <tr data-os="{{ row.os }}"{% if not row.pool.enabled %} class="disabled-row"{% endif %}>
       <td>
         <a class="pool-name" href="/pools/{{ row.pool.provisioner }}/{{ row.pool.worker_type }}"
           {% if not row.pool.enabled %}style="color:#555"{% endif %}>{{ row.pool.worker_type }}</a>
@@ -137,6 +144,41 @@
     const saved = JSON.parse(localStorage.getItem(SORT_KEY));
     if (saved) applySort(saved.idx, saved.asc);
   } catch(_) {}
+
+  const FILTER_KEY = 'pc-index-os';
+  function buildOsFilters() {
+    const container = document.getElementById('os-filters');
+    const rows = [...document.querySelectorAll('#pools-table tbody tr')];
+    const counts = {};
+    rows.forEach(r => {
+      const os = r.dataset.os || '';
+      if (os) counts[os] = (counts[os] || 0) + 1;
+    });
+    const oses = Object.keys(counts).sort();
+    const chips = [['', 'all', rows.length], ...oses.map(o => [o, o, counts[o]])];
+    chips.forEach(([v, label, n]) => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.dataset.os = v;
+      chip.textContent = `${label} (${n})`;
+      chip.addEventListener('click', () => applyFilter(v));
+      container.appendChild(chip);
+    });
+  }
+  function applyFilter(os) {
+    document.querySelectorAll('#pools-table tbody tr').forEach(r => {
+      const match = !os || r.dataset.os === os;
+      r.style.display = match ? '' : 'none';
+    });
+    document.querySelectorAll('#os-filters .chip').forEach(c => {
+      c.classList.toggle('active', c.dataset.os === os);
+    });
+    try { localStorage.setItem(FILTER_KEY, os); } catch(_) {}
+  }
+  buildOsFilters();
+  let savedFilter = '';
+  try { savedFilter = localStorage.getItem(FILTER_KEY) || ''; } catch(_) {}
+  applyFilter(savedFilter);
 </script>
 </body>
 </html>
