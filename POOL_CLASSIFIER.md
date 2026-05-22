@@ -42,18 +42,14 @@ Make sure you have a Taskcluster token at `~/.tc_token` (JSON with `clientId` an
 ### Start Postgres + apply migrations
 
 ```sh
-# Start postgres (port 5433 on localhost, data persisted to ./pgdata)
-docker compose -f worker_health/pool_classifier_web/docker-compose.yml up -d postgres
-
-# Apply migrations
-docker compose -f worker_health/pool_classifier_web/docker-compose.yml run --rm migrate
+./pc_db.sh init      # start postgres + apply migrations (one-step)
+./pc_db.sh status    # show container state
+./pc_db.sh psql      # interactive psql shell
+./pc_db.sh down      # stop postgres
+./pc_db.sh           # list all subcommands
 ```
 
-To stop:
-
-```sh
-docker compose -f worker_health/pool_classifier_web/docker-compose.yml down
-```
+Under the hood this wraps `docker compose -f worker_health/pool_classifier_web/docker-compose.yml ...`. Postgres listens on `127.0.0.1:5433`; data persists to `./pgdata/` (bind mount — `docker compose down -v` will NOT destroy it, delete the directory by hand for a fresh DB).
 
 `./pgdata/` is a bind mount, so `docker compose down -v` will NOT destroy it. Delete the directory by hand if you want a fresh DB.
 
