@@ -37,6 +37,7 @@
   .os-filters .chip { padding: .2rem .55rem; border-radius: 3px; background: #1a1a1a; color: #aaa; cursor: pointer; border: 1px solid #2a2a2a; user-select: none; }
   .os-filters .chip:hover { color: #fff; border-color: #444; }
   .os-filters .chip.active { color: #f90; border-color: #f90; }
+  .footer { margin: 2rem 0 1rem; color: #555; font-size: .8em; text-align: center; }
 </style>
 </head>
 <body>
@@ -49,7 +50,6 @@
   <a class="current" href="/">Dashboard</a><span class="sep">|</span>
   <a href="/patterns">Patterns</a>
 </nav>
-<p class="gen">Generated: {{ generated }}</p>
 
 <div id="os-filters" class="os-filters"><span class="label">OS:</span></div>
 
@@ -190,5 +190,6 @@
   try { savedFilter = localStorage.getItem(FILTER_KEY) || ''; } catch(_) {}
   applyFilter(savedFilter);
 </script>
+<p class="footer">Generated: {{ generated }}</p>
 </body>
 </html>
