@@ -12,7 +12,8 @@ from worker_health.pool_classifier import CONSECUTIVE_FAILURE_ALERT, PoolClassif
 from worker_health.pool_classifier_web import registry
 from worker_health.pool_classifier_web.auth import require_scheduler_oidc
 from worker_health.pool_classifier_web.registry import detect_os
-from worker_health.pool_classifier_web.storage import ClassifyLockBusy, PostgresStorage
+from worker_health.pool_classifier_web import patterns_registry
+from worker_health.pool_classifier_web.storage import ClassifyLockBusy, PostgresStorage, count_category_hits_global
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,27 @@ def create_app() -> Flask:
                 },
             )
         return render_template("index.html", pools=rows, generated=now)
+
+    @app.get("/patterns")
+    def patterns():
+        since = (datetime.now(timezone.utc) - timedelta(hours=24)).replace(microsecond=0).isoformat()
+        hits: dict[str, int] = {}
+        try:
+            dsn = os.environ.get("DATABASE_URL")
+            if dsn:
+                hits = count_category_hits_global(dsn, since)
+        except Exception as e:
+            logger.warning("patterns: hit-count query failed: %s", e)
+        # All patterns, including disabled — the page is for inspecting config.
+        all_pats = patterns_registry._patterns  # noqa: SLF001  (intentional: surface disabled too)
+        sev_rank = {"critical": 0, "high": 1, "low": 2}
+        rows = sorted(all_pats, key=lambda p: sev_rank.get(p.severity, 99))
+        return render_template(
+            "patterns.html",
+            patterns=rows,
+            hits=hits,
+            generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        )
 
     @app.get("/pools/<provisioner>/<worker_type>")
     def pool_html(provisioner: str, worker_type: str):

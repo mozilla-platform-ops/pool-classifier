@@ -121,6 +121,15 @@ def test_unclassified_log_missing_returns_404(client):
     assert r.status_code == 404
 
 
+def test_patterns_renders(client):
+    r = client.get("/patterns")
+    assert r.status_code == 200
+    # An always-present pattern from patterns.yaml.
+    assert b"adb_no_ack" in r.data
+    # Anchor id on rows.
+    assert b'id="pattern-adb_no_ack"' in r.data
+
+
 def test_classify_missing_oidc_returns_401(client, monkeypatch):
     """With CLASSIFY_OIDC_AUDIENCE set, a request without a Bearer token is rejected."""
     monkeypatch.setenv("CLASSIFY_OIDC_AUDIENCE", "https://example.com/")

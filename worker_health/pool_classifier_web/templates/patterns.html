@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pool Classifier — Patterns</title>
+<style>
+  body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }
+  h1 { color: #fff; }
+  p.gen { color: #666; font-size: .85em; margin-bottom: .5rem; }
+  a { color: inherit; text-decoration: none; }
+  a:visited { color: inherit; }
+  a:hover { text-decoration: underline; }
+  .nav { margin: 0 0 1rem; color: #666; font-size: .85em; }
+  .nav a { color: #58a6ff; }
+  .blurb { color: #888; font-size: .85em; max-width: 70rem; margin: 0 0 1rem; }
+  .search { margin: 0 0 1rem; }
+  .search input { background: #1a1a1a; color: #ccc; border: 1px solid #333; padding: .35rem .6rem; border-radius: 3px; font-family: monospace; width: 24rem; }
+  .search input:focus { outline: none; border-color: #58a6ff; }
+  table { border-collapse: collapse; width: 100%; }
+  th { background: #222; color: #aaa; text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #444; }
+  td { padding: .4rem .8rem; border-bottom: 1px solid #2a2a2a; vertical-align: top; }
+  tr:target { background: #2a2a1a; }
+  tr:hover td { background: #1a1a1a; }
+  tr.disabled td { color: #555; }
+  tr.disabled .name { text-decoration: line-through; }
+  .name { color: #fff; }
+  .sev-critical { color: #f44; }
+  .sev-high     { color: #f90; }
+  .sev-low      { color: #58a6ff; }
+  .regex { color: #ccc; font-family: monospace; background: #1a1a1a; padding: .15rem .4rem; border-radius: 3px; white-space: pre-wrap; word-break: break-all; }
+  .tag { display: inline-block; background: #1a1a1a; color: #888; padding: .05rem .4rem; border-radius: 2px; font-size: .8em; margin-right: .25rem; }
+  .hits { text-align: right; }
+  .hits-zero { color: #444; }
+  .anchor { color: #555; font-size: .8em; margin-left: .5em; }
+  tr:hover .anchor { color: #58a6ff; }
+</style>
+</head>
+<body>
+<div class="nav"><a href="/">← Dashboard</a> · <span>Patterns</span></div>
+<h1>Classifier patterns</h1>
+<p class="blurb">
+  Patterns are sorted by severity (critical → high → low), then file order within a tier.
+  Matching is first-match-wins, so a critical pattern always beats a high pattern.
+  Edit <code>worker_health/pool_classifier_web/patterns.yaml</code> to change rules.
+  Hit counts cover the last 24h across all pools.
+</p>
+<p class="gen">Generated: {{ generated }}</p>
+
+<div class="search">
+  <input id="search" type="text" placeholder="filter by name / regex / description / tag…" autocomplete="off">
+</div>
+
+<table id="patterns-table">
+  <thead>
+    <tr>
+      <th>Severity</th>
+      <th>Name</th>
+      <th>Regex</th>
+      <th class="hits">Hits (24h)</th>
+      <th>Tags</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in patterns %}
+    <tr id="pattern-{{ p.name }}"{% if not p.enabled %} class="disabled"{% endif %}>
+      <td class="sev-{{ p.severity }}">{{ p.severity }}{% if not p.enabled %} (off){% endif %}</td>
+      <td>
+        <span class="name">{{ p.name }}</span>
+        <a class="anchor" href="#pattern-{{ p.name }}" title="link to this pattern">#</a>
+      </td>
+      <td><span class="regex">{{ p.regex }}</span></td>
+      <td class="hits{% if not hits.get(p.name) %} hits-zero{% endif %}">{{ hits.get(p.name, 0) }}</td>
+      <td>{% for t in p.tags %}<span class="tag">{{ t }}</span>{% endfor %}</td>
+      <td>{{ p.description }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<script>
+  const input = document.getElementById('search');
+  const rows = [...document.querySelectorAll('#patterns-table tbody tr')];
+  function applyFilter() {
+    const q = input.value.trim().toLowerCase();
+    rows.forEach(r => {
+      r.style.display = !q || r.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  }
+  input.addEventListener('input', applyFilter);
+  // If the URL has #pattern-foo, scroll to it after the page renders.
+  if (location.hash) {
+    const el = document.querySelector(location.hash);
+    if (el) el.scrollIntoView({behavior: 'instant', block: 'center'});
+  }
+</script>
+</body>
+</html>

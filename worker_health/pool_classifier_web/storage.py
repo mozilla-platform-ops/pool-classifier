@@ -388,6 +388,21 @@ def _to_iso(v) -> Optional[str]:
     return str(v)
 
 
+def count_category_hits_global(dsn: str, since_iso: str) -> Dict[str, int]:
+    """Return {category: count} across all pools for task_results.classified_at > since_iso."""
+    if psycopg is None:
+        raise ImportError("psycopg (psycopg[binary]) is required")
+    with psycopg.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT category, COUNT(*) FROM task_results"
+                " WHERE classified_at > %s AND category IS NOT NULL"
+                " GROUP BY category",
+                (since_iso,),
+            )
+            return {row[0]: row[1] for row in cur.fetchall()}
+
+
 class PostgresStorage:
     """Postgres-backed storage for a single pool. Intended for Cloud Run / Cloud SQL."""
 
