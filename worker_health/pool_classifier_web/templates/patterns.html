@@ -11,8 +11,12 @@
   a { color: inherit; text-decoration: none; }
   a:visited { color: inherit; }
   a:hover { text-decoration: underline; }
-  .nav { margin: 0 0 1rem; color: #666; font-size: .85em; }
-  .nav a { color: #58a6ff; }
+  .page-nav { display: flex; align-items: center; gap: 0; flex-wrap: wrap; width: fit-content; margin: 0 0 1rem; padding: .3rem .6rem; background: #1a1a1a; border-radius: 4px; font-size: .8em; }
+  .page-nav a { color: #58a6ff; padding: .2rem .6rem; border-radius: 3px; }
+  .page-nav a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }
+  .page-nav a.current { color: #ccc; cursor: default; }
+  .page-nav a.current:hover { background: transparent; }
+  .page-nav span.sep { color: #444; user-select: none; }
   .blurb { color: #888; font-size: .85em; max-width: 70rem; margin: 0 0 1rem; }
   .search { margin: 0 0 1rem; }
   .search input { background: #1a1a1a; color: #ccc; border: 1px solid #333; padding: .35rem .6rem; border-radius: 3px; font-family: monospace; width: 24rem; }
@@ -37,8 +41,15 @@
 </style>
 </head>
 <body>
-<div class="nav"><a href="/">← Dashboard</a> · <span>Patterns</span></div>
-<h1>Classifier patterns</h1>
+<div style="display:flex;align-items:center;gap:1.5rem;margin:0 0 1.5rem">
+<a href="/" style="text-decoration:none"><pre style="color:#0ff;line-height:1;margin:0;font-size:1rem"> ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀
+ ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ </pre></a>
+<span style="color:#ccc;font-size:1.1rem;letter-spacing:.02em;position:relative;top:4px">Patterns</span>
+</div>
+<nav class="page-nav">
+  <a href="/">Dashboard</a><span class="sep">|</span>
+  <a class="current" href="/patterns">Patterns</a>
+</nav>
 <p class="blurb">
   Patterns are sorted by severity (critical → high → low), then file order within a tier.
   Matching is first-match-wins, so a critical pattern always beats a high pattern.

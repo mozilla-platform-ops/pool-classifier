@@ -26,6 +26,12 @@
   .disabled-row td { color: #444; }
   .disabled-label { color: #666; font-style: italic; font-size: .9em; }
   .disabled-reason { color: #555; font-size: .85em; font-style: italic; }
+  .page-nav { display: flex; align-items: center; gap: 0; flex-wrap: wrap; width: fit-content; margin: 0 0 1rem; padding: .3rem .6rem; background: #1a1a1a; border-radius: 4px; font-size: .8em; }
+  .page-nav a { color: #58a6ff; padding: .2rem .6rem; border-radius: 3px; }
+  .page-nav a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }
+  .page-nav a.current { color: #ccc; cursor: default; }
+  .page-nav a.current:hover { background: transparent; }
+  .page-nav span.sep { color: #444; user-select: none; }
   .os-filters { margin: 0 0 1rem; display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; font-size: .85em; }
   .os-filters .label { color: #666; margin-right: .25rem; }
   .os-filters .chip { padding: .2rem .55rem; border-radius: 3px; background: #1a1a1a; color: #aaa; cursor: pointer; border: 1px solid #2a2a2a; user-select: none; }
@@ -39,7 +45,11 @@
  ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ </pre></a>
 <span style="color:#ccc;font-size:1.1rem;letter-spacing:.02em;position:relative;top:4px">Dashboard</span>
 </div>
-<p class="gen">Generated: {{ generated }} · <a href="/patterns" style="color:#58a6ff">patterns</a></p>
+<nav class="page-nav">
+  <a class="current" href="/">Dashboard</a><span class="sep">|</span>
+  <a href="/patterns">Patterns</a>
+</nav>
+<p class="gen">Generated: {{ generated }}</p>
 
 <div id="os-filters" class="os-filters"><span class="label">OS:</span></div>
 
