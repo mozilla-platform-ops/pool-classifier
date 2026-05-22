@@ -1043,6 +1043,7 @@ class PoolClassifier:
             "  h1 { color: #fff; }",
             "  h2 { color: #f90; margin-top: 2rem; }",
             "  p.gen { color: #666; font-size: .85em; margin-bottom: .5rem; }",
+            "  .footer { margin: 2rem 0 1rem; color: #555; font-size: .8em; text-align: center; }",
             "  .tz-toggle { margin: 1rem 0 .75rem; font-size: .85em; color: #aaa; }",
             "  .tz-toggle label { margin-right: 1rem; cursor: pointer; }",
             "  .page-nav { display: flex; align-items: center; gap: 0; flex-wrap: wrap; width: fit-content; margin: 0 0 1.5rem; padding: .3rem .6rem; background: #1a1a1a; border-radius: 4px; font-size: .8em; }",
@@ -1118,7 +1119,6 @@ class PoolClassifier:
             )
             + "</span>",
             "</div>",
-            f'<p class="gen">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
         ]
 
         if workers:
@@ -1461,6 +1461,7 @@ class PoolClassifier:
             "  }",
             "  document.querySelectorAll('th').forEach(th => th.addEventListener('click', () => sortTable(th)));",
             "</script>",
+            f'<p class="footer">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
             "</body>",
             "</html>",
             "",
