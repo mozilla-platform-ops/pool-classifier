@@ -1,0 +1,51 @@
+# Build → push → deploy the pool classifier to Cloud Run.
+# Submit from the worker_health project dir (the build context):
+#   gcloud builds submit --config cloudbuild.yaml \
+#       --substitutions=_REGION=us-west1 .
+#
+# The Artifact Registry repo (pool-classifier) and the Cloud Run service
+# (pool-classifier) are created by terraform; this only builds and rolls out
+# new revisions.
+steps:
+  # Build the image (uses the project dir as context, Dockerfile at its root).
+  - name: "gcr.io/cloud-builders/docker"
+    id: build-image
+    args:
+      - build
+      - --file=Dockerfile
+      - --tag=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:$COMMIT_SHA
+      - --tag=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:latest
+      - --cache-from=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:latest
+      - .
+
+  - name: "gcr.io/cloud-builders/docker"
+    id: push-image
+    waitFor: ["build-image"]
+    args:
+      - push
+      - --all-tags
+      - $_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app
+
+  # Roll out the new revision.
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
+    id: deploy
+    waitFor: ["push-image"]
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - pool-classifier
+      - --image=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:$COMMIT_SHA
+      - --region=$_REGION
+      - --quiet
+
+substitutions:
+  _REGION: us-west1
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+images:
+  - $_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:$COMMIT_SHA
+  - $_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:latest

@@ -1,0 +1,43 @@
+# Build context is the worker_health project dir. Keep it lean: only the
+# Python package and packaging metadata are needed to build the image.
+
+# Local Postgres data from docker-compose (large, root-owned, never wanted)
+worker_health/pool_classifier_web/pgdata/
+
+# Local classifier output / runner run dirs
+pool_classifier_results/
+sr_old_runs/
+sr_old_runs2/
+ur_*/
+sr_*/
+runner_run_*/
+
+# Python caches and build artifacts
+__pycache__/
+*.pyc
+*.pyo
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / coverage
+.pytest_cache/
+.coverage*
+htmlcov/
+tests/
+
+# Editor / VCS / OS
+.git/
+.gitignore
+.idea/
+.vscode/
+.ropeproject/
+.DS_Store
+
+# Docs and local helper scripts not needed at runtime
+*.md
+docker-compose.yml
+
+# ...but setup.py reads README.md at install time, so keep it.
+!README.md

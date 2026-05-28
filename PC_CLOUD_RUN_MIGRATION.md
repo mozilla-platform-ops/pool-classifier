@@ -255,10 +255,17 @@ The `/classify/*` URL path bypasses IAP at the LB so Cloud Scheduler can reach i
 - **`worker_health/pool_classifier_web/terraform/run.tf`** — env vars `CLASSIFY_OIDC_AUDIENCE = "https://${var.domain}/"` and `CLASSIFY_OIDC_SA_EMAIL = google_service_account.pc_scheduler.email`. Audience matches the `oidc_token.audience` in `scheduler.tf`.
 - **`tests/test_web_app.py`** — added `test_classify_missing_oidc_returns_401` and `test_classify_invalid_oidc_returns_401`. All 9 web tests pass.
 
+**Done so far — container image + build pipeline:**
+
+- **`worker_health/Dockerfile`** — `python:3.11-slim`; installs `requirements.txt` then `pip install --no-deps -e .` (editable install keeps `pools.yaml`/`patterns.yaml`/`migrations/*.sql`/`templates/` on disk); non-root `app` user (uid 10001); `HEALTHCHECK` hits `/healthz`; `CMD` runs `docker-entrypoint.sh`. Build context is the project dir (`/app`), matching `POOLS_FILE=/app/worker_health/pool_classifier_web/pools.yaml` in `run.tf`.
+- **`worker_health/docker-entrypoint.sh`** — new. Applies migrations (idempotent; toggle with `RUN_MIGRATIONS`, default `true`), then `exec gunicorn` on `$PORT` (default 8080) with `--timeout 1800` to match the Cloud Run request timeout, `--workers 2 --threads 8` for the I/O-bound classify work. Serves app factory `worker_health.pool_classifier_web.app:create_app()`.
+- **`worker_health/.dockerignore`** — keeps the context lean: excludes `pgdata/`, `pool_classifier_results/`, `ur_*`/`sr_*` run dirs, caches, tests, docs (re-includes `README.md`, which `setup.py` reads at install time).
+- **`worker_health/cloudbuild.yaml`** — build → push to Artifact Registry (`$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app`, tags `$COMMIT_SHA` + `latest`, `--cache-from latest`) → `gcloud run deploy pool-classifier`. `_REGION` default `us-west1` (matches terraform). Submit from the project dir: `gcloud builds submit --config cloudbuild.yaml .`
+
+Locally verified: image builds; gunicorn boots and `/healthz` returns `ok` with no DB; the entrypoint migration step connects to the compose Postgres and applies/skips migrations.
+
 **Still to do:**
 
-- **`worker_health/Dockerfile`** — `python:3.11-slim`, install from `requirements.txt`, `pip install -e .`, gunicorn entrypoint
-- **`worker_health/cloudbuild.yaml`** — build → push to Artifact Registry → `gcloud run deploy` (mirrors hangar pattern)
 - `terraform apply` in sandbox project; `terraform plan` review
 - Populate secrets: `gcloud secrets versions add pc-tc-token --data-file=~/.tc_token` <!-- pragma: allowlist secret -->
 - Cloud Scheduler jobs auto-created by terraform from `pools.yaml` → `var.pools`
