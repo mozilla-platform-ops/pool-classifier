@@ -12,11 +12,12 @@ terraform {
     }
   }
 
-  # Uncomment and configure before first apply:
-  # backend "gcs" {
-  #   bucket = "YOUR_PROJECT_ID-terraform-state"
-  #   prefix = "pool-classifier"
-  # }
+  # State lives in the shared relops state bucket (project relops-terraform-state),
+  # namespaced per-project via prefix.
+  backend "gcs" {
+    bucket = "moz-relops-tf-state"
+    prefix = "pool-classifier"
+  }
 }
 
 provider "google" {

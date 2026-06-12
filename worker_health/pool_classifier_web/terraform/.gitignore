@@ -10,5 +10,9 @@ crash.*.log
 terraform.tfvars
 *.auto.tfvars
 
+# Saved plan files embed sensitive values (db_password, DSN) — never commit.
+tfplan
+*.tfplan
+
 # ...but keep the committed example.
 !terraform.tfvars.example
