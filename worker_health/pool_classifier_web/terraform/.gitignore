@@ -1,0 +1,14 @@
+# Local Terraform state and secrets — never commit.
+# (.terraform.lock.hcl is intentionally NOT ignored — commit it to pin providers.)
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Holds db_password and IAP client secret.
+terraform.tfvars
+*.auto.tfvars
+
+# ...but keep the committed example.
+!terraform.tfvars.example

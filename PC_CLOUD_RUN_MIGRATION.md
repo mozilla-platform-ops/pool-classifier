@@ -264,12 +264,23 @@ The `/classify/*` URL path bypasses IAP at the LB so Cloud Scheduler can reach i
 
 Locally verified: image builds; gunicorn boots and `/healthz` returns `ok` with no DB; the entrypoint migration step connects to the compose Postgres and applies/skips migrations.
 
+**Done so far — GCP project + IAP rework:**
+
+- **GCP project `relops-pool-classifier`** created (project number `410047876591`) under the `relops-dashboard`/Hangar folder (`723902893592`), billing account `01E7D5-97288E-E2EBA0`.
+- **`terraform.tfvars`** created from the example (gitignored) — real project id, region, domain, generated URL-safe `db_password`, all 38 enabled pools.
+- **IAP switched to a Google-managed OAuth client.** The legacy IAP OAuth Admin APIs (custom brands/clients) were shut down (Mar 2026) and are unavailable to new projects — `gcloud iap oauth-brands create` now errors. Reworked:
+  - `lb.tf` — `iap { enabled = true }` (no `oauth2_client_id`/`secret`)
+  - `main.tf` — google/google-beta providers bumped `~> 5.0` → `~> 6.0` (the `enabled` flag / managed-client support requires provider ≥ 6.0; now on 6.50.0)
+  - `variables.tf` + `terraform.tfvars`(.example) — `iap_oauth2_client_id`/`secret` variables removed
+  - `terraform validate` passes; `fmt` clean. **This removes the old IAP brand prerequisite entirely.**
+
 **Still to do:**
 
-- `terraform apply` in sandbox project; `terraform plan` review
+- Link billing + `gcloud config set project`; confirm `billingEnabled = True`
+- `terraform plan` review — first real plan; watch for any remaining google-provider v6 breaking changes (e.g. `google_cloud_run_v2_service` `deletion_protection` now defaults true), then `terraform apply`
+- (Recommended) GCS state backend: create `relops-pool-classifier-terraform-state` bucket, uncomment `backend "gcs"` in `main.tf`
 - Populate secrets: `gcloud secrets versions add pc-tc-token --data-file=~/.tc_token` <!-- pragma: allowlist secret -->
 - Cloud Scheduler jobs auto-created by terraform from `pools.yaml` → `var.pools`
-- IAP OAuth client prerequisite: confirm brand exists in target GCP project before apply
 
 ---
 
@@ -288,7 +299,7 @@ Locally verified: image builds; gunicorn boots and `/healthz` returns `ok` with 
 |---|---|
 | Long classify cycle exceeds 30-min timeout | Raise to 60 min (Cloud Run max); v2: split via Cloud Tasks per-worker |
 | TC token rotation | Either redeploy on rotation, or re-read Secret Manager each cycle (~50ms) |
-| IAP OAuth client prerequisite | Confirm GCP project has a brand before `terraform apply`; hangar's is pre-existing |
+| IAP OAuth client (legacy brand/client APIs shut down Mar 2026) | Resolved — use the Google-managed OAuth client (`iap { enabled = true }`, provider ≥ 6.0); no brand/client to pre-create |
 | Concurrent Scheduler retries double-counting | Postgres advisory lock at start of `classify_cycle()`: `pg_try_advisory_lock(hashtext('classify:'||pool_id))` → 409 on conflict |
 
 ---

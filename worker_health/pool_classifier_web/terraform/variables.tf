@@ -26,19 +26,9 @@ variable "db_password" {
   sensitive   = true
 }
 
-# IAP OAuth2 client — create manually in GCP Console → APIs & Services →
-# Credentials → OAuth 2.0 Client ID (type: Web application). Set
-# Authorized redirect URI to https://iap.googleapis.com/v1/oauth/clientIds/<client_id>:handleRedirect
-variable "iap_oauth2_client_id" {
-  description = "OAuth2 client ID for IAP"
-  type        = string
-}
-
-variable "iap_oauth2_client_secret" {
-  description = "OAuth2 client secret for IAP"
-  type        = string
-  sensitive   = true
-}
+# IAP uses a Google-managed OAuth client (see lb.tf `iap { enabled = true }`),
+# so no manual OAuth2 client id/secret is needed. The legacy IAP OAuth Admin
+# APIs for minting custom clients were shut down in Mar 2026.
 
 variable "iap_authorized_members" {
   description = "IAM members allowed through IAP (e.g. [\"domain:mozilla.com\"])"

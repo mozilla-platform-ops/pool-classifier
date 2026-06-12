@@ -33,9 +33,12 @@ resource "google_compute_backend_service" "pc" {
     group = google_compute_region_network_endpoint_group.pc.id
   }
 
+  # Google-managed OAuth client (no oauth2_client_id/secret). The legacy IAP
+  # OAuth Admin APIs that minted custom clients were shut down (Mar 2026) and
+  # are unavailable to new projects, so we rely on the managed client. Requires
+  # google provider >= 6.0.
   iap {
-    oauth2_client_id     = var.iap_oauth2_client_id
-    oauth2_client_secret = var.iap_oauth2_client_secret
+    enabled = true
   }
 
   log_config {
