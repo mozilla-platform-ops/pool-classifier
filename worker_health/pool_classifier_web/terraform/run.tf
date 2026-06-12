@@ -89,6 +89,18 @@ resource "google_cloud_run_v2_service" "pc" {
     }
   }
 
+  # The image is owned by the Cloud Build pipeline (cloudbuild.yaml does
+  # `gcloud run deploy --image=...`), not terraform. var.cloud_run_image only
+  # seeds the very first revision. Ignore image (and the client metadata that
+  # `gcloud run deploy` stamps) so `terraform apply` doesn't revert deploys.
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+    ]
+  }
+
   depends_on = [
     google_secret_manager_secret_version.db_url,
     google_vpc_access_connector.pc,
