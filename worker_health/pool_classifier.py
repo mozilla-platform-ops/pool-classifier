@@ -45,7 +45,7 @@ except ImportError:
         yield lambda: None
 
 
-TC_ROOT = "https://firefox-ci-tc.services.mozilla.com"
+TC_ROOT = os.environ.get("TC_ROOT_URL", "https://firefox-ci-tc.services.mozilla.com")
 LOG_HEAD_BYTES = 20480  # 20 KB
 LOG_TAIL_BYTES = 51200  # 50 KB
 # Gzipped-artifact size at which we refuse to stream the log (GCS gunzips on the fly
