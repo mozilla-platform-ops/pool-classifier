@@ -208,7 +208,7 @@ Flat root config under `worker_health/pool_classifier_web/terraform/`, mirroring
 - **`variables.tf`** — `project_id`, `region` (default `us-west1`), `domain`, `db_password`, IAP OAuth client id/secret, `iap_authorized_members` (default `["domain:mozilla.com"]`), `cloud_run_min_instances` (default 0 — Scheduler wakes the service), `cloud_run_max_instances`, `cloud_run_image`, `pools` (list of `{id, provisioner, worker_type, schedule}`), `scheduler_attempt_deadline` (default `1800s`)
 - **`outputs.tf`** — `load_balancer_ip`, `artifact_registry_hostname`, `cloud_run_url`, `db_private_ip` (sensitive), `populate_secrets_commands`
 - **`network.tf`** — VPC, subnet (`10.9.0.0/24`), Service Networking peering, Serverless VPC Access connector
-- **`sql.tf`** — Postgres 16 REGIONAL HA, private IP, SSL-only, PITR, `deletion_protection_enabled = true`; db `pool_classifier`, user `pc`
+- **`sql.tf`** — Postgres 16, ENTERPRISE edition, `db-g1-small` ZONAL, private IP, SSL-only, PITR, `deletion_protection_enabled = true`; db `pool_classifier`, user `pc`. (Shared-core `db-g1-small` requires ENTERPRISE — not ENTERPRISE_PLUS — and can't do HA, so ZONAL. Acceptable: data re-derives every 15 min, plus 7-day backups + PITR. To add HA later: `edition = ENTERPRISE`, `availability_type = REGIONAL`, and a dedicated tier e.g. `db-custom-1-3840`.)
 - **`secrets.tf`** — two secrets: `pc-db-url` (TF-populated from SQL private IP + `db_password`), `pc-tc-token` (manual `gcloud secrets versions add`) <!-- pragma: allowlist secret -->
 - **`artifact_registry.tf`** — Docker repo `pool-classifier`, keep-last-10 cleanup
 - **`iam.tf`** — runtime SA `pool-classifier-run` (secret accessor, cloudsql.client, log writer, AR reader); scheduler SA `pool-classifier-scheduler` (`roles/run.invoker` on the Cloud Run service); Cloud Build SA roles; IAP binding on the default backend to `var.iap_authorized_members`
@@ -232,7 +232,7 @@ Flat root config under `worker_health/pool_classifier_web/terraform/`, mirroring
 | `variables.tf` | `pools` variable (list of objects), `iap_authorized_members` default `["domain:mozilla.com"]` |
 | `outputs.tf` | `populate_secrets_commands` for TC token |
 | `network.tf` | Same: VPC, subnet, Serverless VPC Access connector, Service Networking peering |
-| `sql.tf` | Postgres 16, REGIONAL HA, `db-g1-small`, private IP, SSL, PITR, deletion_protection |
+| `sql.tf` | Postgres 16, ENTERPRISE edition, `db-g1-small` ZONAL (shared-core has no HA), private IP, SSL, PITR, deletion_protection |
 | `secrets.tf` | Only 2 secrets: `pc-db-url` (TF-populated), `pc-tc-token` (manual) | <!-- pragma: allowlist secret -->
 | `artifact_registry.tf` | Docker repo `pool-classifier`, keep-last-10 cleanup |
 | `iam.tf` | Runtime SA `pool-classifier-run`, scheduler SA `pool-classifier-scheduler`; IAP binding to `var.iap_authorized_members` |

@@ -4,8 +4,12 @@ resource "google_sql_database_instance" "pc" {
   region           = var.region
 
   settings {
+    # ENTERPRISE (not ENTERPRISE_PLUS) is required for the shared-core db-g1-small
+    # tier. ZONAL because shared-core tiers don't support HA; this is a self-healing
+    # monitoring dashboard (data re-derived every 15 min) with 7-day backups + PITR.
+    edition           = "ENTERPRISE"
     tier              = var.db_tier
-    availability_type = "REGIONAL"
+    availability_type = "ZONAL"
 
     ip_configuration {
       ipv4_enabled                                  = false
