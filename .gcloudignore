@@ -1,0 +1,36 @@
+# Upload filter for `gcloud builds submit` (the source tarball sent to GCS).
+# This is SEPARATE from .dockerignore — .dockerignore only filters the docker
+# build context *inside* Cloud Build; this filters what gets uploaded at all.
+# If this file exists, gcloud uses ONLY it (it does NOT also read .gitignore),
+# so everything to exclude must be listed here.
+
+.git/
+.gcloudignore
+
+# Heavy local data — never needed to build the image.
+worker_health/pool_classifier_web/pgdata/
+pool_classifier_results/
+htmlcov/
+.coverage*
+sr_old_runs/
+sr_old_runs2/
+sr_*/
+ur_*/
+runner_run_*/
+
+# Python build/test artifacts
+__pycache__/
+*.pyc
+*.pyo
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+tests/
+
+# Editor / OS
+.idea/
+.vscode/
+.ropeproject/
+.DS_Store

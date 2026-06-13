@@ -50,23 +50,36 @@ resource "google_cloud_run_v2_service_iam_member" "scheduler_invoker" {
   member   = "serviceAccount:${google_service_account.pc_scheduler.email}"
 }
 
-# Cloud Build (default SA): deploy to Cloud Run
+# Cloud Build runs as the Compute Engine default SA on projects created after
+# ~Apr 2024 — the legacy {num}@cloudbuild.gserviceaccount.com SA is no longer
+# provisioned. Grant this SA the build/deploy roles.
+locals {
+  cloudbuild_sa = "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com"
+}
+
+# builds.builder covers source-bucket read + log writing + base build perms.
+resource "google_project_iam_member" "cloudbuild_builder" {
+  project = var.project_id
+  role    = "roles/cloudbuild.builds.builder"
+  member  = local.cloudbuild_sa
+}
+
 resource "google_project_iam_member" "cloudbuild_run_admin" {
   project = var.project_id
   role    = "roles/run.admin"
-  member  = "serviceAccount:${data.google_project.project.number}@cloudbuild.gserviceaccount.com"
+  member  = local.cloudbuild_sa
 }
 
 resource "google_project_iam_member" "cloudbuild_sa_user" {
   project = var.project_id
   role    = "roles/iam.serviceAccountUser"
-  member  = "serviceAccount:${data.google_project.project.number}@cloudbuild.gserviceaccount.com"
+  member  = local.cloudbuild_sa
 }
 
 resource "google_project_iam_member" "cloudbuild_ar_writer" {
   project = var.project_id
   role    = "roles/artifactregistry.writer"
-  member  = "serviceAccount:${data.google_project.project.number}@cloudbuild.gserviceaccount.com"
+  member  = local.cloudbuild_sa
 }
 
 # IAP access — only @mozilla.com Google accounts
