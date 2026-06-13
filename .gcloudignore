@@ -18,6 +18,14 @@ sr_*/
 ur_*/
 runner_run_*/
 
+# Terraform working dir — cached provider binaries (100s of MB), state,
+# saved plans. None of it is needed to build the image.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+*.tfplan
+
 # Python build/test artifacts
 __pycache__/
 *.pyc
