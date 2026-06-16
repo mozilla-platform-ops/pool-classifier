@@ -14,6 +14,13 @@ resource "google_cloud_run_v2_service" "pc" {
   # service through the LB (via a non-IAP /classify/* backend).
   ingress = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
 
+  # Cloud Scheduler signs its OIDC token with the LB domain as the audience
+  # (scheduler.tf `oidc_token.audience`). Cloud Run otherwise only accepts its
+  # own *.run.app URL as the audience, so it must be told to also accept the
+  # domain — else Scheduler → /classify gets a platform 401 ("access token
+  # could not be verified") before the request reaches the app.
+  custom_audiences = ["https://${var.domain}/"]
+
   template {
     service_account = google_service_account.pc_run.email
     timeout         = "1800s"
