@@ -243,7 +243,7 @@ Flat root config under `worker_health/pool_classifier_web/terraform/`, mirroring
 
 ---
 
-### 🟡 Phase 5 — Containerize & deploy (DEPLOYED; blocked on org-level IAP authz)
+### ✅ Phase 5 — Containerize & deploy (DONE — deployed, IAP working)
 
 **Done so far — OIDC validation on `/classify/*`:**
 
@@ -289,19 +289,19 @@ Locally verified: image builds; gunicorn boots and `/healthz` returns `ok` with 
 
 - **OAuth consent screen** ("Google Auth Platform" → *Get started*). There is **no IaC path** — the IAP OAuth Admin API that backed `google_iap_brand` was shut down (Mar 2026). Configure: app name, support email, **User type = External**, **Publishing status = In production**. (Internal scopes to the `firefox.gcp.mozilla.com` org and excludes `@mozilla.com` logins, which are a separate Cloud Identity; External + In Production is required so `@mozilla.com` accounts can authenticate. IAP IAM still gates actual access. No Google verification needed — IAP uses only basic scopes.)
 
-**⛔ Blocked on org admin — IAP authorization:**
+**✅ IAP working — dashboard reachable as `@mozilla.com`.**
 
-- Auth succeeds (deny page shows `gcp-iap-mode=AUTHENTICATING`, resolves `aerickson@mozilla.com`) but authorization fails: **"You don't have access"** even with a **direct `user:` grant** of `roles/iap.httpsResourceAccessor` on `pool-classifier-backend`.
-- **Hangar comparison (from Ryan / relops-dashboard owner):** hangar admits the whole domain via a plain `domain:mozilla.com` backend-service binding, a hand-created classic OAuth client, and **zero org constructs** (no PAB, no Access Context Manager, no group). Our binding already matches hangar's — so the binding is not the problem.
-- **It's the org layer hangar's project sits outside of.** Both projects are in the **same org AND same folder (`723902893592`)** with identical bindings, yet hangar works and ours doesn't — so the org control must be **project-scoped**, and the new `relops-pool-classifier` isn't in the allow-set that `relops-dashboard` is. Prime suspects: an **Access Context Manager `gcpUserAccessBinding`/access-level bound to IAP**, or a **Principal Access Boundary**.
-- **Ruled out (all self-serve checks done):** no Domain Restricted Sharing (project + folder + org all empty/unset); no IAM deny policy (project + folder both `{}`); PAB list, ACM policy list, and ACM cloud-bindings list all **`PERMISSION_DENIED`** at the org — i.e. exist above this account's visibility.
-  ```sh
-  gcloud iam policies list --attachment-point=".../projects/relops-pool-classifier" --kind=denypolicies   # {}
-  gcloud iam principal-access-boundary-policies list --organization=442341870013 --location=global         # PERMISSION_DENIED
-  gcloud access-context-manager cloud-bindings list --organization=442341870013                            # PERMISSION_DENIED
-  ```
-- **Ask `firefox.gcp.mozilla.com` org admin** (tracked in `RELOPS-2435`): add `relops-pool-classifier` (project# `410047876591`) to whatever PAB/ACM allow-set already permits `relops-dashboard` (project# `488152629256`).
-- Note: the IAP IAM binding is terraform-authoritative (`iap_authorized_members`). The hand-added `user:aerickson@mozilla.com` test grant will be wiped on next apply — set the durable principal (`domain:mozilla.com`, matching hangar) in `terraform.tfvars` once the org block is lifted.
+The blocker was **not** an org-level PAB (red herring — see the long diagnostic trail in git history). It was **two IAP-in-front-of-Cloud-Run config gaps** missing from the terraform, both now fixed:
+
+1. **IAP service agent + `run.invoker` (the critical one).** IAP invokes Cloud Run *on behalf of* the authenticated user, so the IAP service agent must be provisioned and hold `roles/run.invoker` on the service. Missing → "The IAP service account is not provisioned" then a Cloud Run `403 Forbidden`. Fixed in `run.tf`:
+   - `google_project_service_identity.iap` (provider `google-beta`) provisions `service-<num>@gcp-sa-iap.iam.gserviceaccount.com`
+   - `google_cloud_run_v2_service_iam_member.iap_invoker` grants it `run.invoker`
+   - Ref: <https://cloud.google.com/iap/docs/enabling-cloud-run>
+2. **Explicit OAuth client instead of Google-managed.** The managed client (`iap { enabled = true }` only) stuck at "You don't have access"; a manually-created OAuth client (Console → Google Auth Platform → Clients → Web app; redirect URI `https://iap.googleapis.com/v1/oauth/clientIds/<id>:handleRedirect`) matched hangar and let the flow proceed. `lb.tf` now passes `oauth2_client_id`/`secret` (vars in `variables.tf`, values in gitignored `terraform.tfvars`).
+
+`domain:mozilla.com` in `iap_authorized_members` works as the durable principal (matches hangar) — no `user:`/group needed. The org-admin escalation (`RELOPS-2435`) is **not** required; can be closed.
+
+Diagnostics that ruled out the org-PAB theory (kept for reference): no Domain Restricted Sharing anywhere; no IAM deny policy (project/folder `{}`); org PAB/ACM lists were `PERMISSION_DENIED` — unreadable, but ultimately irrelevant.
 
 ---
 
@@ -321,8 +321,8 @@ Locally verified: image builds; gunicorn boots and `/healthz` returns `ok` with 
 | Long classify cycle exceeds 30-min timeout | Raise to 60 min (Cloud Run max); v2: split via Cloud Tasks per-worker |
 | TC token rotation | Either redeploy on rotation, or re-read Secret Manager each cycle (~50ms) |
 | IAP OAuth client (legacy brand/client APIs shut down Mar 2026) | Resolved — use the Google-managed OAuth client (`iap { enabled = true }`, provider ≥ 6.0); no brand/client to pre-create |
-| OAuth consent screen not terraformable | Manual one-time bootstrap in console (Google Auth Platform → External / In production). Documented in Phase 5. |
-| **IAP authz blocked by org PAB** (`@mozilla.com` denied despite direct allow grant) | **Open** — needs `firefox.gcp.mozilla.com` org admin to add the project to the Principal Access Boundary allow-set that already permits hangar (`RELOPS-2435`) |
+| OAuth consent screen + OAuth client not terraformable | Manual one-time console bootstrap: Google Auth Platform → consent screen (External / In production) + create a Web OAuth client. IAP OAuth Admin API is shut down. Documented in Phase 5. |
+| IAP-on-Cloud-Run needs the IAP service agent as invoker | Resolved — `run.tf` provisions `google_project_service_identity.iap` + grants it `run.invoker`. Easy to miss; was the real cause of the "You don't have access" saga (not an org PAB). |
 | Concurrent Scheduler retries double-counting | Postgres advisory lock at start of `classify_cycle()`: `pg_try_advisory_lock(hashtext('classify:'||pool_id))` → 409 on conflict |
 
 ---
