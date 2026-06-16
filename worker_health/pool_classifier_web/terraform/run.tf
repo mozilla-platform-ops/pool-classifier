@@ -18,6 +18,13 @@ resource "google_cloud_run_v2_service" "pc" {
     service_account = google_service_account.pc_run.email
     timeout         = "1800s"
 
+    # NOTE: this block is in `lifecycle.ignore_changes` below (Cloud Build's
+    # `gcloud run deploy` re-stamps scaling, causing perpetual drift). It seeds
+    # only the first revision — editing these values here and re-applying is a
+    # NO-OP. To change scaling later, use:
+    #   gcloud run services update pool-classifier --region=us-west1 \
+    #     --min-instances=N --max-instances=N --project=relops-pool-classifier
+    # (or temporarily remove `template[0].scaling` from ignore_changes, apply, re-add).
     scaling {
       min_instance_count = var.cloud_run_min_instances
       max_instance_count = var.cloud_run_max_instances
