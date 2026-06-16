@@ -91,11 +91,13 @@ resource "google_cloud_run_v2_service" "pc" {
 
   # The image is owned by the Cloud Build pipeline (cloudbuild.yaml does
   # `gcloud run deploy --image=...`), not terraform. var.cloud_run_image only
-  # seeds the very first revision. Ignore image (and the client metadata that
-  # `gcloud run deploy` stamps) so `terraform apply` doesn't revert deploys.
+  # seeds the very first revision. Ignore image (and the client metadata +
+  # scaling block that `gcloud run deploy` re-stamps) so `terraform apply`
+  # doesn't churn on deploy-driven drift.
   lifecycle {
     ignore_changes = [
       template[0].containers[0].image,
+      template[0].scaling,
       client,
       client_version,
     ]
