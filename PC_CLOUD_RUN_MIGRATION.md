@@ -291,10 +291,17 @@ Locally verified: image builds; gunicorn boots and `/healthz` returns `ok` with 
 
 **⛔ Blocked on org admin — IAP authorization:**
 
-- Auth succeeds but `aerickson@mozilla.com` gets **"You don't have access"** even with a **direct `user:` grant** of `roles/iap.httpsResourceAccessor` on `pool-classifier-backend`. Ruled out: no Domain Restricted Sharing (project/folder/org), no IAM deny policy (project/folder). Org-level **Principal Access Boundary (PAB)** is unreadable from this account (`iam.principalaccessboundarypolicies.list` denied).
-- **Almost certainly an org-level PAB/deny** restricting which resources `@mozilla.com` identities may reach. Hangar (`relops-dashboard`, same folder) works, so it's allowed there.
-- **Ask `firefox.gcp.mozilla.com` org admin / hangar owner** (tracked in `RELOPS-2435`): how is hangar permitted, and add `relops-pool-classifier` (or its `@mozilla.com` principals) to the same PAB allow-set.
-- Note: the IAP IAM binding is terraform-authoritative (`iap_authorized_members`). The hand-added `user:` test grant will be wiped on next apply — set the durable principal (likely a group) in `terraform.tfvars` once the org block is lifted.
+- Auth succeeds (deny page shows `gcp-iap-mode=AUTHENTICATING`, resolves `aerickson@mozilla.com`) but authorization fails: **"You don't have access"** even with a **direct `user:` grant** of `roles/iap.httpsResourceAccessor` on `pool-classifier-backend`.
+- **Hangar comparison (from Ryan / relops-dashboard owner):** hangar admits the whole domain via a plain `domain:mozilla.com` backend-service binding, a hand-created classic OAuth client, and **zero org constructs** (no PAB, no Access Context Manager, no group). Our binding already matches hangar's — so the binding is not the problem.
+- **It's the org layer hangar's project sits outside of.** Both projects are in the **same org AND same folder (`723902893592`)** with identical bindings, yet hangar works and ours doesn't — so the org control must be **project-scoped**, and the new `relops-pool-classifier` isn't in the allow-set that `relops-dashboard` is. Prime suspects: an **Access Context Manager `gcpUserAccessBinding`/access-level bound to IAP**, or a **Principal Access Boundary**.
+- **Ruled out (all self-serve checks done):** no Domain Restricted Sharing (project + folder + org all empty/unset); no IAM deny policy (project + folder both `{}`); PAB list, ACM policy list, and ACM cloud-bindings list all **`PERMISSION_DENIED`** at the org — i.e. exist above this account's visibility.
+  ```sh
+  gcloud iam policies list --attachment-point=".../projects/relops-pool-classifier" --kind=denypolicies   # {}
+  gcloud iam principal-access-boundary-policies list --organization=442341870013 --location=global         # PERMISSION_DENIED
+  gcloud access-context-manager cloud-bindings list --organization=442341870013                            # PERMISSION_DENIED
+  ```
+- **Ask `firefox.gcp.mozilla.com` org admin** (tracked in `RELOPS-2435`): add `relops-pool-classifier` (project# `410047876591`) to whatever PAB/ACM allow-set already permits `relops-dashboard` (project# `488152629256`).
+- Note: the IAP IAM binding is terraform-authoritative (`iap_authorized_members`). The hand-added `user:aerickson@mozilla.com` test grant will be wiped on next apply — set the durable principal (`domain:mozilla.com`, matching hangar) in `terraform.tfvars` once the org block is lifted.
 
 ---
 
