@@ -206,6 +206,41 @@ def create_app() -> Flask:
             return jsonify({"error": "classify cycle already running for this pool"}), 409
         return jsonify(summary)
 
+    @app.post("/classify-all")
+    @require_scheduler_oidc
+    def classify_all():
+        # Sequential fan-out over all enabled pools, driven by a single Cloud
+        # Scheduler job. Mirrors pc_fetch_data.sh (proj-autophone first, then the
+        # rest) and runs one pool at a time on purpose — concurrent per-pool jobs
+        # exhausted the Postgres connection budget. Per-pool failures are caught
+        # so one bad pool doesn't abort the run; the advisory lock makes
+        # overlapping runs safe (busy pools are skipped).
+        pools = sorted(
+            registry.all_pools(),
+            key=lambda p: (p.provisioner != "proj-autophone", p.provisioner, p.worker_type),
+        )
+        results = []
+        for pool in pools:
+            label = f"{pool.provisioner}/{pool.worker_type}"
+            try:
+                pc = _get_classifier(pool.provisioner, pool.worker_type)
+                if pc is None:
+                    results.append({"pool": label, "status": "not_found"})
+                    continue
+                summary = pc.classify_cycle()
+                results.append({"pool": label, "status": "ok", "summary": summary})
+            except ClassifyLockBusy:
+                results.append({"pool": label, "status": "busy"})
+            except Exception as e:  # noqa: BLE001 - one pool must not abort the rest
+                logger.exception("classify-all: pool %s failed", label)
+                results.append({"pool": label, "status": "error", "error": str(e)})
+        ok = sum(1 for r in results if r["status"] == "ok")
+        body = {"pools": len(results), "ok": ok, "results": results}
+        # Surface a systemic failure (e.g. DB down) as a failed run; partial
+        # failures still return 200 so the scheduler isn't spammed with retries.
+        status_code = 200 if (ok > 0 or not results) else 500
+        return jsonify(body), status_code
+
     @app.get("/pools/<provisioner>/<worker_type>/unclassified/<task_id>.log")
     def unclassified_log(provisioner: str, worker_type: str, task_id: str):
         pc = _get_classifier(provisioner, worker_type)

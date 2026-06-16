@@ -68,17 +68,10 @@ variable "cloud_run_image" {
   default     = ""
 }
 
-# Pool registry — mirrors worker_health/pool_classifier_web/pools.yaml. Each enabled
-# pool gets a Cloud Scheduler job that POSTs to /classify/<provisioner>/<worker_type>.
-variable "pools" {
-  description = "Pools to schedule classify cycles for"
-  type = list(object({
-    id          = string
-    provisioner = string
-    worker_type = string
-    schedule    = string
-  }))
-}
+# NOTE: there is intentionally no `pools` variable. The single classify-all
+# Scheduler job (scheduler.tf) lets the app read the pool list from pools.yaml
+# (registry.all_pools()), so pools.yaml is the single source of truth — nothing
+# to keep in sync here.
 
 variable "scheduler_attempt_deadline" {
   description = "Cloud Scheduler attempt_deadline (must fit within Cloud Run request timeout)"
