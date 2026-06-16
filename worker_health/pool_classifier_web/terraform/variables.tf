@@ -57,9 +57,9 @@ variable "cloud_run_min_instances" {
 }
 
 variable "cloud_run_max_instances" {
-  description = "Maximum Cloud Run instances"
+  description = "Maximum Cloud Run instances. Kept low because the app holds a persistent DB connection per pool per instance; more instances = more connections against db-g1-small's limit."
   type        = number
-  default     = 4
+  default     = 2
 }
 
 variable "cloud_run_image" {

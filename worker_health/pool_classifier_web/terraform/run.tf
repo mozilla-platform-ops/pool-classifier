@@ -89,6 +89,15 @@ resource "google_cloud_run_v2_service" "pc" {
         value = "true"
       }
 
+      # One gunicorn worker → one connection cache per instance. The app holds a
+      # persistent DB connection per pool in module-level state; a second worker
+      # would double that against db-g1-small's small connection limit. Threads
+      # (set in docker-entrypoint.sh) still give per-instance concurrency.
+      env {
+        name  = "GUNICORN_WORKERS"
+        value = "1"
+      }
+
       # OIDC validation for /classify/* — Cloud Scheduler signs each request
       # with a JWT (aud=audience, email=scheduler SA). Unset audience disables
       # validation, so always set it in production.

@@ -11,6 +11,16 @@ resource "google_sql_database_instance" "pc" {
     tier              = var.db_tier
     availability_type = "ZONAL"
 
+    # db-g1-small's default max_connections is very low (~25-50). The app holds
+    # a persistent connection per pool per gunicorn worker (cached classifiers),
+    # so it needs more headroom. Paired with workers=1 + max_instances=2 +
+    # staggered schedules to keep demand under this ceiling. (Changing this
+    # restarts the instance.)
+    database_flags {
+      name  = "max_connections"
+      value = "100"
+    }
+
     ip_configuration {
       ipv4_enabled                                  = false
       private_network                               = google_compute_network.pc.id
