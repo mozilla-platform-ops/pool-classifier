@@ -243,7 +243,7 @@ Flat root config under `worker_health/pool_classifier_web/terraform/`, mirroring
 
 ---
 
-### 🟡 Phase 5 — Containerize & deploy (IN PROGRESS)
+### 🟡 Phase 5 — Containerize & deploy (DEPLOYED; blocked on org-level IAP authz)
 
 **Done so far — OIDC validation on `/classify/*`:**
 
@@ -274,13 +274,27 @@ Locally verified: image builds; gunicorn boots and `/healthz` returns `ok` with 
   - `variables.tf` + `terraform.tfvars`(.example) — `iap_oauth2_client_id`/`secret` variables removed
   - `terraform validate` passes; `fmt` clean. **This removes the old IAP brand prerequisite entirely.**
 
-**Still to do:**
+**Done — deployed and running:**
 
-- Link billing + `gcloud config set project`; confirm `billingEnabled = True`
-- `terraform plan` review — first real plan; watch for any remaining google-provider v6 breaking changes (e.g. `google_cloud_run_v2_service` `deletion_protection` now defaults true), then `terraform apply`
-- (Recommended) GCS state backend: create `relops-pool-classifier-terraform-state` bucket, uncomment `backend "gcs"` in `main.tf`
-- Populate secrets: `gcloud secrets versions add pc-tc-token --data-file=~/.tc_token` <!-- pragma: allowlist secret -->
-- Cloud Scheduler jobs auto-created by terraform from `pools.yaml` → `var.pools`
+- Billing linked; `terraform apply` succeeded (85 resources).
+- **GCS state backend** in a shared state project: bucket `gs://moz-relops-tf-state` (project `relops-terraform-state`, folder `723902893592`), `prefix = "pool-classifier"`. Versioned, UBLA, public-access-prevented.
+- Cloud SQL: **ENTERPRISE edition, `db-g1-small`, ZONAL** (shared-core can't do HA; edition must be ENTERPRISE not ENTERPRISE_PLUS). See sql.tf note for how to add HA later.
+- Secrets: `pc-db-url` populated by terraform; `pc-tc-token` populated manually from `~/.tc_token` (JSON `{clientId, accessToken}`). <!-- pragma: allowlist secret -->
+- **App image built + deployed** via `cloudbuild.yaml`. Cloud Build runs as the **Compute Engine default SA** on new projects (legacy `@cloudbuild.gserviceaccount.com` no longer provisioned) — iam.tf grants it `builds.builder`/`run.admin`/`serviceAccountUser`/`artifactregistry.writer`. `.gcloudignore` keeps the source upload small (excludes pgdata, .terraform, run dirs). `cloudbuild.yaml` uses a user-defined `$_TAG` (not `$COMMIT_SHA`, which is empty for manual `builds submit`). run.tf has `lifecycle { ignore_changes = [image, client, client_version] }` so apply doesn't revert deploys.
+- Startup verified in logs: migrations applied to Cloud SQL (`001_init: applied`), gunicorn healthy, STARTUP probe passed.
+- **DNS** `pool-classifier.relops.mozilla.com → 34.107.179.124` (LB IP); **managed SSL cert ACTIVE**.
+- **IAP authentication works** — after the manual OAuth consent-screen step (below), the deny page shows `gcp-iap-mode=AUTHENTICATING` and resolves `aerickson@mozilla.com`.
+
+**Manual one-time bootstrap (NOT terraformable):**
+
+- **OAuth consent screen** ("Google Auth Platform" → *Get started*). There is **no IaC path** — the IAP OAuth Admin API that backed `google_iap_brand` was shut down (Mar 2026). Configure: app name, support email, **User type = External**, **Publishing status = In production**. (Internal scopes to the `firefox.gcp.mozilla.com` org and excludes `@mozilla.com` logins, which are a separate Cloud Identity; External + In Production is required so `@mozilla.com` accounts can authenticate. IAP IAM still gates actual access. No Google verification needed — IAP uses only basic scopes.)
+
+**⛔ Blocked on org admin — IAP authorization:**
+
+- Auth succeeds but `aerickson@mozilla.com` gets **"You don't have access"** even with a **direct `user:` grant** of `roles/iap.httpsResourceAccessor` on `pool-classifier-backend`. Ruled out: no Domain Restricted Sharing (project/folder/org), no IAM deny policy (project/folder). Org-level **Principal Access Boundary (PAB)** is unreadable from this account (`iam.principalaccessboundarypolicies.list` denied).
+- **Almost certainly an org-level PAB/deny** restricting which resources `@mozilla.com` identities may reach. Hangar (`relops-dashboard`, same folder) works, so it's allowed there.
+- **Ask `firefox.gcp.mozilla.com` org admin / hangar owner** (tracked in `RELOPS-2435`): how is hangar permitted, and add `relops-pool-classifier` (or its `@mozilla.com` principals) to the same PAB allow-set.
+- Note: the IAP IAM binding is terraform-authoritative (`iap_authorized_members`). The hand-added `user:` test grant will be wiped on next apply — set the durable principal (likely a group) in `terraform.tfvars` once the org block is lifted.
 
 ---
 
@@ -300,6 +314,8 @@ Locally verified: image builds; gunicorn boots and `/healthz` returns `ok` with 
 | Long classify cycle exceeds 30-min timeout | Raise to 60 min (Cloud Run max); v2: split via Cloud Tasks per-worker |
 | TC token rotation | Either redeploy on rotation, or re-read Secret Manager each cycle (~50ms) |
 | IAP OAuth client (legacy brand/client APIs shut down Mar 2026) | Resolved — use the Google-managed OAuth client (`iap { enabled = true }`, provider ≥ 6.0); no brand/client to pre-create |
+| OAuth consent screen not terraformable | Manual one-time bootstrap in console (Google Auth Platform → External / In production). Documented in Phase 5. |
+| **IAP authz blocked by org PAB** (`@mozilla.com` denied despite direct allow grant) | **Open** — needs `firefox.gcp.mozilla.com` org admin to add the project to the Principal Access Boundary allow-set that already permits hangar (`RELOPS-2435`) |
 | Concurrent Scheduler retries double-counting | Postgres advisory lock at start of `classify_cycle()`: `pg_try_advisory_lock(hashtext('classify:'||pool_id))` → 409 on conflict |
 
 ---
