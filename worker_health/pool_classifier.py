@@ -132,7 +132,10 @@ class PoolClassifier:
         self.storage.init_schema()
         self.seen_tasks = self.storage.get_seen_tasks()
         seen_count = sum(len(s) for s in self.seen_tasks.values())
-        logger.info(f"Storage: {seen_count} previously seen tasks across {len(self.seen_tasks)} workers")
+        logger.info(
+            f"[{self.provisioner}/{self.worker_type}] Storage: {seen_count} "
+            f"previously seen tasks across {len(self.seen_tasks)} workers",
+        )
 
     # --- TC API calls ---
 
