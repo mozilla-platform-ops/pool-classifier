@@ -33,12 +33,15 @@ resource "google_compute_backend_service" "pc" {
     group = google_compute_region_network_endpoint_group.pc.id
   }
 
-  # Google-managed OAuth client (no oauth2_client_id/secret). The legacy IAP
-  # OAuth Admin APIs that minted custom clients were shut down (Mar 2026) and
-  # are unavailable to new projects, so we rely on the managed client. Requires
-  # google provider >= 6.0.
+  # Manually-created OAuth client (Console → Google Auth Platform → Clients).
+  # The Google-managed client (`enabled = true` only) authenticated @mozilla.com
+  # users but authorization still failed in this org; hangar uses an explicit
+  # client and works, so we match that. The IAP OAuth Admin API is dead, but a
+  # pre-created plain OAuth client is still supported here.
   iap {
-    enabled = true
+    enabled              = true
+    oauth2_client_id     = var.iap_oauth2_client_id
+    oauth2_client_secret = var.iap_oauth2_client_secret
   }
 
   log_config {

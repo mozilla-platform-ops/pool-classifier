@@ -26,9 +26,23 @@ variable "db_password" {
   sensitive   = true
 }
 
-# IAP uses a Google-managed OAuth client (see lb.tf `iap { enabled = true }`),
-# so no manual OAuth2 client id/secret is needed. The legacy IAP OAuth Admin
-# APIs for minting custom clients were shut down in Mar 2026.
+# IAP OAuth client — created MANUALLY in Console (Google Auth Platform →
+# Clients → Web application), since the IAP OAuth Admin API that minted clients
+# was shut down Mar 2026. A plain pre-created OAuth client is still supported.
+# Set the Authorized redirect URI to
+# https://iap.googleapis.com/v1/oauth/clientIds/<CLIENT_ID>:handleRedirect
+# (This matches hangar's working model; the Google-managed client did not work
+# for @mozilla.com access in this org.)
+variable "iap_oauth2_client_id" {
+  description = "OAuth2 client ID for IAP (manually created in Console)"
+  type        = string
+}
+
+variable "iap_oauth2_client_secret" {
+  description = "OAuth2 client secret for IAP (manually created in Console)"
+  type        = string
+  sensitive   = true
+}
 
 variable "iap_authorized_members" {
   description = "IAM members allowed through IAP (e.g. [\"domain:mozilla.com\"])"

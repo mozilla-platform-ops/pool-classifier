@@ -107,3 +107,21 @@ resource "google_cloud_run_v2_service" "pc" {
     google_project_service.apis,
   ]
 }
+
+# IAP in front of Cloud Run requires the IAP service agent to (a) be provisioned
+# and (b) hold run.invoker on the service — IAP invokes Cloud Run on behalf of
+# authenticated users. Without this you get "The IAP service account is not
+# provisioned." https://cloud.google.com/iap/docs/enabling-cloud-run
+resource "google_project_service_identity" "iap" {
+  provider = google-beta
+  service  = "iap.googleapis.com"
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "iap_invoker" {
+  location = google_cloud_run_v2_service.pc.location
+  name     = google_cloud_run_v2_service.pc.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_project_service_identity.iap.email}"
+}

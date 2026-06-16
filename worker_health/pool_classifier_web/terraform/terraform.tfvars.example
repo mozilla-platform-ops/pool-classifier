@@ -4,8 +4,11 @@ domain     = "pool-classifier.relops.mozilla.com"
 
 db_password = "CHANGE_ME" # pragma: allowlist secret
 
-# IAP uses a Google-managed OAuth client (lb.tf `iap { enabled = true }`),
-# so no manual client id/secret is required.
+# IAP OAuth client — create manually in Console (Google Auth Platform → Clients →
+# Web application; set redirect URI to
+# https://iap.googleapis.com/v1/oauth/clientIds/<CLIENT_ID>:handleRedirect).
+iap_oauth2_client_id     = "REPLACE_WITH_CLIENT_ID.apps.googleusercontent.com"
+iap_oauth2_client_secret = "REPLACE_WITH_CLIENT_SECRET" # pragma: allowlist secret
 
 iap_authorized_members = ["domain:mozilla.com"]
 
