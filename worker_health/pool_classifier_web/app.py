@@ -13,7 +13,12 @@ from worker_health.pool_classifier_web import registry
 from worker_health.pool_classifier_web.auth import require_scheduler_oidc
 from worker_health.pool_classifier_web.registry import detect_os
 from worker_health.pool_classifier_web import patterns_registry
-from worker_health.pool_classifier_web.storage import ClassifyLockBusy, PostgresStorage, count_category_hits_global
+from worker_health.pool_classifier_web.storage import (
+    ClassifyLockBusy,
+    PostgresStorage,
+    count_category_hits_global,
+    pool_summaries_global,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +94,23 @@ def create_app() -> Flask:
         now = now_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
         since_1h = (now_dt.replace(microsecond=0) - timedelta(hours=1)).isoformat()
         since_24h = (now_dt.replace(microsecond=0) - timedelta(hours=24)).isoformat()
+        # One pair of GROUP BY pool_id queries for every pool, on one connection
+        # (vs ~7 queries per pool on a per-pool connection). See PC_DB_REFACTOR.md.
+        summaries: dict = {}
+        dsn = os.environ.get("DATABASE_URL")
+        if dsn:
+            try:
+                summaries = pool_summaries_global(dsn, CONSECUTIVE_FAILURE_ALERT, since_1h, since_24h)
+            except Exception as e:
+                logger.warning("index: pool_summaries_global failed: %s", e)
+
+        def _eph(errors, workers):
+            return round(errors / workers, 2) if workers else None
+
+        def _sr(errors, successes):
+            total = errors + successes
+            return round(successes / total * 100, 1) if total > 0 else None
+
         rows = []
         for pool in registry.all_pools_including_disabled():
             if not pool.enabled:
@@ -106,27 +128,15 @@ def create_app() -> Flask:
                     },
                 )
                 continue
-            try:
-                pc = _get_classifier(pool.provisioner, pool.worker_type)
-                alerting = pc.storage.count_alerting(CONSECUTIVE_FAILURE_ALERT) if pc else None
-                oldest = pc.storage.oldest_classified_at() if pc else None
-                workers = pc.storage.count_workers() if pc else None
-
-                def _rates(since):
-                    errors = pc.storage.count_recent_errors(since)
-                    successes = pc.storage.count_recent_successes(since)
-                    eph = round(errors / workers, 2) if workers and errors is not None else None
-                    total = (errors or 0) + (successes or 0)
-                    sr = round(successes / total * 100, 1) if total > 0 else None
-                    return eph, sr
-
-                errors_per_host_1h, success_rate_1h = _rates(since_1h) if pc else (None, None)
-                errors_per_host_24h, success_rate_24h = _rates(since_24h) if pc else (None, None)
-            except Exception as e:
-                logger.warning("Failed to fetch summary for pool %s/%s: %s", pool.provisioner, pool.worker_type, e)
-                alerting = oldest = workers = None
-                errors_per_host_1h = success_rate_1h = None
-                errors_per_host_24h = success_rate_24h = None
+            s = summaries.get(f"{pool.provisioner}/{pool.worker_type}")
+            if s is None:
+                # No rows yet for this pool (never classified).
+                workers = alerting = oldest = None
+                errors_per_host_1h = success_rate_1h = errors_per_host_24h = success_rate_24h = None
+            else:
+                workers, alerting, oldest = s["workers"], s["alerting"], s["oldest"]
+                errors_per_host_1h, success_rate_1h = _eph(s["err_1h"], workers), _sr(s["err_1h"], s["ok_1h"])
+                errors_per_host_24h, success_rate_24h = _eph(s["err_24h"], workers), _sr(s["err_24h"], s["ok_24h"])
             rows.append(
                 {
                     "pool": pool,

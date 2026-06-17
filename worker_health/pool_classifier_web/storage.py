@@ -403,6 +403,55 @@ def count_category_hits_global(dsn: str, since_iso: str) -> Dict[str, int]:
             return {row[0]: row[1] for row in cur.fetchall()}
 
 
+def pool_summaries_global(dsn: str, alert_threshold: int, since_1h: str, since_24h: str) -> Dict[str, dict]:
+    """Per-pool dashboard summary for ALL pools in two grouped queries.
+
+    Replaces ~7 per-pool queries (run on a per-pool connection) with two
+    GROUP BY pool_id queries on one connection. Returns
+    {pool_id: {workers, alerting, oldest, err_1h, ok_1h, err_24h, ok_24h}}.
+    Pools with no rows simply won't appear — callers must default them.
+    """
+    if psycopg is None:
+        raise ImportError("psycopg (psycopg[binary]) is required")
+
+    summaries: Dict[str, dict] = {}
+
+    def _entry(pool_id: str) -> dict:
+        return summaries.setdefault(
+            pool_id,
+            {"workers": 0, "alerting": 0, "oldest": None, "err_1h": 0, "ok_1h": 0, "err_24h": 0, "ok_24h": 0},
+        )
+
+    with psycopg.connect(dsn) as conn:
+        # workers table → worker count + alerting count per pool
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pool_id, COUNT(*) AS workers,"
+                " COUNT(*) FILTER (WHERE consecutive_failures >= %s) AS alerting"
+                " FROM workers GROUP BY pool_id",
+                (alert_threshold,),
+            )
+            for pool_id, workers, alerting in cur.fetchall():
+                e = _entry(pool_id)
+                e["workers"], e["alerting"] = workers, alerting
+        # task_results → oldest + windowed error/success counts per pool, one scan
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pool_id, MIN(classified_at) AS oldest,"
+                " COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND classified_at >= %(s1h)s) AS err_1h,"
+                " COUNT(*) FILTER (WHERE run_state = 'completed'            AND classified_at >= %(s1h)s) AS ok_1h,"
+                " COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND classified_at >= %(s24h)s) AS err_24h,"
+                " COUNT(*) FILTER (WHERE run_state = 'completed'            AND classified_at >= %(s24h)s) AS ok_24h"
+                " FROM task_results GROUP BY pool_id",
+                {"s1h": since_1h, "s24h": since_24h},
+            )
+            for pool_id, oldest, err_1h, ok_1h, err_24h, ok_24h in cur.fetchall():
+                e = _entry(pool_id)
+                e["oldest"] = _to_iso(oldest)
+                e["err_1h"], e["ok_1h"], e["err_24h"], e["ok_24h"] = err_1h, ok_1h, err_24h, ok_24h
+    return summaries
+
+
 class PostgresStorage:
     """Postgres-backed storage for a single pool. Intended for Cloud Run / Cloud SQL."""
 

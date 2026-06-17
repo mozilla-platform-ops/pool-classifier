@@ -1,6 +1,8 @@
 # Pool Classifier — Dashboard Query Refactor
 
-Status: **proposed** (research / not yet implemented).
+Status: **implemented** — `pool_summaries_global()` in `storage.py`, index loop
+rewritten in `app.py`, parity tests in `tests/test_postgres_storage.py`
+(`test_pool_summaries_global_*`). Needs an image rebuild to deploy.
 
 Goal: collapse the dashboard index page's per-pool query fan-out into a couple
 of `GROUP BY pool_id` queries on a single connection. Wins on both **latency**

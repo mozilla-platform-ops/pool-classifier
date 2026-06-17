@@ -21,7 +21,11 @@ import pytest
 psycopg = pytest.importorskip("psycopg")
 
 from worker_health.pool_classifier_web.scripts.migrate import apply_migrations  # noqa: E402
-from worker_health.pool_classifier_web.storage import PostgresStorage, SqliteStorage  # noqa: E402
+from worker_health.pool_classifier_web.storage import (  # noqa: E402
+    PostgresStorage,
+    SqliteStorage,
+    pool_summaries_global,
+)
 
 DSN = os.environ.get("PC_TEST_DATABASE_URL", "")
 if not DSN:
@@ -263,3 +267,31 @@ def test_query_windowed_sr(sqlite, pg):
     for wid in sv:
         for key in ("succ_1d", "fail_1d"):
             assert sv[wid][key] == pv[wid][key], f"{wid}.{key}: sqlite={sv[wid][key]} pg={pv[wid][key]}"
+
+
+# --- pool_summaries_global: batched query matches the per-pool methods ---
+
+
+def test_pool_summaries_global_parity(pg):
+    _seed(pg)
+    since_1h = _now_iso(-1)
+    since_24h = _now_iso(-24)
+    threshold = 1
+
+    s = pool_summaries_global(DSN, threshold, since_1h, since_24h).get(POOL_ID)
+    assert s is not None, "seeded pool should appear in the grouped result"
+
+    # Each batched field must equal the per-pool method it replaces.
+    assert s["workers"] == pg.count_workers()
+    assert s["alerting"] == pg.count_alerting(threshold)
+    assert s["oldest"] == pg.oldest_classified_at()
+    assert s["err_1h"] == pg.count_recent_errors(since_1h)
+    assert s["ok_1h"] == pg.count_recent_successes(since_1h)
+    assert s["err_24h"] == pg.count_recent_errors(since_24h)
+    assert s["ok_24h"] == pg.count_recent_successes(since_24h)
+
+
+def test_pool_summaries_global_absent_for_empty_pool(pg):
+    # No seed → pool has no rows → it should simply not appear in the result.
+    summaries = pool_summaries_global(DSN, 1, _now_iso(-1), _now_iso(-24))
+    assert POOL_ID not in summaries
