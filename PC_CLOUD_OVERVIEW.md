@@ -106,6 +106,20 @@ terraform apply
 
 ## Debugging / operations
 
+### Authentication
+Two separate credentials — they expire independently (Mozilla enforces periodic
+reauth, so expect to re-run these):
+
+```bash
+# gcloud CLI commands (gcloud ..., scheduler/run/logging/etc.)
+gcloud auth login
+
+# Terraform / anything using Application Default Credentials.
+# Fixes: "Reauthentication failed" / "invalid_grant" / "invalid_rapt" on
+# terraform init/plan/apply.
+gcloud auth application-default login
+```
+
 ### Logs (Cloud Logging)
 ```bash
 # Tail recent app + request logs (most recent first)
