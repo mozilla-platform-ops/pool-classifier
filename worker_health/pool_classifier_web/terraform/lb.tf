@@ -82,8 +82,12 @@ resource "google_compute_url_map" "pc" {
     name            = "main"
     default_service = google_compute_backend_service.pc.id
 
+    # Non-IAP backend for Scheduler-driven endpoints (guarded by OIDC instead).
+    # "/classify-all" is an exact match — it does NOT match "/classify/*" (the
+    # wildcard requires a trailing slash segment), so it must be listed
+    # explicitly or it falls through to the IAP-protected default backend.
     path_rule {
-      paths   = ["/classify/*"]
+      paths   = ["/classify-all", "/classify/*"]
       service = google_compute_backend_service.pc_classify.id
     }
   }
