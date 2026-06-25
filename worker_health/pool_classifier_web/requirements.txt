@@ -4,5 +4,6 @@ requests
 taskcluster
 pyyaml
 psycopg[binary]
+psycopg-pool
 sentry-sdk
 google-auth
