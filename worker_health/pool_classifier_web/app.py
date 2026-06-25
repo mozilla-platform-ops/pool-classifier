@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -251,7 +252,20 @@ def create_app() -> Flask:
                 logger.exception("classify-all: pool %s failed", label)
                 results.append({"pool": label, "status": "error", "error": str(e)})
         ok = sum(1 for r in results if r["status"] == "ok")
-        body = {"pools": len(results), "ok": ok, "results": results}
+        counts = Counter(r["status"] for r in results)
+        body = {"pools": len(results), "ok": ok, "status_counts": dict(counts), "results": results}
+        log_msg = "classify-all summary: pools=%d ok=%d busy=%d error=%d not_found=%d"
+        log_args = (
+            len(results),
+            counts["ok"],
+            counts["busy"],
+            counts["error"],
+            counts["not_found"],
+        )
+        if counts["error"] or counts["not_found"]:
+            logger.warning(log_msg, *log_args)
+        else:
+            logger.info(log_msg, *log_args)
         # Surface a systemic failure (e.g. DB down) as a failed run; partial
         # failures still return 200 so the scheduler isn't spammed with retries.
         status_code = 200 if (ok > 0 or not results) else 500

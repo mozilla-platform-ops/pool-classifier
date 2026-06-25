@@ -89,10 +89,10 @@ resource "google_cloud_run_v2_service" "pc" {
         value = "true"
       }
 
-      # One gunicorn worker → one connection cache per instance. The app holds a
-      # persistent DB connection per pool in module-level state; a second worker
-      # would double that against db-g1-small's small connection limit. Threads
-      # (set in docker-entrypoint.sh) still give per-instance concurrency.
+      # One gunicorn worker keeps per-instance DB pressure predictable. The app
+      # uses a process-local psycopg_pool shared by cached pool classifiers
+      # (PC_DB_POOL_MAX defaults to 5). Threads (set in docker-entrypoint.sh)
+      # still give per-instance concurrency.
       env {
         name  = "GUNICORN_WORKERS"
         value = "1"
