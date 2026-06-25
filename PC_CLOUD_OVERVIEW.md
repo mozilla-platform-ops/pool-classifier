@@ -97,6 +97,18 @@ gcloud builds submit --config cloudbuild.yaml \
 > `worker_health/pool_classifier_web/requirements.txt`; keep it in sync with any
 > runtime dependency added to `Pipfile`.
 
+After deploy, verify the active revision/image and recent app health:
+
+```bash
+gcloud run services describe pool-classifier --region=us-west1 \
+  --project=relops-pool-classifier \
+  --format="value(status.latestReadyRevisionName,status.url,spec.template.spec.containers[0].image)"
+gcloud logging read \
+  'resource.type=cloud_run_revision AND resource.labels.service_name=pool-classifier AND severity>=WARNING' \
+  --project=relops-pool-classifier --limit=20 --freshness=10m --order=desc \
+  --format="value(timestamp, severity, textPayload)"
+```
+
 **Infra change → terraform:**
 
 ```bash
@@ -156,6 +168,9 @@ gcloud scheduler jobs describe pool-classifier-classify-all \
 gcloud scheduler jobs run pool-classifier-classify-all \
   --location=us-west1 --project=relops-pool-classifier
 ```
+> `jobs describe` can lag or continue showing the previous failed attempt while a
+> manually triggered `/classify-all` run is still active. Watch Cloud Run logs for
+> current-revision `Scan done` lines and `/classify-all` request status.
 
 ### Cloud Run
 ```bash
@@ -230,11 +245,17 @@ These bit us during the migration; documented so they don't again.
 - **Cloud Build runs as the Compute Engine default SA** on this (post-2024)
   project, not the legacy `@cloudbuild` SA. It has builder/run.admin/AR-writer/
   serviceAccountUser (`iam.tf`).
-- **`db-g1-small` has a low connection limit.** The app holds a persistent DB
-  connection per pool per gunicorn worker. Mitigations in place: `max_connections=100`,
-  `GUNICORN_WORKERS=1`, `cloud_run_max_instances=2`, and the single sequential
-  `/classify-all` job. Symptom if exceeded: "remaining connection slots are
-  reserved for roles with privileges of pg_use_reserved_connections".
+- **`db-g1-small` has a low connection limit.** The app uses one
+  process-local `psycopg_pool` per DSN, shared by cached pool classifiers. Pool
+  size is controlled by `PC_DB_POOL_MIN` / `PC_DB_POOL_MAX` (defaults: `1` /
+  `5`). Keep `GUNICORN_WORKERS=1`, `cloud_run_max_instances=2`, and the single
+  sequential `/classify-all` job unless the Cloud SQL connection budget is raised.
+  Symptom if exceeded: "remaining connection slots are reserved for roles with
+  privileges of pg_use_reserved_connections".
+- **IAP protects browser paths.** CLI `curl` to dashboard URLs such as `/` or
+  `/favicon.ico` normally returns an IAP OAuth redirect unless you provide an
+  authenticated IAP request. For deploy verification, prefer Cloud Run logs,
+  current revision/image checks, or an authenticated browser.
 - **Cloud Run scaling drift.** `gcloud run deploy` re-stamps the scaling block, so
   it's in `lifecycle.ignore_changes`; change scaling via `gcloud run services
   update`, not terraform.
