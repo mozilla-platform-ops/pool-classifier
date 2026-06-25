@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -360,23 +362,54 @@ except ImportError:  # pragma: no cover
     psycopg = None  # type: ignore
     _dict_row = None  # type: ignore
 
+try:
+    import psycopg_pool
+except ImportError:  # pragma: no cover
+    psycopg_pool = None  # type: ignore
+
+
+_PG_POOLS = {}
+_PG_POOLS_LOCK = threading.Lock()
+
+
+def _postgres_pool(dsn: str):
+    if psycopg_pool is None:
+        raise ImportError("psycopg-pool is required for PostgresStorage")
+
+    with _PG_POOLS_LOCK:
+        pool = _PG_POOLS.get(dsn)
+        if pool is None:
+            min_size = int(os.environ.get("PC_DB_POOL_MIN", "1"))
+            max_size = int(os.environ.get("PC_DB_POOL_MAX", "5"))
+            pool = psycopg_pool.ConnectionPool(
+                conninfo=dsn,
+                min_size=min_size,
+                max_size=max_size,
+                kwargs={"row_factory": _dict_row},
+                check=psycopg_pool.ConnectionPool.check_connection,
+                open=True,
+            )
+            _PG_POOLS[dsn] = pool
+        return pool
+
 
 class _PgLogRef:
     """Returned by PostgresStorage.list_unclassified_logs() in place of a Path.
     Calling .unlink() deletes the corresponding DB row so reclassify code works unchanged.
     """
 
-    def __init__(self, conn, pool_id: str, task_id: str) -> None:
-        self._conn = conn
+    def __init__(self, pool, pool_id: str, task_id: str) -> None:
+        self._pool = pool
         self._pool_id = pool_id
         self._task_id = task_id
 
     def unlink(self) -> None:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM unclassified_logs WHERE pool_id = %s AND task_id = %s",
-                (self._pool_id, self._task_id),
-            )
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM unclassified_logs WHERE pool_id = %s AND task_id = %s",
+                    (self._pool_id, self._task_id),
+                )
 
 
 def _to_iso(v) -> Optional[str]:
@@ -458,24 +491,59 @@ class PostgresStorage:
     def __init__(self, pool_id: str, dsn: str) -> None:
         if psycopg is None:
             raise ImportError("psycopg (psycopg[binary]) is required for PostgresStorage")
+        if psycopg_pool is None:
+            raise ImportError("psycopg-pool is required for PostgresStorage")
         self.pool_id = pool_id
         self._dsn = dsn
-        self._conn: Optional[psycopg.Connection] = None  # type: ignore
-
-    @property
-    def _db(self) -> psycopg.Connection:  # type: ignore
-        assert self._conn is not None, "init_schema() not called"
-        return self._conn
+        self._pool = None
+        self._tx_cm = None
+        self._tx_conn = None
 
     def init_schema(self) -> None:
         from worker_health.pool_classifier_web.scripts.migrate import apply_migrations
 
         apply_migrations(self._dsn)
-        self._conn = psycopg.connect(self._dsn, row_factory=_dict_row)
+        self._pool = _postgres_pool(self._dsn)
+
+    def _ensure_pool(self):
+        assert self._pool is not None, "init_schema() not called"
+        return self._pool
+
+    @contextmanager
+    def _cursor(self):
+        """Borrow a pooled connection for a read-only operation."""
+        if self._tx_conn is not None:
+            with self._tx_conn.cursor() as cur:
+                yield cur
+            return
+
+        with self._ensure_pool().connection() as conn:
+            with conn.cursor() as cur:
+                yield cur
+
+    @contextmanager
+    def _write_cursor(self):
+        """Use one checked-out connection for writes until commit()."""
+        if self._tx_conn is None:
+            self._tx_cm = self._ensure_pool().connection()
+            self._tx_conn = self._tx_cm.__enter__()
+        try:
+            with self._tx_conn.cursor() as cur:
+                yield cur
+        except Exception as exc:
+            self._release_tx(type(exc), exc, exc.__traceback__)
+            raise
+
+    def _release_tx(self, exc_type=None, exc=None, tb=None) -> None:
+        try:
+            self._tx_cm.__exit__(exc_type, exc, tb)
+        finally:
+            self._tx_cm = None
+            self._tx_conn = None
 
     def get_seen_tasks(self) -> Dict[str, set]:
         seen: Dict[str, set] = {}
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT worker_id, task_id FROM task_results WHERE pool_id = %s",
                 (self.pool_id,),
@@ -495,7 +563,7 @@ class PostgresStorage:
         run_started: Optional[str],
         classified_at: str,
     ) -> None:
-        with self._db.cursor() as cur:
+        with self._write_cursor() as cur:
             cur.execute(
                 "INSERT INTO task_results"
                 " (pool_id, task_id, worker_id, run_id, run_state, category,"
@@ -516,7 +584,7 @@ class PostgresStorage:
             )
 
     def upsert_worker(self, worker_id: str, worker_group: Optional[str]) -> None:
-        with self._db.cursor() as cur:
+        with self._write_cursor() as cur:
             cur.execute(
                 "INSERT INTO workers (pool_id, worker_id, worker_group) VALUES (%s,%s,%s)"
                 " ON CONFLICT (pool_id, worker_id) DO UPDATE"
@@ -526,7 +594,7 @@ class PostgresStorage:
             )
 
     def increment_success(self, worker_id: str, run_started: Optional[str]) -> None:
-        with self._db.cursor() as cur:
+        with self._write_cursor() as cur:
             cur.execute(
                 """UPDATE workers SET
                     successes = successes + 1,
@@ -538,7 +606,7 @@ class PostgresStorage:
             )
 
     def increment_failure(self, worker_id: str, run_started: Optional[str], category: Optional[str]) -> None:
-        with self._db.cursor() as cur:
+        with self._write_cursor() as cur:
             cur.execute(
                 """UPDATE workers SET
                     failures = failures + 1,
@@ -551,17 +619,22 @@ class PostgresStorage:
             )
 
     def commit(self) -> None:
-        self._db.commit()
+        if self._tx_conn is None:
+            return
+        try:
+            self._tx_conn.commit()
+        finally:
+            self._release_tx()
 
     def update_task_category(self, task_id: str, worker_id: str, category: str) -> None:
-        with self._db.cursor() as cur:
+        with self._write_cursor() as cur:
             cur.execute(
                 "UPDATE task_results SET category = %s WHERE pool_id = %s AND task_id = %s AND worker_id = %s",
                 (category, self.pool_id, task_id, worker_id),
             )
 
     def update_worker_last_category(self, task_id: str, worker_id: str, category: str) -> None:
-        with self._db.cursor() as cur:
+        with self._write_cursor() as cur:
             cur.execute(
                 """UPDATE workers SET last_failure_category = %s
                    WHERE pool_id = %s AND worker_id = %s
@@ -573,7 +646,7 @@ class PostgresStorage:
             )
 
     def count_alerting(self, threshold: int) -> int:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM workers WHERE pool_id = %s AND consecutive_failures >= %s",
                 (self.pool_id, threshold),
@@ -581,7 +654,7 @@ class PostgresStorage:
             return cur.fetchone()["cnt"]
 
     def count_workers_without_group(self) -> int:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM workers WHERE pool_id = %s AND worker_group IS NULL",
                 (self.pool_id,),
@@ -589,7 +662,7 @@ class PostgresStorage:
             return cur.fetchone()["cnt"]
 
     def backfill_worker_groups(self, workers: List[dict]) -> None:
-        with self._db.cursor() as cur:
+        with self._write_cursor() as cur:
             for w in workers:
                 cur.execute(
                     "UPDATE workers SET worker_group = %s"
@@ -598,7 +671,7 @@ class PostgresStorage:
                 )
 
     def get_quarantine_cache(self) -> Dict[str, dict]:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute("SELECT * FROM quarantine_cache WHERE pool_id = %s", (self.pool_id,))
             result = {}
             for row in cur.fetchall():
@@ -610,7 +683,7 @@ class PostgresStorage:
         return result
 
     def get_worker_group(self, worker_id: str) -> Optional[str]:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT worker_group FROM workers WHERE pool_id = %s AND worker_id = %s",
                 (self.pool_id, worker_id),
@@ -627,7 +700,7 @@ class PostgresStorage:
         client_id: str,
         fetched_at: str,
     ) -> None:
-        with self._db.cursor() as cur:
+        with self._write_cursor() as cur:
             cur.execute(
                 "INSERT INTO quarantine_cache"
                 " (pool_id, worker_id, quarantine_until, reason, set_at, client_id, fetched_at)"
@@ -643,7 +716,7 @@ class PostgresStorage:
 
     def query_workers(self) -> Dict[str, dict]:
         workers = {}
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT * FROM workers WHERE pool_id = %s ORDER BY worker_id",
                 (self.pool_id,),
@@ -655,7 +728,7 @@ class PostgresStorage:
             d["last_success"] = _to_iso(d["last_success"])
             d["last_failure"] = _to_iso(d["last_failure"])
             cats: Dict[str, int] = {}
-            with self._db.cursor() as cur:
+            with self._cursor() as cur:
                 cur.execute(
                     "SELECT category, COUNT(*) AS cnt FROM task_results"
                     " WHERE pool_id = %s AND worker_id = %s"
@@ -674,7 +747,7 @@ class PostgresStorage:
         c1d = (now - timedelta(days=1)).isoformat()
         c3d = (now - timedelta(days=3)).isoformat()
         c7d = (now - timedelta(days=7)).isoformat()
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 """
                 SELECT
@@ -704,7 +777,7 @@ class PostgresStorage:
                 for cat in cats:
                     cat_to_sev[cat] = sev
 
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 """
                 SELECT
@@ -737,7 +810,7 @@ class PostgresStorage:
         return heatmap
 
     def top_offenders(self, category: str, n: int = 5, since: Optional[str] = None) -> List[Tuple[str, int]]:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             if since:
                 cur.execute(
                     "SELECT worker_id, COUNT(*) AS cnt FROM task_results"
@@ -756,7 +829,7 @@ class PostgresStorage:
             return [(row["worker_id"], row["cnt"]) for row in cur.fetchall()]
 
     def oldest_classified_at(self) -> Optional[str]:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT MIN(classified_at) AS oldest FROM task_results WHERE pool_id = %s",
                 (self.pool_id,),
@@ -765,7 +838,7 @@ class PostgresStorage:
         return _to_iso(row["oldest"]) if row and row["oldest"] else None
 
     def save_unclassified_log(self, task_id: str, run_id: Optional[int], worker_id: str, log_text: str) -> None:
-        with self._db.cursor() as cur:
+        with self._write_cursor() as cur:
             cur.execute(
                 "INSERT INTO unclassified_logs (pool_id, task_id, run_id, worker_id, log_text)"
                 " VALUES (%s,%s,%s,%s,%s)"
@@ -776,17 +849,17 @@ class PostgresStorage:
             )
 
     def list_unclassified_logs(self) -> Iterator[Tuple[str, str, "_PgLogRef"]]:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT task_id, log_text FROM unclassified_logs WHERE pool_id = %s",
                 (self.pool_id,),
             )
             rows = cur.fetchall()
         for row in rows:
-            yield row["task_id"], row["log_text"], _PgLogRef(self._db, self.pool_id, row["task_id"])
+            yield row["task_id"], row["log_text"], _PgLogRef(self._ensure_pool(), self.pool_id, row["task_id"])
 
     def get_task_info(self, task_id: str) -> Optional[dict]:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT worker_id, run_id, run_state, reason_resolved"
                 " FROM task_results WHERE pool_id = %s AND task_id = %s",
@@ -796,7 +869,7 @@ class PostgresStorage:
         return dict(row) if row else None
 
     def db_rows_for_category(self, category: str) -> List[dict]:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT task_id, worker_id, run_id, run_state, reason_resolved"
                 " FROM task_results WHERE pool_id = %s AND category = %s",
@@ -805,12 +878,12 @@ class PostgresStorage:
             return [dict(row) for row in cur.fetchall()]
 
     def count_workers(self) -> int:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute("SELECT COUNT(*) AS cnt FROM workers WHERE pool_id = %s", (self.pool_id,))
             return cur.fetchone()["cnt"]
 
     def count_recent_errors(self, since: str) -> int:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM task_results"
                 " WHERE pool_id = %s AND run_state IN ('failed','exception') AND classified_at >= %s",
@@ -819,7 +892,7 @@ class PostgresStorage:
             return cur.fetchone()["cnt"]
 
     def count_recent_successes(self, since: str) -> int:
-        with self._db.cursor() as cur:
+        with self._cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM task_results"
                 " WHERE pool_id = %s AND run_state = 'completed' AND classified_at >= %s",
@@ -845,6 +918,8 @@ class PostgresStorage:
             lock_conn.close()
 
     def close(self) -> None:
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        if self._tx_conn is not None:
+            try:
+                self._tx_conn.rollback()
+            finally:
+                self._release_tx()
