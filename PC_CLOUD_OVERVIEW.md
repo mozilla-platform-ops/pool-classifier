@@ -92,6 +92,9 @@ gcloud builds submit --config cloudbuild.yaml \
 ```
 > Uses `_TAG` (not `$COMMIT_SHA`, which is empty for manual submits). Terraform's
 > `lifecycle.ignore_changes` keeps `apply` from reverting the deployed image.
+> The Cloud Run image installs Python packages from
+> `worker_health/pool_classifier_web/requirements.txt`; keep it in sync with any
+> runtime dependency added to `Pipfile`.
 
 **Infra change → terraform:**
 
