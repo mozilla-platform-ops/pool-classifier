@@ -1040,6 +1040,7 @@ class PoolClassifier:
             '<html lang="en">',
             "<head>",
             '<meta charset="utf-8">',
+            '<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">',
             f"<title>Pool Classifier: {self.provisioner}/{self.worker_type}</title>",
             "<style>",
             "  body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }",

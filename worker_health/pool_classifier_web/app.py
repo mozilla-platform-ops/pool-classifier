@@ -88,6 +88,10 @@ def create_app() -> Flask:
     def healthz():
         return "ok", 200, {"Content-Type": "text/plain"}
 
+    @app.get("/favicon.ico")
+    def favicon():
+        return app.send_static_file("favicon.svg")
+
     @app.get("/")
     def index():
         now_dt = datetime.now(timezone.utc)
@@ -181,7 +185,9 @@ def create_app() -> Flask:
         if not pool.enabled:
             reason_html = f"<p><strong>Reason:</strong> {pool.reason}</p>" if pool.reason else ""
             return Response(
-                f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{pool.worker_type} — disabled</title>"
+                f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                f"<link rel='icon' href='/static/favicon.svg' type='image/svg+xml'>"
+                f"<title>{pool.worker_type} — disabled</title>"
                 f"<style>body{{font-family:monospace;background:#111;color:#ccc;padding:1.5rem}}"
                 f"h1{{color:#f90}}a{{color:#888}}</style></head><body>"
                 f"<p><a href='/'>← back</a></p>"
