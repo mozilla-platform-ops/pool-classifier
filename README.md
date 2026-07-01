@@ -1,136 +1,114 @@
-# worker health tools
+# Pool Classifier
 
-Tools to ensure Taskcluster workers are not idle and performing well (success rate).
+Pool Classifier is a Cloud Run service and Flask dashboard for monitoring
+Taskcluster worker pools. It periodically classifies recent task results,
+matches task logs against failure patterns, and surfaces pool health, alerting
+workers, success rates, and unclassified failures.
 
-## TODO
+For the operator runbook, see [PC_CLOUD_OVERVIEW.md](PC_CLOUD_OVERVIEW.md).
+For local development details, see [POOL_CLASSIFIER.md](POOL_CLASSIFIER.md).
+For migration history, see
+[PC_CLOUD_RUN_MIGRATION.md](PC_CLOUD_RUN_MIGRATION.md).
 
-- move code into https://github.com/mozilla-platform-ops/relops-infra
+## Repository Layout
 
-## setup
-
-### Python and related
-
-For all tools, run in the pipenv.
-
+```text
+worker_health/
+  pool_classifier.py                  # core Taskcluster polling + classification
+  pool_classifier_web/
+    app.py                            # Flask app factory and routes
+    auth.py                           # OIDC validation for /classify/*
+    pools.yaml                        # pool registry
+    patterns.yaml                     # failure classification rules
+    storage.py                        # SQLite/Postgres storage implementations
+    migrations/                       # Postgres schema migrations
+    terraform/                        # Cloud Run, LB, SQL, Scheduler infra
+tests/                                # pytest suite
+Dockerfile                            # Cloud Run image
+cloudbuild.yaml                       # build, push, deploy
+docker-entrypoint.sh                  # migrations + gunicorn startup
+pc_db.sh                              # local Postgres helper
+pc_start.sh                           # local Flask helper
+pc_fetch_data.sh                      # trigger classify for all enabled pools
 ```
-# one-time setup
-# install pipenv
-pipenv install
 
-# for every use
-pipenv shell
-# run command
+The Python package is still named `worker_health` for compatibility after the
+repo extraction. Renaming it to `pool_classifier` is tracked as follow-up work.
+
+## Local Development
+
+Install dependencies:
+
+```sh
+pipenv install --dev
 ```
 
-### Taskcluster credentials
+Make sure a Taskcluster token exists at `~/.tc_token`:
 
-Many of the tools make calls against Taskcluster. We use a token stored in ~/.tc_token.
-
-```bash
+```json
 {
-    "clientId": "mozilla-auth0/ad|Mozilla-LDAP|aerickson/quarantine-workers",
-    "accessToken": "REDACTED"
+  "clientId": "mozilla-auth0/ad|Mozilla-LDAP|example/pool-classifier",
+  "accessToken": "REDACTED"
 }
 ```
 
-You can create a client token at https://firefox-ci-tc.services.mozilla.com/auth/clients.
+Start local Postgres and apply migrations:
 
-Make the expiration 100 years or similar. The only scope currently required is:
-
-```bash
-queue:quarantine-worker:*
+```sh
+./pc_db.sh init
+./pc_db.sh status
 ```
 
-## overview
+Start the app:
 
-### fitness.py
-
-Shows each worker's success rate and various concerning conditions like, consecutive failures, lack of work.
-
-Provides a report on a provisioner and worker-type.
-
-Not specific to Bitbar (works on all taskcluster provisioners).
-
-![fitness.py](images/fitness_py_example.png)
-
-```
-./fitness_check.py -h
-
-# to report on all worker types under a provisioner
-./fitness_check.py -p PROVISIONER
-# for a specific worker-type in the provisioner
-./fitness_check.py -p PROVISIONER WORKER-TYPE
+```sh
+./pc_start.sh
 ```
 
-### missing_workers
+Useful local URLs:
 
-For static hardware pools (like moonshots, macs, and bitbar), alert if a worker hasn't worked in more than a day (they disappear from TC output in 24 hours).
+- Dashboard: <http://localhost:8080/>
+- Example pool:
+  <http://localhost:8080/pools/proj-autophone/gecko-t-lambda-perf-a55>
+- Health check: <http://localhost:8080/healthz>
 
-If a queue doesn't have work, we can't verify they're functioning (via the currently used method - TC doesn't show static worker status unless working (I think) in https://firefox-ci-tc.services.mozilla.com/docs/reference/platform/queue/api#listWorkers).
+Trigger classify cycles:
 
-```bash
-./missing_workers.py -h
+```sh
+# Single pool
+curl -s -X POST localhost:8080/classify/proj-autophone/gecko-t-lambda-perf-a55 | jq .
+
+# Every enabled pool
+bash pc_fetch_data.sh
 ```
 
-### safe_runner
+## Tests
 
-Runs a command on a set of hosts once each has been quarantined and no jobs are running.
+```sh
+# Unit and web tests that do not require local Postgres
+pipenv run pytest tests/ --ignore=tests/test_runner.py -x -q
 
-Features:
-- integrates with Taskcluster API to quarantine, check no jobs are running, and lift quarantine
-- ability to resume from a state file
-- OS X speech support for updates
-- pre-quarantine feature (quarantines several hosts) so there's less waiting for jobs to finish
-- command output is logged to file
-
-Potential issues:
-- If ssh is giving you issues with Bolt, append '--native-ssh' to your Bolt command.
-
-```bash
-# for options
-./safe_runner.py -h
-
-# basic usage
-./safe_runner.py -r sr_state_dir_xyz
-# edit config and set options
-vi sr_state_dir_xyz/runner_state.toml
-./safe_runner.py -r sr_state_dir_xyz
-
-# resume from existing state file and set options
-./safe_runner.py -r sr_state_dir_xyz -t -R -P 11
+# Postgres-backed tests
+./pc_db.sh init
+export PC_TEST_DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier  # pragma: allowlist secret
+pipenv run pytest tests/test_postgres_storage.py tests/test_web_app.py -v
 ```
 
-### unsafe_runner
+## Deploy
 
-Similar to safe_runner, but doesn't deal with any quarantine stuff.
+Code deploys are built from the repository root:
 
-### quarantine_tool
-
-Lists quarantined hosts, quarantines, lifts quarantine, and lists all workers in a workerType.
-
-```bash
-# show quarantined
-./quarantine_tool.py proj-autophone gecko-t-bitbar-gw-unit-p2 show
-
-# show all workers
-./quarantine_tool.py proj-autophone gecko-t-bitbar-gw-unit-p2 show-all
-
-./quarantine_tool.py proj-autophone gecko-t-bitbar-gw-unit-p2 quarantine pixel2-01
-./quarantine_tool.py proj-autophone gecko-t-bitbar-gw-unit-p2 lift pixel2-01
+```sh
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions=_TAG=$(git rev-parse --short HEAD) \
+  --project=relops-pool-classifier .
 ```
 
-### slack_alert
+Infrastructure changes live under
+`worker_health/pool_classifier_web/terraform/`:
 
-Sends scheduled slack message about problem hosts.
-
-```
-./slack_alert.py -h
-```
-
-### influx_logger
-
-Logs worker health metrics to influx.
-
-```
-./influx_logger.py -h
+```sh
+cd worker_health/pool_classifier_web/terraform
+terraform plan
+terraform apply
 ```

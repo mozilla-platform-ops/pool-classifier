@@ -1,7 +1,7 @@
 # Build → push → deploy the pool classifier to Cloud Run.
 #
-# Manual build from the worker_health project dir (the build context). Pass the
-# git short SHA as the image tag for traceability:
+# Manual build from the repository root (the build context). Pass the git short
+# SHA as the image tag for traceability:
 #   gcloud builds submit --config cloudbuild.yaml \
 #       --substitutions=_TAG=$(git rev-parse --short HEAD) .
 #

@@ -1,5 +1,5 @@
 # Pool classifier web service — Cloud Run image.
-# Build context is the worker_health project dir (this directory).
+# Build context is the repository root.
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \

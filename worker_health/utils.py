@@ -12,7 +12,7 @@ from urllib3.util import Retry
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT_STRING = "Python (https://github.com/mozilla-platform-ops/android-tools/tree/master/worker_health)"
+USER_AGENT_STRING = "Python (https://github.com/mozilla-platform-ops/pool-classifier)"
 
 
 def human_delta(dt):

@@ -4,17 +4,17 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    # TODO: rename to relops-worker-tools, must rename package dir also
+    # TODO: rename package dir from worker_health to pool_classifier.
     name="worker_health",
     version="1.0.0",
     author="Andrew Erickson",
     author_email="aerickson@mozilla.com",
-    description="tools for working with workers",
+    description="Taskcluster pool classifier service and dashboard",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/mozilla-platform-ops/android-tools",
+    url="https://github.com/mozilla-platform-ops/pool-classifier",
     project_urls={
-        "Bug Tracker": "https://github.com/mozilla-platform-ops/android-tools/issues",
+        "Bug Tracker": "https://github.com/mozilla-platform-ops/pool-classifier/issues",
     },
     classifiers=[
         "Programming Language :: Python :: 3",

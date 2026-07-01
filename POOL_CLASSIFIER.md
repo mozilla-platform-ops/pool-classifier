@@ -1,6 +1,6 @@
 # Pool Classifier
 
-Multi-pool Taskcluster worker health classifier with a Flask dashboard. Each pool gets periodically polled, recent task results are pulled from TC, and log output is matched against [`patterns.yaml`](worker_health/pool_classifier_web/patterns.yaml) to bucket failures by category and severity.
+Multi-pool Taskcluster pool health classifier with a Flask dashboard. Each pool gets periodically polled, recent task results are pulled from TC, and log output is matched against [`patterns.yaml`](worker_health/pool_classifier_web/patterns.yaml) to bucket failures by category and severity.
 
 For the Cloud Run migration plan and history, see [`PC_CLOUD_RUN_MIGRATION.md`](PC_CLOUD_RUN_MIGRATION.md).
 

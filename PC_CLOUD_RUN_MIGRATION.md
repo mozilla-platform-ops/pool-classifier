@@ -24,7 +24,7 @@ Browser │ HTTPS LB + IAP (mozilla.com) ──► Cloud Run │──► Cloud 
 - Cloud Scheduler triggers per-pool classify cycles (not APScheduler in-process)
 - Cloud SQL Postgres replaces local SQLite; multi-tenanted via `pool_id` column
 - IAP at the LB backend (mozilla.com domain access); Scheduler bypasses IAP on `/classify/*` via a separate LB path-matcher
-- Deployment mirrors `~/git/hangar/` terraform layout
+- Deployment follows the relops Terraform layout used by related services
 
 **Why Cloud Scheduler over APScheduler:** N pools with different cadences map naturally to N Scheduler jobs. Missed ticks on CI monitoring are an incident. Two Cloud Run instances would double-fire an in-process scheduler. Scheduler is auditable in `gcloud scheduler jobs list`.
 
@@ -122,7 +122,6 @@ Add `PostgresStorage` implementing the same interface as `SqliteStorage`, and a 
 
 ```sh
 # 1. Existing tests (no Docker needed)
-cd worker_health
 pipenv run pytest tests/ --ignore=tests/test_runner.py -x -q
 
 # 2. Start Postgres and apply migrations
@@ -200,7 +199,7 @@ bash pc_fetch_data.sh
 
 ### ✅ Phase 4 — Terraform (DONE)
 
-Flat root config under `worker_health/pool_classifier_web/terraform/`, mirroring `~/git/hangar/terraform/` with the noted deltas.
+Terraform config lives under `worker_health/pool_classifier_web/terraform/`.
 
 **Changes made:**
 
@@ -226,19 +225,19 @@ Flat root config under `worker_health/pool_classifier_web/terraform/`, mirroring
 
 **Files in original spec (kept for reference):**
 
-| File | Notes vs hangar |
+| File | Notes |
 |---|---|
 | `main.tf` | Add `cloudscheduler.googleapis.com` API |
 | `variables.tf` | `pools` variable (list of objects), `iap_authorized_members` default `["domain:mozilla.com"]` |
 | `outputs.tf` | `populate_secrets_commands` for TC token |
-| `network.tf` | Same: VPC, subnet, Serverless VPC Access connector, Service Networking peering |
+| `network.tf` | VPC, subnet, Serverless VPC Access connector, Service Networking peering |
 | `sql.tf` | Postgres 16, ENTERPRISE edition, `db-g1-small` ZONAL (shared-core has no HA), private IP, SSL, PITR, deletion_protection |
 | `secrets.tf` | Only 2 secrets: `pc-db-url` (TF-populated), `pc-tc-token` (manual) | <!-- pragma: allowlist secret -->
 | `artifact_registry.tf` | Docker repo `pool-classifier`, keep-last-10 cleanup |
 | `iam.tf` | Runtime SA `pool-classifier-run`, scheduler SA `pool-classifier-scheduler`; IAP binding to `var.iap_authorized_members` |
-| `run.tf` | `cpu_idle=true` (no APScheduler — deviation from hangar); `timeout=1800s`; `ingress=INTERNAL_LOAD_BALANCER` |
-| `lb.tf` | Same HTTPS LB + IAP + Cloud Armor; **add `/classify/*` path-matcher to non-IAP backend** for Scheduler OIDC |
-| `armor.tf` | Verbatim from hangar |
+| `run.tf` | `cpu_idle=true` (no APScheduler); `timeout=1800s`; `ingress=INTERNAL_LOAD_BALANCER` |
+| `lb.tf` | HTTPS LB + IAP + Cloud Armor; **add `/classify/*` path-matcher to non-IAP backend** for Scheduler OIDC |
+| `armor.tf` | Cloud Armor policy |
 | `scheduler.tf` | **New** — `for_each` over `var.pools`, one `google_cloud_scheduler_job` per pool, OIDC via scheduler SA, `attempt_deadline=1800s` |
 
 ---
@@ -257,10 +256,10 @@ The `/classify/*` URL path bypasses IAP at the LB so Cloud Scheduler can reach i
 
 **Done so far — container image + build pipeline:**
 
-- **`worker_health/Dockerfile`** — `python:3.11-slim`; installs `requirements.txt` then `pip install --no-deps -e .` (editable install keeps `pools.yaml`/`patterns.yaml`/`migrations/*.sql`/`templates/` on disk); non-root `app` user (uid 10001); `HEALTHCHECK` hits `/healthz`; `CMD` runs `docker-entrypoint.sh`. Build context is the project dir (`/app`), matching `POOLS_FILE=/app/worker_health/pool_classifier_web/pools.yaml` in `run.tf`.
-- **`worker_health/docker-entrypoint.sh`** — new. Applies migrations (idempotent; toggle with `RUN_MIGRATIONS`, default `true`), then `exec gunicorn` on `$PORT` (default 8080) with `--timeout 1800` to match the Cloud Run request timeout, `--workers 2 --threads 8` for the I/O-bound classify work. Serves app factory `worker_health.pool_classifier_web.app:create_app()`.
-- **`worker_health/.dockerignore`** — keeps the context lean: excludes `pgdata/`, `pool_classifier_results/`, `ur_*`/`sr_*` run dirs, caches, tests, docs (re-includes `README.md`, which `setup.py` reads at install time).
-- **`worker_health/cloudbuild.yaml`** — build → push to Artifact Registry (`$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app`, tags `$COMMIT_SHA` + `latest`, `--cache-from latest`) → `gcloud run deploy pool-classifier`. `_REGION` default `us-west1` (matches terraform). Submit from the project dir: `gcloud builds submit --config cloudbuild.yaml .`
+- **`Dockerfile`** — `python:3.11-slim`; installs `requirements.txt` then `pip install --no-deps -e .` (editable install keeps `pools.yaml`/`patterns.yaml`/`migrations/*.sql`/`templates/` on disk); non-root `app` user (uid 10001); `HEALTHCHECK` hits `/healthz`; `CMD` runs `docker-entrypoint.sh`. Build context is the repository root (`/app`), matching `POOLS_FILE=/app/worker_health/pool_classifier_web/pools.yaml` in `run.tf`.
+- **`docker-entrypoint.sh`** — new. Applies migrations (idempotent; toggle with `RUN_MIGRATIONS`, default `true`), then `exec gunicorn` on `$PORT` (default 8080) with `--timeout 1800` to match the Cloud Run request timeout, `--workers 2 --threads 8` for the I/O-bound classify work. Serves app factory `worker_health.pool_classifier_web.app:create_app()`.
+- **`.dockerignore`** — keeps the context lean: excludes `pgdata/`, `pool_classifier_results/`, `ur_*`/`sr_*` run dirs, caches, tests, docs (re-includes `README.md`, which `setup.py` reads at install time).
+- **`cloudbuild.yaml`** — build → push to Artifact Registry (`$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app`, tags `$COMMIT_SHA` + `latest`, `--cache-from latest`) → `gcloud run deploy pool-classifier`. `_REGION` default `us-west1` (matches terraform). Submit from the repository root: `gcloud builds submit --config cloudbuild.yaml .`
 
 Locally verified: image builds; gunicorn boots and `/healthz` returns `ok` with no DB; the entrypoint migration step connects to the compose Postgres and applies/skips migrations.
 
@@ -299,7 +298,7 @@ The blocker was **not** an org-level PAB (red herring — see the long diagnosti
    - Ref: <https://cloud.google.com/iap/docs/enabling-cloud-run>
 2. **Explicit OAuth client instead of Google-managed.** The managed client (`iap { enabled = true }` only) stuck at "You don't have access"; a manually-created OAuth client (Console → Google Auth Platform → Clients → Web app; redirect URI `https://iap.googleapis.com/v1/oauth/clientIds/<id>:handleRedirect`) matched hangar and let the flow proceed. `lb.tf` now passes `oauth2_client_id`/`secret` (vars in `variables.tf`, values in gitignored `terraform.tfvars`).
 
-`domain:mozilla.com` in `iap_authorized_members` works as the durable principal (matches hangar) — no `user:`/group needed. The org-admin escalation (`RELOPS-2435`) is **not** required; can be closed.
+`domain:mozilla.com` in `iap_authorized_members` works as the durable principal — no `user:`/group needed. The org-admin escalation (`RELOPS-2435`) is **not** required; can be closed.
 
 Diagnostics that ruled out the org-PAB theory (kept for reference): no Domain Restricted Sharing anywhere; no IAM deny policy (project/folder `{}`); org PAB/ACM lists were `PERMISSION_DENIED` — unreadable, but ultimately irrelevant.
 

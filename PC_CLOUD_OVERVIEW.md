@@ -86,7 +86,6 @@ truth — there is no terraform pool list.
 Dockerfile, pushes to Artifact Registry, `gcloud run deploy`):
 
 ```bash
-cd worker_health   # project dir = build context
 gcloud builds submit --config cloudbuild.yaml \
   --substitutions=_TAG=$(git rev-parse --short HEAD) \
   --project=relops-pool-classifier .

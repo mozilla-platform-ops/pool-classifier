@@ -2,15 +2,15 @@
 
 Target repo name: `pool-classifier`
 
-Goal: move the Cloud Run Pool Classifier service out of `android-tools/worker_health`
-into its own repository with minimal behavior change, then clean up dependencies,
-packaging, and app structure in follow-up work.
+Goal: document the completed extraction of the Cloud Run Pool Classifier service
+into its own repository, then clean up dependencies, packaging, and app
+structure in follow-up work.
 
 ## Why Extract
 
 - Pool Classifier now has its own production service, database, Terraform,
   Cloud Build deploy flow, scheduler, runbooks, and tests.
-- Its deploy cadence is separate from the rest of `android-tools`.
+- Its deploy cadence is separate from unrelated platform tooling.
 - Unrelated commits can accidentally ride along in production deploys.
 - Runtime packaging already differs from local development (`requirements.txt`
   for the container, `Pipfile` for local work).
@@ -28,7 +28,7 @@ packaging, and app structure in follow-up work.
 
 ## Candidate Contents
 
-Move these into `pool-classifier`:
+The standalone repository contains:
 
 - `worker_health/pool_classifier.py`
 - `worker_health/pool_classifier_web/`
@@ -45,9 +45,9 @@ Move these into `pool-classifier`:
 - `POOL_CLASSIFIER.md`
 - Any small helper scripts that are truly Pool Classifier specific.
 
-Leave behind or evaluate separately:
+Left behind or evaluated separately during extraction:
 
-- Generic `worker_health` worker/taskcluster utilities.
+- Generic worker/taskcluster utilities.
 - Runner/safe-runner scripts and their tests.
 - Android device scripts unrelated to Pool Classifier.
 - Ad hoc local notes unless they are useful operational docs.
@@ -62,11 +62,10 @@ pool-classifier/
   cloudbuild.yaml
   docker-entrypoint.sh
   README.md
-  docs/
-    PC_CLOUD_OVERVIEW.md
-    PC_CLOUD_RUN_MIGRATION.md
-    PC_CLOUD_TODOS.md
-    POOL_CLASSIFIER.md
+  PC_CLOUD_OVERVIEW.md
+  PC_CLOUD_RUN_MIGRATION.md
+  PC_CLOUD_TODOS.md
+  POOL_CLASSIFIER.md
   worker_health/
     __init__.py
     pool_classifier.py
@@ -145,8 +144,7 @@ forces it.
      - `/classify-all` can be triggered and emits summary logs.
 
 9. **Freeze old path**
-   - Add a note in the old `android-tools/worker_health` tree pointing to
-     `pool-classifier`.
+   - Add a note in the previous source tree pointing to `pool-classifier`.
    - Remove or archive old Pool Classifier files only after production has run
      successfully from the new repo.
 
