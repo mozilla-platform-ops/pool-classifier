@@ -33,7 +33,9 @@ pc_fetch_data.sh                      # trigger classify for all enabled pools
 ```
 
 The Python package is still named `worker_health` for compatibility after the
-repo extraction. Renaming it to `pool_classifier` is tracked as follow-up work.
+repo extraction. Any `worker_health` references in package paths are vestigial
+and can be cleaned up once the standalone service has stabilized. Renaming it to
+`pool_classifier` is tracked as follow-up work.
 
 ## Local Development
 
