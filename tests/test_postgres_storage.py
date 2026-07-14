@@ -74,9 +74,9 @@ def _seed(storage):
     """Insert a worker + a few task results so query methods have data."""
     storage.upsert_worker("w1", "grp-a")
     storage.upsert_worker("w2", None)
-    storage.record_task_result("t1", "w1", 0, "completed", None, None, _now_iso(-1), _now_iso())
-    storage.record_task_result("t2", "w1", 1, "failed", "bad_device", "infra", _now_iso(-2), _now_iso())
-    storage.record_task_result("t3", "w2", 0, "failed", "bad_device", "infra", _now_iso(-3), _now_iso())
+    storage.record_task_result("t1", "w1", 0, "completed", None, None, _now_iso(-1), _now_iso(), _now_iso())
+    storage.record_task_result("t2", "w1", 1, "failed", "bad_device", "infra", _now_iso(-2), _now_iso(), _now_iso())
+    storage.record_task_result("t3", "w2", 0, "failed", "bad_device", "infra", _now_iso(-3), _now_iso(), _now_iso())
     storage.increment_success("w1", _now_iso(-1))
     storage.increment_failure("w1", _now_iso(-2), "bad_device")
     storage.increment_failure("w2", _now_iso(-3), "bad_device")
@@ -94,6 +94,7 @@ def test_get_seen_tasks(sqlite, pg):
     assert set(sq.keys()) == set(pq.keys())
     for wid in sq:
         assert sq[wid] == pq[wid]
+    assert sqlite.get_seen_task_runs() == pg.get_seen_task_runs()
 
 
 # --- record_task_result idempotency (ON CONFLICT DO NOTHING) ---
@@ -102,10 +103,37 @@ def test_get_seen_tasks(sqlite, pg):
 def test_record_task_result_idempotent(sqlite, pg):
     for s in (sqlite, pg):
         s.upsert_worker("w1", "g")
-        s.record_task_result("t1", "w1", 0, "completed", None, None, _now_iso(-1), _now_iso())
-        s.record_task_result("t1", "w1", 0, "completed", None, None, _now_iso(-1), _now_iso())
+        s.record_task_result("t1", "w1", 0, "completed", None, None, _now_iso(-1), _now_iso(), _now_iso())
+        s.record_task_result("t1", "w1", 0, "completed", None, None, _now_iso(-1), _now_iso(), _now_iso())
         s.commit()
     assert sqlite.get_seen_tasks()["w1"] == pg.get_seen_tasks()["w1"]
+
+
+def test_record_task_result_preserves_retries_and_resolved_time(sqlite, pg):
+    started = "2026-07-14T10:00:00+00:00"
+    resolved = "2026-07-14T10:05:00+00:00"
+    classified = "2026-07-14T10:10:00+00:00"
+    for s in (sqlite, pg):
+        s.record_task_result("t1", "w1", 0, "failed", "infra", None, started, resolved, classified)
+        s.record_task_result("t1", "w1", 1, "completed", None, None, started, resolved, classified)
+        s.record_task_result("t1", "w1", 2, "exception", "exception", "malformed-payload", None, None, classified)
+        s.commit()
+
+    assert sqlite.get_seen_task_runs() == pg.get_seen_task_runs() == {
+        "w1": {("t1", 0), ("t1", 1), ("t1", 2)},
+    }
+    sqlite_rows = sqlite.db.execute(
+        "SELECT run_id, run_resolved FROM task_results ORDER BY run_id",
+    ).fetchall()
+    with psycopg.connect(DSN) as conn:
+        pg_rows = conn.execute(
+            "SELECT run_id, run_resolved FROM task_results"
+            " WHERE pool_id = %s ORDER BY run_id",
+            (POOL_ID,),
+        ).fetchall()
+    assert [row[0] for row in sqlite_rows] == [row[0] for row in pg_rows]
+    assert sqlite_rows[0]["run_resolved"] == pg_rows[0][1].isoformat()
+    assert sqlite_rows[2]["run_resolved"] is pg_rows[2][1] is None
 
 
 # --- upsert_worker: worker_group not overwritten by None ---
@@ -181,7 +209,7 @@ def test_update_category(sqlite, pg):
     ts = _now_iso(-1)  # same value for both record and increment so the WHERE match works
     for s in (sqlite, pg):
         s.upsert_worker("w1", "g")
-        s.record_task_result("t1", "w1", 0, "failed", "unclassified", None, ts, _now_iso())
+        s.record_task_result("t1", "w1", 0, "failed", "unclassified", None, ts, _now_iso(), _now_iso())
         s.increment_failure("w1", ts, "unclassified")
         s.commit()
         s.update_task_category("t1", "w1", "bad_device")

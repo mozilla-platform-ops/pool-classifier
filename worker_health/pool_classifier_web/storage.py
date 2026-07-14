@@ -36,11 +36,13 @@ CREATE TABLE IF NOT EXISTS task_results (
     category         TEXT,
     reason_resolved  TEXT,
     run_started      TEXT,
-    classified_at    TEXT NOT NULL,
-    PRIMARY KEY (task_id, worker_id)
+    run_resolved     TEXT,
+    classified_at    TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_results_worker ON task_results (worker_id);
+CREATE INDEX IF NOT EXISTS idx_task_results_started ON task_results (run_started);
+CREATE INDEX IF NOT EXISTS idx_task_results_cat ON task_results (category);
 
 CREATE TABLE IF NOT EXISTS quarantine_cache (
     worker_id        TEXT PRIMARY KEY,
@@ -73,15 +75,71 @@ class SqliteStorage:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(DB_SCHEMA)
+        self._migrate_task_results_schema()
         try:
             self._db.execute("ALTER TABLE workers ADD COLUMN worker_group TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists
 
+    def _migrate_task_results_schema(self) -> None:
+        """Upgrade legacy SQLite task rows to one row per Taskcluster run."""
+        table_info = list(self.db.execute("PRAGMA table_info(task_results)"))
+        columns = {row["name"] for row in table_info}
+        if "run_resolved" not in columns:
+            self.db.execute("ALTER TABLE task_results ADD COLUMN run_resolved TEXT")
+
+        legacy_primary_key = any(row["pk"] for row in table_info)
+        indexes = {row["name"] for row in self.db.execute("PRAGMA index_list(task_results)")}
+        if not legacy_primary_key:
+            if "idx_task_results_task_run" not in indexes:
+                self.db.execute(
+                    "CREATE UNIQUE INDEX idx_task_results_task_run"
+                    " ON task_results (task_id, COALESCE(run_id, -1))",
+                )
+            return
+
+        self.db.executescript(
+            """
+            DROP INDEX IF EXISTS idx_task_results_worker;
+            DROP INDEX IF EXISTS idx_task_results_started;
+            DROP INDEX IF EXISTS idx_task_results_cat;
+            ALTER TABLE task_results RENAME TO task_results_legacy;
+            CREATE TABLE task_results (
+                task_id          TEXT NOT NULL,
+                worker_id        TEXT NOT NULL,
+                run_id           INTEGER,
+                run_state        TEXT NOT NULL,
+                category         TEXT,
+                reason_resolved  TEXT,
+                run_started      TEXT,
+                run_resolved     TEXT,
+                classified_at    TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO task_results
+                (task_id, worker_id, run_id, run_state, category, reason_resolved,
+                 run_started, run_resolved, classified_at)
+            SELECT task_id, worker_id, run_id, run_state, category, reason_resolved,
+                   run_started, run_resolved, classified_at
+            FROM task_results_legacy;
+            DROP TABLE task_results_legacy;
+            CREATE UNIQUE INDEX idx_task_results_task_run
+                ON task_results (task_id, COALESCE(run_id, -1));
+            CREATE INDEX idx_task_results_worker ON task_results (worker_id);
+            CREATE INDEX idx_task_results_started ON task_results (run_started);
+            CREATE INDEX idx_task_results_cat ON task_results (category);
+            """
+        )
+
     def get_seen_tasks(self) -> Dict[str, set]:
         seen: Dict[str, set] = {}
         for row in self.db.execute("SELECT worker_id, task_id FROM task_results"):
             seen.setdefault(row["worker_id"], set()).add(row["task_id"])
+        return seen
+
+    def get_seen_task_runs(self) -> Dict[str, set]:
+        seen: Dict[str, set] = {}
+        for row in self.db.execute("SELECT worker_id, task_id, run_id FROM task_results"):
+            seen.setdefault(row["worker_id"], set()).add((row["task_id"], row["run_id"]))
         return seen
 
     def record_task_result(
@@ -93,13 +151,25 @@ class SqliteStorage:
         category: Optional[str],
         reason_resolved: Optional[str],
         run_started: Optional[str],
+        run_resolved: Optional[str],
         classified_at: str,
     ) -> None:
         self.db.execute(
             "INSERT OR IGNORE INTO task_results"
-            " (task_id, worker_id, run_id, run_state, category, reason_resolved, run_started, classified_at)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            (task_id, worker_id, run_id, run_state, category, reason_resolved, run_started, classified_at),
+            " (task_id, worker_id, run_id, run_state, category, reason_resolved,"
+            "  run_started, run_resolved, classified_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                task_id,
+                worker_id,
+                run_id,
+                run_state,
+                category,
+                reason_resolved,
+                run_started,
+                run_resolved,
+                classified_at,
+            ),
         )
 
     def upsert_worker(self, worker_id: str, worker_group: Optional[str]) -> None:
@@ -552,6 +622,17 @@ class PostgresStorage:
                 seen.setdefault(row["worker_id"], set()).add(row["task_id"])
         return seen
 
+    def get_seen_task_runs(self) -> Dict[str, set]:
+        seen: Dict[str, set] = {}
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT worker_id, task_id, run_id FROM task_results WHERE pool_id = %s",
+                (self.pool_id,),
+            )
+            for row in cur.fetchall():
+                seen.setdefault(row["worker_id"], set()).add((row["task_id"], row["run_id"]))
+        return seen
+
     def record_task_result(
         self,
         task_id: str,
@@ -561,14 +642,15 @@ class PostgresStorage:
         category: Optional[str],
         reason_resolved: Optional[str],
         run_started: Optional[str],
+        run_resolved: Optional[str],
         classified_at: str,
     ) -> None:
         with self._write_cursor() as cur:
             cur.execute(
                 "INSERT INTO task_results"
                 " (pool_id, task_id, worker_id, run_id, run_state, category,"
-                "  reason_resolved, run_started, classified_at)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz)"
+                "  reason_resolved, run_started, run_resolved, classified_at)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s::timestamptz)"
                 " ON CONFLICT DO NOTHING",
                 (
                     self.pool_id,
@@ -579,6 +661,7 @@ class PostgresStorage:
                     category,
                     reason_resolved,
                     run_started,
+                    run_resolved,
                     classified_at,
                 ),
             )

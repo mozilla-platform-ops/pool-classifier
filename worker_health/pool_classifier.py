@@ -84,7 +84,7 @@ class PoolClassifier:
         self.results_dir = results_dir
         self.poll_interval = poll_interval
         self.queue_base = f"{TC_ROOT}/api/queue/v1"
-        self.seen_tasks: Dict[str, set] = {}  # in-memory cache, reloaded from storage each cycle
+        self.seen_task_runs: Dict[str, set] = {}  # in-memory cache, reloaded from storage each cycle
         self._interrupted = False
         self.use_color = use_color
         self._cached_workers: List[dict] = []
@@ -130,11 +130,11 @@ class PoolClassifier:
 
     def _init_db(self):
         self.storage.init_schema()
-        self.seen_tasks = self.storage.get_seen_tasks()
-        seen_count = sum(len(s) for s in self.seen_tasks.values())
+        self.seen_task_runs = self.storage.get_seen_task_runs()
+        seen_count = sum(len(s) for s in self.seen_task_runs.values())
         logger.info(
             f"[{self.provisioner}/{self.worker_type}] Storage: {seen_count} "
-            f"previously seen tasks across {len(self.seen_tasks)} workers",
+            f"previously seen task runs across {len(self.seen_task_runs)} workers",
         )
 
     # --- TC API calls ---
@@ -273,10 +273,10 @@ class PoolClassifier:
     # --- polling ---
 
     def _new_terminal_tasks(self, worker_id: str, worker_group: str) -> List[Tuple]:
-        """Return list of (task_id, run_id, run_state, run_started, reason_resolved) for newly terminal runs."""
-        if worker_id not in self.seen_tasks:
-            self.seen_tasks[worker_id] = set()
-        seen = self.seen_tasks[worker_id]
+        """Return newly terminal runs, including their complete time intervals."""
+        if worker_id not in self.seen_task_runs:
+            self.seen_task_runs[worker_id] = set()
+        seen = self.seen_task_runs[worker_id]
         results = []
 
         try:
@@ -285,11 +285,18 @@ class PoolClassifier:
             logger.warning(f"{worker_id}: failed to fetch recent tasks: {e}")
             return results
 
-        unseen_task_ids = [t["taskId"] for t in recent if t.get("taskId") and t["taskId"] not in seen]
-        if unseen_task_ids:
-            logger.debug(f"  {worker_id}: checking {len(unseen_task_ids)} unseen task(s)")
+        task_ids = list(
+            dict.fromkeys(
+                task["taskId"]
+                for task in recent
+                if task.get("taskId")
+                and (task.get("taskId"), task.get("runId")) not in seen
+            )
+        )
+        if task_ids:
+            logger.debug(f"  {worker_id}: checking {len(task_ids)} recent task(s)")
 
-        for task_id in unseen_task_ids:
+        for task_id in task_ids:
             try:
                 logger.debug(f"  {worker_id}: fetching status for {task_id}")
                 status_resp = self._get_task_status(task_id)
@@ -297,27 +304,39 @@ class PoolClassifier:
                 logger.warning(f"{task_id}: status fetch error: {e}")
                 continue
             if not status_resp:
-                seen.add(task_id)
                 continue
 
             runs = status_resp.get("status", {}).get("runs", [])
             my_runs = [r for r in runs if r.get("workerId") == worker_id]
 
             if not my_runs:
-                seen.add(task_id)
                 continue
 
-            latest = my_runs[-1]
-            run_state = latest.get("state")
-            if run_state not in ("completed", "failed", "exception"):
-                logger.debug(f"  {worker_id}: task {task_id} still running (state={run_state}), will re-check")
-                continue
+            for run in my_runs:
+                run_id = run.get("runId")
+                run_key = (task_id, run_id)
+                if run_key in seen:
+                    continue
+                run_state = run.get("state")
+                if run_state not in ("completed", "failed", "exception"):
+                    logger.debug(
+                        f"  {worker_id}: task {task_id} run {run_id} still running "
+                        f"(state={run_state}), will re-check",
+                    )
+                    continue
 
-            seen.add(task_id)
-            logger.debug(f"  {worker_id}: task {task_id} terminal (state={run_state})")
-            results.append(
-                (task_id, latest.get("runId"), run_state, latest.get("started"), latest.get("reasonResolved")),
-            )
+                seen.add(run_key)
+                logger.debug(f"  {worker_id}: task {task_id} run {run_id} terminal (state={run_state})")
+                results.append(
+                    (
+                        task_id,
+                        run_id,
+                        run_state,
+                        run.get("started"),
+                        run.get("resolved"),
+                        run.get("reasonResolved"),
+                    ),
+                )
 
         return results
 
@@ -331,7 +350,7 @@ class PoolClassifier:
         return worker_id, worker_group, tasks
 
     def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], bar=None, worker_group: str = None):
-        for task_id, run_id, run_state, run_started, reason_resolved in terminal_tasks:
+        for task_id, run_id, run_state, run_started, run_resolved, reason_resolved in terminal_tasks:
             if self._interrupted:
                 logger.info(f"  {worker_id}: interrupted, skipping remaining tasks")
                 break
@@ -374,6 +393,7 @@ class PoolClassifier:
                 category,
                 reason_resolved,
                 run_started,
+                run_resolved,
                 classified_at,
             )
             self.storage.upsert_worker(worker_id, worker_group)
