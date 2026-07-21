@@ -52,6 +52,36 @@ CREATE TABLE IF NOT EXISTS quarantine_cache (
     client_id        TEXT,
     fetched_at       TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS worker_availability_state (
+    worker_id          TEXT PRIMARY KEY,
+    worker_group       TEXT,
+    available          INTEGER NOT NULL,
+    quarantined        INTEGER NOT NULL,
+    last_contact       TEXT,
+    quarantine_until   TEXT,
+    reason             TEXT NOT NULL,
+    effective_at       TEXT NOT NULL,
+    observed_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS worker_availability_transitions (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    worker_id          TEXT NOT NULL,
+    worker_group       TEXT,
+    available          INTEGER NOT NULL,
+    quarantined        INTEGER NOT NULL,
+    last_contact       TEXT,
+    quarantine_until   TEXT,
+    reason             TEXT NOT NULL,
+    effective_at       TEXT NOT NULL,
+    observed_at        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_worker_availability_effective
+    ON worker_availability_transitions (effective_at);
+CREATE INDEX IF NOT EXISTS idx_worker_availability_worker
+    ON worker_availability_transitions (worker_id, effective_at);
 """
 
 
@@ -256,6 +286,77 @@ class SqliteStorage:
 
     def get_quarantine_cache(self) -> Dict[str, dict]:
         return {row["worker_id"]: dict(row) for row in self.db.execute("SELECT * FROM quarantine_cache")}
+
+    def get_worker_availability_states(self) -> Dict[str, dict]:
+        return {
+            row["worker_id"]: dict(row)
+            for row in self.db.execute("SELECT * FROM worker_availability_state")
+        }
+
+    def record_worker_availability_transition(
+        self,
+        worker_id: str,
+        worker_group: Optional[str],
+        available: bool,
+        quarantined: bool,
+        last_contact: Optional[str],
+        quarantine_until: Optional[str],
+        reason: str,
+        effective_at: str,
+        observed_at: str,
+    ) -> None:
+        self.db.execute(
+            "INSERT INTO worker_availability_transitions"
+            " (worker_id, worker_group, available, quarantined, last_contact,"
+            "  quarantine_until, reason, effective_at, observed_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                worker_id,
+                worker_group,
+                int(available),
+                int(quarantined),
+                last_contact,
+                quarantine_until,
+                reason,
+                effective_at,
+                observed_at,
+            ),
+        )
+
+    def upsert_worker_availability_state(
+        self,
+        worker_id: str,
+        worker_group: Optional[str],
+        available: bool,
+        quarantined: bool,
+        last_contact: Optional[str],
+        quarantine_until: Optional[str],
+        reason: str,
+        effective_at: str,
+        observed_at: str,
+    ) -> None:
+        self.db.execute(
+            "INSERT INTO worker_availability_state"
+            " (worker_id, worker_group, available, quarantined, last_contact,"
+            "  quarantine_until, reason, effective_at, observed_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(worker_id) DO UPDATE SET"
+            " worker_group=COALESCE(excluded.worker_group, worker_availability_state.worker_group),"
+            " available=excluded.available, quarantined=excluded.quarantined,"
+            " last_contact=excluded.last_contact, quarantine_until=excluded.quarantine_until,"
+            " reason=excluded.reason, effective_at=excluded.effective_at, observed_at=excluded.observed_at",
+            (
+                worker_id,
+                worker_group,
+                int(available),
+                int(quarantined),
+                last_contact,
+                quarantine_until,
+                reason,
+                effective_at,
+                observed_at,
+            ),
+        )
 
     def get_worker_group(self, worker_id: str) -> Optional[str]:
         row = self.db.execute("SELECT worker_group FROM workers WHERE worker_id = ?", (worker_id,)).fetchone()
@@ -764,6 +865,90 @@ class PostgresStorage:
                 d["fetched_at"] = _to_iso(d["fetched_at"])
                 result[d["worker_id"]] = d
         return result
+
+    def get_worker_availability_states(self) -> Dict[str, dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM worker_availability_state WHERE pool_id = %s",
+                (self.pool_id,),
+            )
+            rows = cur.fetchall()
+        result = {}
+        for row in rows:
+            state = dict(row)
+            for field in ("last_contact", "quarantine_until", "effective_at", "observed_at"):
+                state[field] = _to_iso(state[field])
+            result[state["worker_id"]] = state
+        return result
+
+    def record_worker_availability_transition(
+        self,
+        worker_id: str,
+        worker_group: Optional[str],
+        available: bool,
+        quarantined: bool,
+        last_contact: Optional[str],
+        quarantine_until: Optional[str],
+        reason: str,
+        effective_at: str,
+        observed_at: str,
+    ) -> None:
+        with self._write_cursor() as cur:
+            cur.execute(
+                "INSERT INTO worker_availability_transitions"
+                " (pool_id, worker_id, worker_group, available, quarantined, last_contact,"
+                "  quarantine_until, reason, effective_at, observed_at)"
+                " VALUES (%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s::timestamptz,%s::timestamptz)",
+                (
+                    self.pool_id,
+                    worker_id,
+                    worker_group,
+                    available,
+                    quarantined,
+                    last_contact,
+                    quarantine_until,
+                    reason,
+                    effective_at,
+                    observed_at,
+                ),
+            )
+
+    def upsert_worker_availability_state(
+        self,
+        worker_id: str,
+        worker_group: Optional[str],
+        available: bool,
+        quarantined: bool,
+        last_contact: Optional[str],
+        quarantine_until: Optional[str],
+        reason: str,
+        effective_at: str,
+        observed_at: str,
+    ) -> None:
+        with self._write_cursor() as cur:
+            cur.execute(
+                "INSERT INTO worker_availability_state"
+                " (pool_id, worker_id, worker_group, available, quarantined, last_contact,"
+                "  quarantine_until, reason, effective_at, observed_at)"
+                " VALUES (%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s,%s::timestamptz,%s::timestamptz)"
+                " ON CONFLICT (pool_id, worker_id) DO UPDATE SET"
+                " worker_group=COALESCE(EXCLUDED.worker_group, worker_availability_state.worker_group),"
+                " available=EXCLUDED.available, quarantined=EXCLUDED.quarantined,"
+                " last_contact=EXCLUDED.last_contact, quarantine_until=EXCLUDED.quarantine_until,"
+                " reason=EXCLUDED.reason, effective_at=EXCLUDED.effective_at, observed_at=EXCLUDED.observed_at",
+                (
+                    self.pool_id,
+                    worker_id,
+                    worker_group,
+                    available,
+                    quarantined,
+                    last_contact,
+                    quarantine_until,
+                    reason,
+                    effective_at,
+                    observed_at,
+                ),
+            )
 
     def get_worker_group(self, worker_id: str) -> Optional[str]:
         with self._cursor() as cur:

@@ -44,7 +44,14 @@ def _truncate_pg():
     """Wipe test pool rows before each test."""
     with psycopg.connect(DSN) as conn:
         with conn.cursor() as cur:
-            for tbl in ("task_results", "workers", "quarantine_cache", "unclassified_logs"):
+            for tbl in (
+                "task_results",
+                "workers",
+                "quarantine_cache",
+                "unclassified_logs",
+                "worker_availability_transitions",
+                "worker_availability_state",
+            ):
                 cur.execute(f"DELETE FROM {tbl} WHERE pool_id = %s", (POOL_ID,))
         conn.commit()
     yield
@@ -147,6 +154,39 @@ def test_upsert_worker_group_preserved(sqlite, pg):
     for s in (sqlite, pg):
         workers = s.query_workers()
         assert workers["w1"]["worker_group"] == "grp-a"
+
+
+def test_worker_availability_storage_parity(sqlite, pg):
+    values = (
+        "w1",
+        "group-1",
+        True,
+        False,
+        "2026-07-14T10:00:00+00:00",
+        None,
+        "online",
+        "2026-07-14T10:00:00+00:00",
+        "2026-07-14T10:01:00+00:00",
+    )
+    for storage in (sqlite, pg):
+        storage.record_worker_availability_transition(*values)
+        storage.upsert_worker_availability_state(*values)
+        storage.commit()
+
+    sqlite_state = sqlite.get_worker_availability_states()["w1"]
+    postgres_state = pg.get_worker_availability_states()["w1"]
+    for field in (
+        "worker_id",
+        "worker_group",
+        "available",
+        "quarantined",
+        "last_contact",
+        "quarantine_until",
+        "reason",
+        "effective_at",
+        "observed_at",
+    ):
+        assert sqlite_state[field] == postgres_state[field]
 
 
 # --- count_alerting ---

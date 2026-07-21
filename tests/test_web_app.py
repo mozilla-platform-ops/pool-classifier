@@ -37,7 +37,14 @@ def _apply_migrations():
 def _truncate_pg():
     with psycopg.connect(DSN) as conn:
         with conn.cursor() as cur:
-            for tbl in ("task_results", "workers", "quarantine_cache", "unclassified_logs"):
+            for tbl in (
+                "task_results",
+                "workers",
+                "quarantine_cache",
+                "unclassified_logs",
+                "worker_availability_transitions",
+                "worker_availability_state",
+            ):
                 cur.execute(f"DELETE FROM {tbl} WHERE pool_id = %s", (POOL_ID,))
         conn.commit()
     yield

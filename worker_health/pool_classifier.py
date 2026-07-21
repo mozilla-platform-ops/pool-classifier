@@ -60,6 +60,7 @@ DEFAULT_POLL_INTERVAL = 900  # seconds (15 minutes)
 WORKER_REFRESH_INTERVAL = 300  # seconds between re-listing workers
 WORKER_THREAD_COUNT = 8
 CONSECUTIVE_FAILURE_ALERT = 2
+DEFAULT_WORKER_CONTACT_THRESHOLD_SECONDS = 60 * 60
 
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,15 @@ logger = logging.getLogger(__name__)
 
 def _c(code: str, text: str, use_color: bool = True) -> str:
     return f"\033[{code}m{text}\033[0m" if use_color else text
+
+
+def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 class PoolClassifier:
@@ -78,11 +88,22 @@ class PoolClassifier:
         poll_interval: int = DEFAULT_POLL_INTERVAL,
         use_color: bool = True,
         storage=None,
+        worker_contact_threshold_seconds: Optional[int] = None,
     ):
         self.provisioner = provisioner
         self.worker_type = worker_type
         self.results_dir = results_dir
         self.poll_interval = poll_interval
+        if worker_contact_threshold_seconds is None:
+            worker_contact_threshold_seconds = int(
+                os.environ.get(
+                    "WORKER_CONTACT_THRESHOLD_SECONDS",
+                    str(DEFAULT_WORKER_CONTACT_THRESHOLD_SECONDS),
+                ),
+            )
+        if worker_contact_threshold_seconds <= 0:
+            raise ValueError("worker contact threshold must be greater than zero")
+        self.worker_contact_threshold = timedelta(seconds=worker_contact_threshold_seconds)
         self.queue_base = f"{TC_ROOT}/api/queue/v1"
         self.seen_task_runs: Dict[str, set] = {}  # in-memory cache, reloaded from storage each cycle
         self._interrupted = False
@@ -349,6 +370,105 @@ class PoolClassifier:
             logger.debug(f"  {worker_id}: {len(tasks)} new terminal task(s)")
         return worker_id, worker_group, tasks
 
+    def _record_worker_availability(
+        self,
+        workers: List[dict],
+        observed_at: Optional[datetime] = None,
+    ) -> int:
+        """Persist availability state and transitions for one worker-list observation."""
+        observed_at = observed_at or datetime.now(timezone.utc)
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        observed_at = observed_at.astimezone(timezone.utc)
+        observed_iso = observed_at.isoformat()
+        previous_states = self.storage.get_worker_availability_states()
+        observed_workers = {worker["workerId"]: worker for worker in workers}
+        worker_ids = set(previous_states) | set(observed_workers)
+        transition_count = 0
+
+        for worker_id in sorted(worker_ids):
+            worker = observed_workers.get(worker_id)
+            previous = previous_states.get(worker_id)
+            previous_last_contact = _parse_datetime(previous.get("last_contact")) if previous else None
+            if worker is not None:
+                worker_group = worker.get("workerGroup")
+                observed_last_contact = _parse_datetime(worker.get("lastDateActive"))
+                last_contact = max(
+                    (value for value in (previous_last_contact, observed_last_contact) if value is not None),
+                    default=None,
+                )
+                quarantine_until_raw = worker.get("quarantineUntil")
+            else:
+                worker_group = previous.get("worker_group")
+                last_contact = previous_last_contact
+                quarantine_until_raw = previous.get("quarantine_until")
+
+            quarantine_until = _parse_datetime(quarantine_until_raw)
+            quarantined = quarantine_until is not None and quarantine_until > observed_at
+            available = (
+                last_contact is not None
+                and last_contact + self.worker_contact_threshold > observed_at
+                and not quarantined
+            )
+
+            previous_available = bool(previous["available"]) if previous else None
+            previous_quarantined = bool(previous["quarantined"]) if previous else None
+            reason = None
+            if previous is None:
+                if quarantined:
+                    reason = "quarantine"
+                elif available:
+                    reason = "online"
+                else:
+                    reason = "contact_timeout"
+            elif previous_quarantined != quarantined:
+                reason = "quarantine" if quarantined else "unquarantine"
+            elif previous_available != available:
+                reason = "return" if available else "contact_timeout"
+
+            if reason in ("online", "return") and last_contact is not None:
+                effective_at = last_contact
+            elif reason == "contact_timeout" and last_contact is not None:
+                effective_at = last_contact + self.worker_contact_threshold
+            elif reason is not None:
+                effective_at = observed_at
+            else:
+                effective_at = _parse_datetime(previous["effective_at"]) or observed_at
+
+            last_contact_iso = last_contact.isoformat() if last_contact else None
+            quarantine_until_iso = quarantine_until.isoformat() if quarantine_until else None
+            state_reason = reason or previous["reason"]
+            effective_iso = effective_at.isoformat()
+
+            if reason is not None:
+                self.storage.record_worker_availability_transition(
+                    worker_id,
+                    worker_group,
+                    available,
+                    quarantined,
+                    last_contact_iso,
+                    quarantine_until_iso,
+                    reason,
+                    effective_iso,
+                    observed_iso,
+                )
+                transition_count += 1
+
+            self.storage.upsert_worker_availability_state(
+                worker_id,
+                worker_group,
+                available,
+                quarantined,
+                last_contact_iso,
+                quarantine_until_iso,
+                state_reason,
+                effective_iso,
+                observed_iso,
+            )
+
+        self.storage.commit()
+        return transition_count
+
     def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], bar=None, worker_group: str = None):
         for task_id, run_id, run_state, run_started, run_resolved, reason_resolved in terminal_tasks:
             if self._interrupted:
@@ -419,6 +539,8 @@ class PoolClassifier:
                     logger.info(f"Worker list refreshed: {len(self._cached_workers)} workers")
                 workers = self._cached_workers
 
+            availability_transitions = self._record_worker_availability(workers)
+
             total_workers = len(workers)
             logger.info(f"Scanning {total_workers} workers...")
             poll_results = []
@@ -469,6 +591,7 @@ class PoolClassifier:
             alert_str = self._color("1;31" if alerting_count > 0 else "1;32", str(alerting_count))
             logger.info(
                 f"Scan done: {scan_summary} scanned, {new_total} new terminal tasks, "
+                f"{availability_transitions} availability transitions, "
                 f"{alert_str} workers with ≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures.",
             )
             return {
@@ -476,6 +599,7 @@ class PoolClassifier:
                 "total_workers": total_workers,
                 "new_terminal": new_total,
                 "alerting": alerting_count,
+                "availability_transitions": availability_transitions,
             }
 
     def run(self):
