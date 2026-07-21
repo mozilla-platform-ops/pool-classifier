@@ -44,6 +44,8 @@ def _truncate_pg():
                 "unclassified_logs",
                 "worker_availability_transitions",
                 "worker_availability_state",
+                "collection_coverage_state",
+                "collection_coverage_intervals",
             ):
                 cur.execute(f"DELETE FROM {tbl} WHERE pool_id = %s", (POOL_ID,))
         conn.commit()

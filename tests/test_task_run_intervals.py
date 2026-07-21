@@ -131,8 +131,9 @@ def test_terminal_collection_returns_all_unseen_runs_with_intervals(tmp_path, mo
         },
     )
 
-    runs = classifier._new_terminal_tasks("worker-1", "group-1")
+    runs, complete = classifier._new_terminal_tasks("worker-1", "group-1")
 
+    assert complete is True
     assert runs == [
         (
             "task-1",
@@ -151,4 +152,22 @@ def test_terminal_collection_returns_all_unseen_runs_with_intervals(tmp_path, mo
             "completed",
         ),
     ]
-    assert classifier._new_terminal_tasks("worker-1", "group-1") == []
+    assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], True)
+
+
+def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner",
+        "worker-type",
+        results_dir=tmp_path,
+        storage=storage,
+        use_color=False,
+    )
+    classifier._init_db()
+
+    def fail_recent_tasks(_group, _worker):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(classifier, "_get_recent_tasks", fail_recent_tasks)
+    assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], False)

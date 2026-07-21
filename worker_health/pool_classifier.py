@@ -89,6 +89,7 @@ class PoolClassifier:
         use_color: bool = True,
         storage=None,
         worker_contact_threshold_seconds: Optional[int] = None,
+        coverage_max_gap_seconds: Optional[int] = None,
     ):
         self.provisioner = provisioner
         self.worker_type = worker_type
@@ -104,6 +105,13 @@ class PoolClassifier:
         if worker_contact_threshold_seconds <= 0:
             raise ValueError("worker contact threshold must be greater than zero")
         self.worker_contact_threshold = timedelta(seconds=worker_contact_threshold_seconds)
+        if coverage_max_gap_seconds is None:
+            coverage_max_gap_seconds = int(
+                os.environ.get("COLLECTION_COVERAGE_MAX_GAP_SECONDS", str(poll_interval * 2)),
+            )
+        if coverage_max_gap_seconds <= 0:
+            raise ValueError("collection coverage max gap must be greater than zero")
+        self.coverage_max_gap_seconds = coverage_max_gap_seconds
         self.queue_base = f"{TC_ROOT}/api/queue/v1"
         self.seen_task_runs: Dict[str, set] = {}  # in-memory cache, reloaded from storage each cycle
         self._interrupted = False
@@ -293,8 +301,8 @@ class PoolClassifier:
 
     # --- polling ---
 
-    def _new_terminal_tasks(self, worker_id: str, worker_group: str) -> List[Tuple]:
-        """Return newly terminal runs, including their complete time intervals."""
+    def _new_terminal_tasks(self, worker_id: str, worker_group: str) -> Tuple[List[Tuple], bool]:
+        """Return newly terminal runs and whether recent-task collection was complete."""
         if worker_id not in self.seen_task_runs:
             self.seen_task_runs[worker_id] = set()
         seen = self.seen_task_runs[worker_id]
@@ -304,7 +312,9 @@ class PoolClassifier:
             recent = self._get_recent_tasks(worker_group, worker_id)
         except Exception as e:
             logger.warning(f"{worker_id}: failed to fetch recent tasks: {e}")
-            return results
+            return results, False
+
+        complete = True
 
         task_ids = list(
             dict.fromkeys(
@@ -323,14 +333,17 @@ class PoolClassifier:
                 status_resp = self._get_task_status(task_id)
             except Exception as e:
                 logger.warning(f"{task_id}: status fetch error: {e}")
+                complete = False
                 continue
             if not status_resp:
+                complete = False
                 continue
 
             runs = status_resp.get("status", {}).get("runs", [])
             my_runs = [r for r in runs if r.get("workerId") == worker_id]
 
             if not my_runs:
+                complete = False
                 continue
 
             for run in my_runs:
@@ -359,16 +372,33 @@ class PoolClassifier:
                     ),
                 )
 
-        return results
+        return results, complete
 
-    def _poll_one_worker(self, worker: dict) -> Tuple[str, str, List[Tuple]]:
+    def _poll_one_worker(self, worker: dict) -> Tuple[str, str, List[Tuple], bool]:
         worker_id = worker["workerId"]
         worker_group = worker["workerGroup"]
         logger.debug(f"  polling {worker_id}")
-        tasks = self._new_terminal_tasks(worker_id, worker_group)
+        tasks, complete = self._new_terminal_tasks(worker_id, worker_group)
         if tasks:
             logger.debug(f"  {worker_id}: {len(tasks)} new terminal task(s)")
-        return worker_id, worker_group, tasks
+        return worker_id, worker_group, tasks, complete
+
+    def _record_collection_coverage(
+        self,
+        source: str,
+        success: bool,
+        observed_at: Optional[datetime] = None,
+    ) -> None:
+        observed_at = observed_at or datetime.now(timezone.utc)
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        self.storage.record_collection_coverage(
+            source,
+            observed_at.astimezone(timezone.utc).isoformat(),
+            success,
+            self.coverage_max_gap_seconds,
+        )
+        self.storage.commit()
 
     def _record_worker_availability(
         self,
@@ -527,44 +557,71 @@ class PoolClassifier:
 
     # --- main loop ---
 
-    def classify_cycle(self, workers: Optional[List[dict]] = None) -> dict:
+    def classify_cycle(
+        self,
+        workers: Optional[List[dict]] = None,
+        availability_collection_success: Optional[bool] = True,
+    ) -> dict:
         """One classify pass: poll all workers, process results, write reports. Returns summary dict."""
         with self.storage.classify_lock():
             if workers is None:
                 now = time.time()
                 if now - self._last_worker_refresh > WORKER_REFRESH_INTERVAL or not self._cached_workers:
-                    self._cached_workers = self._list_workers()
+                    try:
+                        self._cached_workers = self._list_workers()
+                    except Exception:
+                        self._record_collection_coverage("worker_availability", False)
+                        raise
+                    availability_collection_success = True
                     self._last_worker_refresh = now
                     self._backfill_worker_groups(self._cached_workers)
                     logger.info(f"Worker list refreshed: {len(self._cached_workers)} workers")
+                else:
+                    availability_collection_success = None
                 workers = self._cached_workers
 
             availability_transitions = self._record_worker_availability(workers)
+            if availability_collection_success is not None:
+                self._record_collection_coverage("worker_availability", availability_collection_success)
 
             total_workers = len(workers)
             logger.info(f"Scanning {total_workers} workers...")
             poll_results = []
             scanned = 0
+            task_collection_complete = True
             thread_pool = ThreadPool(WORKER_THREAD_COUNT)
             terminated = False
             try:
                 with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
-                    for worker_id, worker_group, tasks in thread_pool.imap_unordered(self._poll_one_worker, workers):
+                    for worker_id, worker_group, tasks, complete in thread_pool.imap_unordered(
+                        self._poll_one_worker,
+                        workers,
+                    ):
                         scanned += 1
                         bar()
                         poll_results.append((worker_id, worker_group, tasks))
+                        task_collection_complete = task_collection_complete and complete
                         if self._interrupted:
                             thread_pool.terminate()
                             terminated = True
                             break
             except Exception as e:
                 logger.warning(f"Poll error: {e}")
+                task_collection_complete = False
                 thread_pool.terminate()
                 terminated = True
             finally:
                 if not terminated:
                     thread_pool.close()
                 thread_pool.join()
+
+            task_collection_complete = (
+                task_collection_complete
+                and scanned == total_workers
+                and not terminated
+                and not self._interrupted
+            )
+            self._record_collection_coverage("task_runs", task_collection_complete)
 
             new_total = sum(len(tasks) for _, _wg, tasks in poll_results if tasks)
 
@@ -614,16 +671,22 @@ class PoolClassifier:
 
         while not self._interrupted:
             now = time.time()
+            availability_collection_success = None
             if now - last_worker_refresh > WORKER_REFRESH_INTERVAL or not workers:
                 try:
                     workers = self._list_workers()
                     last_worker_refresh = now
+                    availability_collection_success = True
                     logger.info(f"Worker list: {len(workers)} workers in pool")
                     self._backfill_worker_groups(workers)
                 except Exception as e:
                     logger.warning(f"Failed to refresh worker list: {e}")
+                    availability_collection_success = False
 
-            summary = self.classify_cycle(workers)
+            summary = self.classify_cycle(
+                workers,
+                availability_collection_success=availability_collection_success,
+            )
             alert_str = self._color("1;31" if summary["alerting"] > 0 else "1;32", str(summary["alerting"]))
             logger.info(
                 f"{alert_str} workers with ≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures. "

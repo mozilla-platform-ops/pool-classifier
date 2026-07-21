@@ -11,6 +11,59 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
 
+COLLECTION_SOURCES = {"task_runs", "worker_availability"}
+
+
+def _parse_iso(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _coverage_summary(
+    source: str,
+    intervals: List[dict],
+    range_start: Optional[str],
+    range_end: Optional[str],
+) -> dict:
+    result = {
+        "source": source,
+        "collection_started": intervals[0]["start_at"] if intervals else None,
+        "intervals": intervals,
+        "coverage_seconds": None,
+        "coverage_pct": None,
+        "complete": None,
+    }
+    if range_start is None and range_end is None:
+        return result
+    if range_start is None or range_end is None:
+        raise ValueError("range_start and range_end must be provided together")
+
+    start = _parse_iso(range_start)
+    end = _parse_iso(range_end)
+    if end <= start:
+        raise ValueError("range_end must be after range_start")
+
+    covered = 0.0
+    clipped = []
+    for interval in intervals:
+        interval_start = max(start, _parse_iso(interval["start_at"]))
+        interval_end = min(end, _parse_iso(interval["end_at"]))
+        if interval_end > interval_start:
+            covered += (interval_end - interval_start).total_seconds()
+            clipped.append({"start_at": interval_start.isoformat(), "end_at": interval_end.isoformat()})
+
+    duration = (end - start).total_seconds()
+    result["coverage_seconds"] = covered
+    result["coverage_pct"] = covered / duration * 100
+    result["complete"] = len(clipped) == 1 and clipped[0] == {
+        "start_at": start.isoformat(),
+        "end_at": end.isoformat(),
+    }
+    return result
+
+
 class ClassifyLockBusy(Exception):
     """Raised when a classify cycle is already running for this pool."""
 
@@ -82,6 +135,23 @@ CREATE INDEX IF NOT EXISTS idx_worker_availability_effective
     ON worker_availability_transitions (effective_at);
 CREATE INDEX IF NOT EXISTS idx_worker_availability_worker
     ON worker_availability_transitions (worker_id, effective_at);
+
+CREATE TABLE IF NOT EXISTS collection_coverage_intervals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    source      TEXT NOT NULL,
+    start_at    TEXT NOT NULL,
+    end_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_collection_coverage_source
+    ON collection_coverage_intervals (source, start_at, end_at);
+
+CREATE TABLE IF NOT EXISTS collection_coverage_state (
+    source               TEXT PRIMARY KEY,
+    last_observed_at     TEXT NOT NULL,
+    last_success         INTEGER NOT NULL,
+    current_interval_id  INTEGER
+);
 """
 
 
@@ -292,6 +362,74 @@ class SqliteStorage:
             row["worker_id"]: dict(row)
             for row in self.db.execute("SELECT * FROM worker_availability_state")
         }
+
+    def record_collection_coverage(
+        self,
+        source: str,
+        observed_at: str,
+        success: bool,
+        max_gap_seconds: int,
+    ) -> None:
+        if source not in COLLECTION_SOURCES:
+            raise ValueError(f"unknown collection source: {source}")
+        if max_gap_seconds <= 0:
+            raise ValueError("max_gap_seconds must be greater than zero")
+
+        observed = _parse_iso(observed_at)
+        state = self.db.execute(
+            "SELECT * FROM collection_coverage_state WHERE source = ?",
+            (source,),
+        ).fetchone()
+        if state and observed < _parse_iso(state["last_observed_at"]):
+            return
+
+        interval_id = None
+        if success:
+            can_extend = (
+                state
+                and state["last_success"]
+                and state["current_interval_id"] is not None
+                and (observed - _parse_iso(state["last_observed_at"])).total_seconds() <= max_gap_seconds
+            )
+            if can_extend:
+                interval_id = state["current_interval_id"]
+                self.db.execute(
+                    "UPDATE collection_coverage_intervals SET end_at = ? WHERE id = ?",
+                    (observed.isoformat(), interval_id),
+                )
+            else:
+                cursor = self.db.execute(
+                    "INSERT INTO collection_coverage_intervals (source, start_at, end_at) VALUES (?,?,?)",
+                    (source, observed.isoformat(), observed.isoformat()),
+                )
+                interval_id = cursor.lastrowid
+
+        self.db.execute(
+            "INSERT INTO collection_coverage_state"
+            " (source, last_observed_at, last_success, current_interval_id) VALUES (?,?,?,?)"
+            " ON CONFLICT(source) DO UPDATE SET"
+            " last_observed_at=excluded.last_observed_at, last_success=excluded.last_success,"
+            " current_interval_id=excluded.current_interval_id",
+            (source, observed.isoformat(), int(success), interval_id),
+        )
+
+    def get_collection_coverage(
+        self,
+        source: str,
+        range_start: Optional[str] = None,
+        range_end: Optional[str] = None,
+    ) -> dict:
+        if source not in COLLECTION_SOURCES:
+            raise ValueError(f"unknown collection source: {source}")
+        intervals = [
+            dict(row)
+            for row in self.db.execute(
+                "SELECT start_at, end_at FROM collection_coverage_intervals"
+                " WHERE source = ? ORDER BY start_at",
+                (source,),
+            )
+        ]
+        return _coverage_summary(source, intervals, range_start, range_end)
 
     def record_worker_availability_transition(
         self,
@@ -880,6 +1018,82 @@ class PostgresStorage:
                 state[field] = _to_iso(state[field])
             result[state["worker_id"]] = state
         return result
+
+    def record_collection_coverage(
+        self,
+        source: str,
+        observed_at: str,
+        success: bool,
+        max_gap_seconds: int,
+    ) -> None:
+        if source not in COLLECTION_SOURCES:
+            raise ValueError(f"unknown collection source: {source}")
+        if max_gap_seconds <= 0:
+            raise ValueError("max_gap_seconds must be greater than zero")
+
+        observed = _parse_iso(observed_at)
+        with self._write_cursor() as cur:
+            cur.execute(
+                "SELECT * FROM collection_coverage_state"
+                " WHERE pool_id = %s AND source = %s FOR UPDATE",
+                (self.pool_id, source),
+            )
+            state = cur.fetchone()
+            if state and observed < state["last_observed_at"]:
+                return
+
+            interval_id = None
+            if success:
+                can_extend = (
+                    state
+                    and state["last_success"]
+                    and state["current_interval_id"] is not None
+                    and (observed - state["last_observed_at"]).total_seconds() <= max_gap_seconds
+                )
+                if can_extend:
+                    interval_id = state["current_interval_id"]
+                    cur.execute(
+                        "UPDATE collection_coverage_intervals SET end_at = %s"
+                        " WHERE id = %s AND pool_id = %s",
+                        (observed, interval_id, self.pool_id),
+                    )
+                else:
+                    cur.execute(
+                        "INSERT INTO collection_coverage_intervals"
+                        " (pool_id, source, start_at, end_at) VALUES (%s,%s,%s,%s) RETURNING id",
+                        (self.pool_id, source, observed, observed),
+                    )
+                    interval_id = cur.fetchone()["id"]
+
+            cur.execute(
+                "INSERT INTO collection_coverage_state"
+                " (pool_id, source, last_observed_at, last_success, current_interval_id)"
+                " VALUES (%s,%s,%s,%s,%s)"
+                " ON CONFLICT (pool_id, source) DO UPDATE SET"
+                " last_observed_at=EXCLUDED.last_observed_at, last_success=EXCLUDED.last_success,"
+                " current_interval_id=EXCLUDED.current_interval_id",
+                (self.pool_id, source, observed, success, interval_id),
+            )
+
+    def get_collection_coverage(
+        self,
+        source: str,
+        range_start: Optional[str] = None,
+        range_end: Optional[str] = None,
+    ) -> dict:
+        if source not in COLLECTION_SOURCES:
+            raise ValueError(f"unknown collection source: {source}")
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT start_at, end_at FROM collection_coverage_intervals"
+                " WHERE pool_id = %s AND source = %s ORDER BY start_at",
+                (self.pool_id, source),
+            )
+            intervals = [
+                {"start_at": _to_iso(row["start_at"]), "end_at": _to_iso(row["end_at"])}
+                for row in cur.fetchall()
+            ]
+        return _coverage_summary(source, intervals, range_start, range_end)
 
     def record_worker_availability_transition(
         self,

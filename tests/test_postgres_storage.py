@@ -51,6 +51,8 @@ def _truncate_pg():
                 "unclassified_logs",
                 "worker_availability_transitions",
                 "worker_availability_state",
+                "collection_coverage_state",
+                "collection_coverage_intervals",
             ):
                 cur.execute(f"DELETE FROM {tbl} WHERE pool_id = %s", (POOL_ID,))
         conn.commit()
@@ -187,6 +189,28 @@ def test_worker_availability_storage_parity(sqlite, pg):
         "observed_at",
     ):
         assert sqlite_state[field] == postgres_state[field]
+
+
+def test_collection_coverage_storage_parity(sqlite, pg):
+    start = datetime(2026, 7, 21, 10, 0, tzinfo=timezone.utc)
+    observations = ((0, True), (10, True), (20, False), (30, True), (40, True))
+    for storage in (sqlite, pg):
+        for minutes, success in observations:
+            storage.record_collection_coverage(
+                "task_runs",
+                (start + timedelta(minutes=minutes)).isoformat(),
+                success,
+                900,
+            )
+        storage.commit()
+
+    range_start = start.isoformat()
+    range_end = (start + timedelta(minutes=40)).isoformat()
+    assert sqlite.get_collection_coverage("task_runs", range_start, range_end) == pg.get_collection_coverage(
+        "task_runs",
+        range_start,
+        range_end,
+    )
 
 
 # --- count_alerting ---
