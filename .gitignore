@@ -1,2 +1,5 @@
 # bv (beads viewer) local config and caches
 .bv/
+
+# Local Postgres bind-mount data created by pc_db.sh/docker-compose.
+worker_health/pool_classifier_web/pgdata/

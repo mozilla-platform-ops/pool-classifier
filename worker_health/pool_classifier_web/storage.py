@@ -638,14 +638,14 @@ class SqliteStorage:
             rows = self.db.execute(
                 "SELECT worker_id, COUNT(*) as cnt FROM task_results"
                 " WHERE category = ? AND run_state != 'completed' AND run_started >= ?"
-                " GROUP BY worker_id ORDER BY cnt DESC LIMIT ?",
+                " GROUP BY worker_id ORDER BY cnt DESC, worker_id ASC LIMIT ?",
                 (category, since, n),
             )
         else:
             rows = self.db.execute(
                 "SELECT worker_id, COUNT(*) as cnt FROM task_results"
                 " WHERE category = ? AND run_state != 'completed'"
-                " GROUP BY worker_id ORDER BY cnt DESC LIMIT ?",
+                " GROUP BY worker_id ORDER BY cnt DESC, worker_id ASC LIMIT ?",
                 (category, n),
             )
         return [(row["worker_id"], row["cnt"]) for row in rows]
@@ -739,21 +739,19 @@ def _postgres_pool(dsn: str):
 
 class _PgLogRef:
     """Returned by PostgresStorage.list_unclassified_logs() in place of a Path.
-    Calling .unlink() deletes the corresponding DB row so reclassify code works unchanged.
+    Calling .unlink() deletes through the storage transaction so reclassify code works unchanged.
     """
 
-    def __init__(self, pool, pool_id: str, task_id: str) -> None:
-        self._pool = pool
-        self._pool_id = pool_id
+    def __init__(self, storage, task_id: str) -> None:
+        self._storage = storage
         self._task_id = task_id
 
     def unlink(self) -> None:
-        with self._pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM unclassified_logs WHERE pool_id = %s AND task_id = %s",
-                    (self._pool_id, self._task_id),
-                )
+        with self._storage._write_cursor() as cur:
+            cur.execute(
+                "DELETE FROM unclassified_logs WHERE pool_id = %s AND task_id = %s",
+                (self._storage.pool_id, self._task_id),
+            )
 
 
 def _to_iso(v) -> Optional[str]:
@@ -1390,14 +1388,14 @@ class PostgresStorage:
                     "SELECT worker_id, COUNT(*) AS cnt FROM task_results"
                     " WHERE pool_id = %s AND category = %s"
                     "   AND run_state != 'completed' AND run_started >= %s::timestamptz"
-                    " GROUP BY worker_id ORDER BY cnt DESC LIMIT %s",
+                    " GROUP BY worker_id ORDER BY cnt DESC, worker_id ASC LIMIT %s",
                     (self.pool_id, category, since, n),
                 )
             else:
                 cur.execute(
                     "SELECT worker_id, COUNT(*) AS cnt FROM task_results"
                     " WHERE pool_id = %s AND category = %s AND run_state != 'completed'"
-                    " GROUP BY worker_id ORDER BY cnt DESC LIMIT %s",
+                    " GROUP BY worker_id ORDER BY cnt DESC, worker_id ASC LIMIT %s",
                     (self.pool_id, category, n),
                 )
             return [(row["worker_id"], row["cnt"]) for row in cur.fetchall()]
@@ -1430,7 +1428,7 @@ class PostgresStorage:
             )
             rows = cur.fetchall()
         for row in rows:
-            yield row["task_id"], row["log_text"], _PgLogRef(self._ensure_pool(), self.pool_id, row["task_id"])
+            yield row["task_id"], row["log_text"], _PgLogRef(self, row["task_id"])
 
     def get_task_info(self, task_id: str) -> Optional[dict]:
         with self._cursor() as cur:
