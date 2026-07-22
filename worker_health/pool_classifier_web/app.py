@@ -201,7 +201,6 @@ def create_app() -> Flask:
             "index.html",
             pools=rows,
             generated=now,
-            has_listed=any(row["pool"].availability_mode == "listed" for row in rows),
         )
 
     @app.get("/patterns")

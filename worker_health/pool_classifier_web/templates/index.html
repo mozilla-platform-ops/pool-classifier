@@ -29,7 +29,6 @@
   .disabled-reason { color: #555; font-size: .85em; font-style: italic; }
   .mode { border: 1px solid #444; border-radius: 3px; padding: .1rem .4rem; font-size: .8em; color: #aaa; }
   .mode-listed { border-color: #f90; color: #f90; }
-  .availability-note { max-width: 80rem; margin: 0 0 1rem; padding: .65rem .8rem; border-left: 3px solid #f90; background: #1a1a1a; color: #aaa; font-size: .85em; line-height: 1.45; }
   .page-nav { display: flex; align-items: center; gap: 0; flex-wrap: wrap; width: fit-content; margin: 0 0 1rem; padding: .3rem .6rem; background: #1a1a1a; border-radius: 4px; font-size: .8em; }
   .page-nav a { color: #58a6ff; padding: .2rem .6rem; border-radius: 3px; }
   .page-nav a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }
@@ -54,10 +53,6 @@
   <a class="current" href="/">Dashboard</a><span class="sep">|</span>
   <a href="/patterns">Patterns</a>
 </nav>
-
-{% if has_listed %}
-<p class="availability-note"><strong>Listed availability:</strong> These pools count every worker returned by Taskcluster and not quarantined as eligible capacity. A listed worker may be dormant or physically unhealthy; listing does not confirm that the device is live.</p>
-{% endif %}
 
 <div id="os-filters" class="os-filters"><span class="label">OS:</span></div>
 

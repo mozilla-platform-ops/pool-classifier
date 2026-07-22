@@ -1372,13 +1372,6 @@ class PoolClassifier:
             "</div>",
         ]
 
-        if self.availability_mode == "listed":
-            parts.append(
-                '<p class="availability-note"><strong>Availability mode: listed.</strong> '
-                "Utilization counts every worker returned by Taskcluster and not quarantined as eligible capacity. "
-                "A listed worker may be dormant or physically unhealthy; listing does not confirm that the device is live.</p>",
-            )
-
         summary_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization/summary"
         guide_url = f"/pools/{self.provisioner}/{self.worker_type}/utilization"
 
@@ -1570,6 +1563,13 @@ class PoolClassifier:
 
         parts += [
             '<h2 id="s-utilization">Utilization</h2>',
+            *(
+                ['<p class="availability-note"><strong>Availability mode: listed.</strong> '
+                 "Utilization counts every worker returned by Taskcluster and not quarantined as eligible capacity. "
+                 "A listed worker may be dormant or physically unhealthy; listing does not confirm that the device is live.</p>"]
+                if self.availability_mode == "listed"
+                else []
+            ),
             f'<p class="gen">Duration-weighted task time versus available worker time. <a href="{guide_url}">API guide</a></p>',
             '<p id="util-freshness" class="gen">Loading utilization…</p>',
             '<div id="util-cards" class="util-grid"></div>',

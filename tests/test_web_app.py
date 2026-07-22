@@ -103,8 +103,8 @@ def test_index_renders(client):
     r = client.get("/")
     assert r.status_code == 200
     assert WORKER_TYPE.encode() in r.data
-    assert b"Listed availability" in r.data
-    assert b"listing does not confirm that the device is live" in r.data
+    assert b"Listed availability" not in r.data
+    assert b"listing does not confirm that the device is live" not in r.data
 
 
 def test_pool_html(client):
@@ -113,6 +113,7 @@ def test_pool_html(client):
     assert b"Pool Classifier" in r.data
     assert b"Availability mode: listed" in r.data
     assert b"listing does not confirm that the device is live" in r.data
+    assert r.data.index(b'id="s-utilization"') < r.data.index(b"Availability mode: listed")
 
 
 def test_pool_unknown_returns_404(client):
