@@ -334,14 +334,13 @@ class PoolClassifier:
 
         complete = True
 
-        task_ids = list(
-            dict.fromkeys(
-                task["taskId"]
-                for task in recent
-                if task.get("taskId")
-                and (task.get("taskId"), task.get("runId")) not in seen
-            )
-        )
+        unseen_run_ids_by_task: Dict[str, set] = {}
+        for task in recent:
+            task_id = task.get("taskId")
+            run_id = task.get("runId")
+            if task_id and (task_id, run_id) not in seen:
+                unseen_run_ids_by_task.setdefault(task_id, set()).add(run_id)
+        task_ids = list(unseen_run_ids_by_task)
         if task_ids:
             logger.debug(f"  {worker_id}: checking {len(task_ids)} recent task(s)")
 
@@ -354,7 +353,18 @@ class PoolClassifier:
                 complete = False
                 continue
             if not status_resp:
-                complete = False
+                # getWorker.recentTasks can retain references to Taskcluster
+                # tasks whose status documents have expired. A 404 is a
+                # definitive tombstone, unlike a connection or 5xx failure;
+                # retrying it forever would make the entire pool's coverage
+                # permanently incomplete. Remember every referenced run for
+                # this process so subsequent polls do not repeat the lookup.
+                logger.info(
+                    "%s: task %s no longer has a status record; skipping stale recent-task reference",
+                    worker_id,
+                    task_id,
+                )
+                seen.update((task_id, run_id) for run_id in unseen_run_ids_by_task[task_id])
                 continue
 
             runs = status_resp.get("status", {}).get("runs", [])

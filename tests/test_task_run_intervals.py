@@ -171,3 +171,32 @@ def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatc
 
     monkeypatch.setattr(classifier, "_get_recent_tasks", fail_recent_tasks)
     assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], False)
+
+
+def test_terminal_collection_skips_expired_task_status_references(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner",
+        "worker-type",
+        results_dir=tmp_path,
+        storage=storage,
+        use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(
+        classifier,
+        "_get_recent_tasks",
+        lambda _group, _worker: [{"taskId": "expired-task", "runId": 0}],
+    )
+    status_calls = []
+
+    def expired_status(task_id):
+        status_calls.append(task_id)
+        return None  # Queue status endpoint returned a definitive 404.
+
+    monkeypatch.setattr(classifier, "_get_task_status", expired_status)
+
+    assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], True)
+    # The tombstone stays in the in-process seen set, avoiding repeated 404s.
+    assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], True)
+    assert status_calls == ["expired-task"]
