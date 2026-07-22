@@ -1381,12 +1381,6 @@ class PoolClassifier:
 
         summary_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization/summary"
         guide_url = f"/pools/{self.provisioner}/{self.worker_type}/utilization"
-        parts += [
-            '<h2 id="s-utilization">Utilization</h2>',
-            f'<p class="gen">Duration-weighted task time versus available worker time. <a href="{guide_url}">API guide</a></p>',
-            '<p id="util-freshness" class="gen">Loading utilization…</p>',
-            '<div id="util-cards" class="util-grid"></div>',
-        ]
 
         if workers:
             total_tasks = total_failures + total_successes
@@ -1574,6 +1568,13 @@ class PoolClassifier:
                 "</div>",
             ]
 
+        parts += [
+            '<h2 id="s-utilization">Utilization</h2>',
+            f'<p class="gen">Duration-weighted task time versus available worker time. <a href="{guide_url}">API guide</a></p>',
+            '<p id="util-freshness" class="gen">Loading utilization…</p>',
+            '<div id="util-cards" class="util-grid"></div>',
+        ]
+
         total_w = len(workers)
         quarantined_w = sum(1 for wid in workers if wid in quarantined)
         active_w = total_w - quarantined_w
@@ -1663,7 +1664,7 @@ class PoolClassifier:
             "  fetch(UTIL_SUMMARY_URL).then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))).then(data => {",
             "    const through = data.data_through; const age = through ? Math.max(0, Math.round((Date.now() - new Date(through)) / 60000)) : null;",
             "    utilFreshness.textContent = through ? `Data through ${formatTime(through, document.querySelector('input[name=\"tz\"]:checked').value)} (${age < 60 ? age + 'm' : Math.floor(age / 60) + 'h'} old)` : 'Collecting data: no common coverage boundary yet.';",
-            "    utilCards.innerHTML = ['1h','24h','7d','30d'].map(label => utilCard(label, data.windows[label] || {status:'error', error:'Missing response'})).join('');",
+            "    utilCards.innerHTML = ['1h','24h','7d','30d'].map(label => utilCard(label, data.windows[label] || {status:'ok', utilization:null})).join('');",
             "  }).catch(error => { utilFreshness.textContent = 'Utilization could not be loaded.'; utilCards.innerHTML = ['1h','24h','7d','30d'].map(label => utilCard(label, {status:'error', error:error.message})).join(''); });",
             "  const tip = document.getElementById('hm-tip');",
             "  document.querySelectorAll('.hm-cell').forEach(cell => {",
