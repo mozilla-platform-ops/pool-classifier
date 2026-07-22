@@ -49,8 +49,8 @@ def _api_storage(tmp_path, available=True, coverage_minutes=60):
     return storage
 
 
-def _api_client(monkeypatch, storage):
-    classifier = SimpleNamespace(storage=storage)
+def _api_client(monkeypatch, storage, availability_mode="recent_contact"):
+    classifier = SimpleNamespace(storage=storage, availability_mode=availability_mode)
     monkeypatch.setattr(
         app_module,
         "_get_classifier",
@@ -150,6 +150,7 @@ def test_utilization_api_filters_range_and_buckets(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     assert response.json["api_version"] == 1
+    assert response.json["availability_mode"] == "recent_contact"
     assert response.json["pool_id"] == "provisioner/worker-type"
     assert response.json["start_at"] == API_START.isoformat()
     assert response.json["end_at"] == (API_START + timedelta(hours=1)).isoformat()
@@ -159,6 +160,7 @@ def test_utilization_api_filters_range_and_buckets(monkeypatch, tmp_path):
     assert response.json["complete"] is True
     assert set(response.json) == {
         "api_version",
+        "availability_mode",
         "pool_id",
         "start_at",
         "end_at",

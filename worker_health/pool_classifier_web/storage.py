@@ -12,6 +12,7 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 
 COLLECTION_SOURCES = {"task_runs", "worker_availability"}
+AVAILABILITY_MODES = {"recent_contact", "listed"}
 
 
 def _parse_iso(value: str) -> datetime:
@@ -151,6 +152,11 @@ CREATE TABLE IF NOT EXISTS collection_coverage_state (
     last_observed_at     TEXT NOT NULL,
     last_success         INTEGER NOT NULL,
     current_interval_id  INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS worker_availability_mode (
+    mode        TEXT NOT NULL,
+    changed_at  TEXT NOT NULL
 );
 """
 
@@ -362,6 +368,30 @@ class SqliteStorage:
             row["worker_id"]: dict(row)
             for row in self.db.execute("SELECT * FROM worker_availability_state")
         }
+
+    def ensure_worker_availability_mode(self, mode: str, changed_at: str) -> bool:
+        """Persist the mode and reset incompatible availability history on cutover."""
+        if mode not in AVAILABILITY_MODES:
+            raise ValueError(f"unknown worker availability mode: {mode}")
+        changed = _parse_iso(changed_at).isoformat()
+        row = self.db.execute("SELECT mode FROM worker_availability_mode LIMIT 1").fetchone()
+        reset = (row is None and mode == "listed") or (row is not None and row["mode"] != mode)
+        if reset:
+            self.db.execute("DELETE FROM collection_coverage_state WHERE source = 'worker_availability'")
+            self.db.execute("DELETE FROM collection_coverage_intervals WHERE source = 'worker_availability'")
+            self.db.execute("DELETE FROM worker_availability_state")
+            self.db.execute("DELETE FROM worker_availability_transitions")
+        if row is None:
+            self.db.execute(
+                "INSERT INTO worker_availability_mode (mode, changed_at) VALUES (?,?)",
+                (mode, changed),
+            )
+        elif row["mode"] != mode:
+            self.db.execute(
+                "UPDATE worker_availability_mode SET mode = ?, changed_at = ?",
+                (mode, changed),
+            )
+        return reset
 
     def record_collection_coverage(
         self,
@@ -1051,6 +1081,47 @@ class PostgresStorage:
                 state[field] = _to_iso(state[field])
             result[state["worker_id"]] = state
         return result
+
+    def ensure_worker_availability_mode(self, mode: str, changed_at: str) -> bool:
+        """Persist the mode and reset incompatible availability history on cutover."""
+        if mode not in AVAILABILITY_MODES:
+            raise ValueError(f"unknown worker availability mode: {mode}")
+        changed = _parse_iso(changed_at)
+        with self._write_cursor() as cur:
+            cur.execute(
+                "SELECT mode FROM worker_availability_mode WHERE pool_id = %s FOR UPDATE",
+                (self.pool_id,),
+            )
+            row = cur.fetchone()
+            reset = (row is None and mode == "listed") or (row is not None and row["mode"] != mode)
+            if reset:
+                cur.execute(
+                    "DELETE FROM collection_coverage_state"
+                    " WHERE pool_id = %s AND source = 'worker_availability'",
+                    (self.pool_id,),
+                )
+                cur.execute(
+                    "DELETE FROM collection_coverage_intervals"
+                    " WHERE pool_id = %s AND source = 'worker_availability'",
+                    (self.pool_id,),
+                )
+                cur.execute(
+                    "DELETE FROM worker_availability_state WHERE pool_id = %s",
+                    (self.pool_id,),
+                )
+                cur.execute(
+                    "DELETE FROM worker_availability_transitions WHERE pool_id = %s",
+                    (self.pool_id,),
+                )
+            cur.execute(
+                "INSERT INTO worker_availability_mode (pool_id, mode, changed_at)"
+                " VALUES (%s,%s,%s)"
+                " ON CONFLICT (pool_id) DO UPDATE SET"
+                " mode=EXCLUDED.mode, changed_at=EXCLUDED.changed_at"
+                " WHERE worker_availability_mode.mode != EXCLUDED.mode",
+                (self.pool_id, mode, changed),
+            )
+        return reset
 
     def record_collection_coverage(
         self,

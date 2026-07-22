@@ -84,6 +84,7 @@ def _get_classifier(provisioner: str, worker_type: str) -> PoolClassifier | None
             provisioner=provisioner,
             worker_type=worker_type,
             storage=storage,
+            availability_mode=pool.availability_mode,
         )
         pc._init_db()
         _classifiers[key] = pc
@@ -195,7 +196,12 @@ def create_app() -> Flask:
                     "success_rate_24h": success_rate_24h,
                 },
             )
-        return render_template("index.html", pools=rows, generated=now)
+        return render_template(
+            "index.html",
+            pools=rows,
+            generated=now,
+            has_listed=any(row["pool"].availability_mode == "listed" for row in rows),
+        )
 
     @app.get("/patterns")
     def patterns():
@@ -262,6 +268,7 @@ def create_app() -> Flask:
             return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
         result = pc.storage.get_utilization(start, end, bucket_seconds)
         result["api_version"] = 1
+        result["availability_mode"] = pc.availability_mode
         return jsonify(result)
 
     @app.post("/classify/<provisioner>/<worker_type>")

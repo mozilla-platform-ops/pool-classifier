@@ -3,26 +3,32 @@ pools:
     provisioner: proj-autophone
     worker_type: gecko-t-bitbar-gw-perf-a55
     schedule: "*/15 * * * *"
+    availability_mode: listed
   - id: bitbar-gw-perf-p6
     provisioner: proj-autophone
     worker_type: gecko-t-bitbar-gw-perf-p6
     schedule: "*/15 * * * *"
+    availability_mode: listed
   - id: bitbar-gw-perf-s24
     provisioner: proj-autophone
     worker_type: gecko-t-bitbar-gw-perf-s24
     schedule: "*/15 * * * *"
+    availability_mode: listed
   - id: bitbar-gw-unit-p5
     provisioner: proj-autophone
     worker_type: gecko-t-bitbar-gw-unit-p5
     schedule: "*/15 * * * *"
+    availability_mode: listed
   - id: lambda-alpha-a55
     provisioner: proj-autophone
     worker_type: gecko-t-lambda-alpha-a55
     schedule: "*/15 * * * *"
+    availability_mode: listed
   - id: lambda-perf-a55
     provisioner: proj-autophone
     worker_type: gecko-t-lambda-perf-a55
     schedule: "*/15 * * * *"
+    availability_mode: listed
   - id: applicationservices-b-1-osx1015
     provisioner: releng-hardware
     worker_type: applicationservices-b-1-osx1015

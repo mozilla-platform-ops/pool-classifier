@@ -17,6 +17,7 @@ import taskcluster
 
 from worker_health import quarantine_graphql
 from worker_health.pool_classifier_web.patterns_registry import all_patterns, categories_by_severity
+from worker_health.pool_classifier_web.registry import AVAILABILITY_MODES
 from worker_health.pool_classifier_web.storage import SqliteStorage
 from worker_health.utils import human_delta
 
@@ -90,11 +91,16 @@ class PoolClassifier:
         storage=None,
         worker_contact_threshold_seconds: Optional[int] = None,
         coverage_max_gap_seconds: Optional[int] = None,
+        availability_mode: str = "recent_contact",
     ):
         self.provisioner = provisioner
         self.worker_type = worker_type
         self.results_dir = results_dir
         self.poll_interval = poll_interval
+        if availability_mode not in AVAILABILITY_MODES:
+            allowed = ", ".join(sorted(AVAILABILITY_MODES))
+            raise ValueError(f"availability_mode must be one of: {allowed}")
+        self.availability_mode = availability_mode
         if worker_contact_threshold_seconds is None:
             worker_contact_threshold_seconds = int(
                 os.environ.get(
@@ -159,6 +165,18 @@ class PoolClassifier:
 
     def _init_db(self):
         self.storage.init_schema()
+        mode_reset = self.storage.ensure_worker_availability_mode(
+            self.availability_mode,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        self.storage.commit()
+        if mode_reset:
+            logger.warning(
+                "[%s/%s] Availability mode changed to %s; reset incompatible availability history and coverage",
+                self.provisioner,
+                self.worker_type,
+                self.availability_mode,
+            )
         self.seen_task_runs = self.storage.get_seen_task_runs()
         seen_count = sum(len(s) for s in self.seen_task_runs.values())
         logger.info(
@@ -435,11 +453,14 @@ class PoolClassifier:
 
             quarantine_until = _parse_datetime(quarantine_until_raw)
             quarantined = quarantine_until is not None and quarantine_until > observed_at
-            available = (
-                last_contact is not None
-                and last_contact + self.worker_contact_threshold > observed_at
-                and not quarantined
-            )
+            if self.availability_mode == "listed":
+                available = worker is not None and not quarantined
+            else:
+                available = (
+                    last_contact is not None
+                    and last_contact + self.worker_contact_threshold > observed_at
+                    and not quarantined
+                )
 
             previous_available = bool(previous["available"]) if previous else None
             previous_quarantined = bool(previous["quarantined"]) if previous else None
@@ -448,15 +469,20 @@ class PoolClassifier:
                 if quarantined:
                     reason = "quarantine"
                 elif available:
-                    reason = "online"
+                    reason = "listed" if self.availability_mode == "listed" else "online"
                 else:
-                    reason = "contact_timeout"
+                    reason = "not_listed" if self.availability_mode == "listed" else "contact_timeout"
             elif previous_quarantined != quarantined:
                 reason = "quarantine" if quarantined else "unquarantine"
             elif previous_available != available:
-                reason = "return" if available else "contact_timeout"
+                if self.availability_mode == "listed":
+                    reason = "listed" if available else "not_listed"
+                else:
+                    reason = "return" if available else "contact_timeout"
 
-            if reason in ("online", "return") and last_contact is not None:
+            if reason in ("listed", "not_listed"):
+                effective_at = observed_at
+            elif reason in ("online", "return") and last_contact is not None:
                 effective_at = last_contact
             elif reason == "contact_timeout" and last_contact is not None:
                 effective_at = last_contact + self.worker_contact_threshold
@@ -580,7 +606,9 @@ class PoolClassifier:
                     availability_collection_success = None
                 workers = self._cached_workers
 
-            availability_transitions = self._record_worker_availability(workers)
+            availability_transitions = 0
+            if availability_collection_success is not False:
+                availability_transitions = self._record_worker_availability(workers)
             if availability_collection_success is not None:
                 self._record_collection_coverage("worker_availability", availability_collection_success)
 
@@ -1052,6 +1080,14 @@ class PoolClassifier:
             "",
         ]
 
+        if self.availability_mode == "listed":
+            lines += [
+                "**Availability mode: listed.** Utilization treats every Taskcluster-listed, "
+                "non-quarantined worker as eligible capacity. Listing does not confirm that a "
+                "dormant or physically unhealthy device is live.",
+                "",
+            ]
+
         if workers:
             lines.append(
                 f"_{total_failures} failures, {total_successes} successes across {len(workers)} observed workers._",
@@ -1314,6 +1350,7 @@ class PoolClassifier:
             "  .summary-grid { display: grid; grid-template-columns: max-content 1fr; gap: 0 3rem; }",
             "  .summary-grid > div { min-width: 0; }",
             "  .offenders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .25rem 2rem; }",
+            "  .availability-note { max-width: 80rem; margin: 0 0 1rem; padding: .65rem .8rem; border-left: 3px solid #f90; background: #1a1a1a; color: #aaa; font-size: .85em; line-height: 1.45; }",
             "</style>",
             "</head>",
             "<body>",
@@ -1331,6 +1368,13 @@ class PoolClassifier:
             + "</span>",
             "</div>",
         ]
+
+        if self.availability_mode == "listed":
+            parts.append(
+                '<p class="availability-note"><strong>Availability mode: listed.</strong> '
+                "Utilization counts every worker returned by Taskcluster and not quarantined as eligible capacity. "
+                "A listed worker may be dormant or physically unhealthy; listing does not confirm that the device is live.</p>",
+            )
 
         if workers:
             total_tasks = total_failures + total_successes

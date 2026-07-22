@@ -10,6 +10,7 @@ from typing import List, Optional, Tuple
 import yaml
 
 _DEFAULT_POOLS_FILE = Path(__file__).parent / "pools.yaml"
+AVAILABILITY_MODES = {"recent_contact", "listed"}
 
 
 @dataclass
@@ -20,6 +21,15 @@ class Pool:
     schedule: str
     enabled: bool = True
     reason: str = ""
+    availability_mode: str = "recent_contact"
+
+    def __post_init__(self) -> None:
+        if self.availability_mode not in AVAILABILITY_MODES:
+            allowed = ", ".join(sorted(AVAILABILITY_MODES))
+            raise ValueError(
+                f"invalid availability_mode {self.availability_mode!r} for pool {self.id}; "
+                f"expected one of: {allowed}",
+            )
 
 
 def _load_pools() -> Tuple[List[Pool], dict]:

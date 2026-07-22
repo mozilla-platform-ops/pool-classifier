@@ -10,6 +10,7 @@ from worker_health.pool_classifier import (
     DEFAULT_WORKER_TYPE,
     PoolClassifier,
 )
+from worker_health.pool_classifier_web import registry
 
 # ANSI helpers
 _use_color = True
@@ -101,12 +102,14 @@ if __name__ == "__main__":
         handlers=[handler],
     )
 
+    configured_pool = registry.get_pool(args.provisioner, args.worker_type)
     classifier = PoolClassifier(
         provisioner=args.provisioner,
         worker_type=args.worker_type,
         results_dir=args.results_dir,
         poll_interval=args.poll_interval,
         use_color=_use_color,
+        availability_mode=(configured_pool.availability_mode if configured_pool else "recent_contact"),
     )
     if args.reclassify:
         classifier.reclassify_unclassified(

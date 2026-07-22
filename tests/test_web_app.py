@@ -21,8 +21,8 @@ DSN = os.environ.get("PC_TEST_DATABASE_URL", "")
 if not DSN:
     pytest.skip("PC_TEST_DATABASE_URL not set", allow_module_level=True)
 
-PROVISIONER = "proj-autophone"
-WORKER_TYPE = "gecko-t-lambda-perf-a55"
+PROVISIONER = "test-provisioner"
+WORKER_TYPE = "test-worker-type"
 POOL_ID = f"{PROVISIONER}/{WORKER_TYPE}"
 POOL_URL_PREFIX = f"/pools/{PROVISIONER}/{WORKER_TYPE}"
 UTILIZATION_URL = f"/api/v1/pools/{PROVISIONER}/{WORKER_TYPE}/utilization"
@@ -45,10 +45,16 @@ def _truncate_pg():
                 "unclassified_logs",
                 "worker_availability_transitions",
                 "worker_availability_state",
+                "worker_availability_mode",
                 "collection_coverage_state",
                 "collection_coverage_intervals",
             ):
                 cur.execute(f"DELETE FROM {tbl} WHERE pool_id = %s", (POOL_ID,))
+            cur.execute(
+                "INSERT INTO worker_availability_mode (pool_id, mode, changed_at)"
+                " VALUES (%s, 'listed', now())",
+                (POOL_ID,),
+            )
         conn.commit()
     yield
 
@@ -58,8 +64,27 @@ def client(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", DSN)
     # Clear the module-level classifier cache between tests.
     import worker_health.pool_classifier_web.app as app_module
+    from worker_health.pool_classifier_web.registry import Pool
 
     app_module._classifiers.clear()
+    test_pool = Pool(
+        id="postgres-web-test",
+        provisioner=PROVISIONER,
+        worker_type=WORKER_TYPE,
+        schedule="*/15 * * * *",
+        availability_mode="listed",
+    )
+    original_get_pool = app_module.registry.get_pool
+    monkeypatch.setattr(
+        app_module.registry,
+        "get_pool",
+        lambda provisioner, worker_type: (
+            test_pool
+            if (provisioner, worker_type) == (PROVISIONER, WORKER_TYPE)
+            else original_get_pool(provisioner, worker_type)
+        ),
+    )
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [test_pool])
     from worker_health.pool_classifier_web.app import create_app
 
     app = create_app()
@@ -78,12 +103,16 @@ def test_index_renders(client):
     r = client.get("/")
     assert r.status_code == 200
     assert WORKER_TYPE.encode() in r.data
+    assert b"Listed availability" in r.data
+    assert b"listing does not confirm that the device is live" in r.data
 
 
 def test_pool_html(client):
     r = client.get(POOL_URL_PREFIX)
     assert r.status_code == 200
     assert b"Pool Classifier" in r.data
+    assert b"Availability mode: listed" in r.data
+    assert b"listing does not confirm that the device is live" in r.data
 
 
 def test_pool_unknown_returns_404(client):
@@ -124,6 +153,7 @@ def test_utilization_api_postgres_integration(client):
     )
     assert response.status_code == 200
     assert response.json["pool_id"] == POOL_ID
+    assert response.json["availability_mode"] == "listed"
     assert response.json["complete"] is True
     assert [bucket["utilization_pct"] for bucket in response.json["buckets"]] == [100, 0]
 

@@ -75,6 +75,10 @@ Useful local URLs:
 - Health check: <http://localhost:8080/healthz>
 - Utilization API: see [docs/utilization-api.md](docs/utilization-api.md)
 
+The dashboard and pool pages identify pools using `listed` availability. For
+those wake-on-dispatch pools, listed and non-quarantined workers count as
+eligible capacity, but Taskcluster listing does not confirm device liveness.
+
 Trigger classify cycles:
 
 ```sh

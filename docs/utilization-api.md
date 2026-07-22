@@ -32,6 +32,7 @@ Unknown pools return `404`. Invalid parameters return `400`:
 {
   "api_version": 1,
   "pool_id": "proj-autophone/gecko-t-lambda-perf-a55",
+  "availability_mode": "listed",
   "start_at": "2026-07-21T10:00:00+00:00",
   "end_at": "2026-07-21T12:00:00+00:00",
   "bucket_seconds": 3600,
@@ -82,11 +83,11 @@ authoritative rightsizing data.
 
 ## Availability semantics
 
-Availability comes from Taskcluster Queue worker contact and quarantine data,
-not configured capacity or the number of retained worker records.
+The `availability_mode` field states how the availability denominator is
+derived. It is configured per pool:
 
-- A worker is available when `lastDateActive` is within the recent-contact
-  threshold and `quarantineUntil` is not in the future.
+- `recent_contact` requires `lastDateActive` to be within the recent-contact
+  threshold and `quarantineUntil` not to be in the future. This is the default.
 - `WORKER_CONTACT_THRESHOLD_SECONDS` configures the threshold and defaults to
   3,600 seconds (60 minutes). Taskcluster updates `lastDateActive` periodically,
   so tune this using observed contact ages for known healthy workers.
@@ -97,9 +98,27 @@ not configured capacity or the number of retained worker records.
 - Workers that disappear from a listing retain their last known contact time,
   allowing a timeout followed by a later return to be represented correctly.
 
+`listed` is used for wake-on-dispatch pools such as `proj-autophone`. Every
+worker returned by a successful, complete Taskcluster `listWorkers` observation
+is treated as eligible capacity while it is not quarantined, regardless of
+`lastDateActive`. A missing worker becomes unavailable when the complete listing
+is observed. Failed listings create coverage gaps and do not remove workers.
+
+Listed availability is not a liveness or health signal. Taskcluster cannot
+distinguish a dormant wake-on-dispatch device from a physically dead device
+that remains listed. Known-bad devices must be quarantined (or eventually
+filtered using an external health source); otherwise they remain in the
+denominator and can make utilization look lower than the usable pool really is.
+
 Only state transitions are retained as history; the current observation is an
 upserted row per worker. Storage therefore grows with availability changes,
 not polling frequency.
+
+When a pool changes modes, its availability state, transition history, and
+availability coverage are reset while task-run history is preserved. This
+prevents utilization from combining incompatible denominator semantics; API
+coverage becomes complete again only after fresh observations under the new
+mode.
 
 ## Coverage semantics
 

@@ -51,6 +51,7 @@ def _truncate_pg():
                 "unclassified_logs",
                 "worker_availability_transitions",
                 "worker_availability_state",
+                "worker_availability_mode",
                 "collection_coverage_state",
                 "collection_coverage_intervals",
             ):
@@ -189,6 +190,55 @@ def test_worker_availability_storage_parity(sqlite, pg):
         "observed_at",
     ):
         assert sqlite_state[field] == postgres_state[field]
+
+
+def test_worker_availability_mode_cutover_resets_only_availability_history(sqlite, pg):
+    observed = "2026-07-22T10:00:00+00:00"
+    for storage in (sqlite, pg):
+        storage.record_task_result(
+            "t1",
+            "w1",
+            0,
+            "completed",
+            None,
+            None,
+            "2026-07-22T09:00:00+00:00",
+            observed,
+            observed,
+        )
+        storage.record_worker_availability_transition(
+            "w1",
+            "group-1",
+            False,
+            False,
+            "2026-07-22T08:00:00+00:00",
+            None,
+            "contact_timeout",
+            "2026-07-22T09:00:00+00:00",
+            observed,
+        )
+        storage.upsert_worker_availability_state(
+            "w1",
+            "group-1",
+            False,
+            False,
+            "2026-07-22T08:00:00+00:00",
+            None,
+            "contact_timeout",
+            "2026-07-22T09:00:00+00:00",
+            observed,
+        )
+        storage.record_collection_coverage("worker_availability", observed, True, 900)
+        storage.commit()
+
+        assert storage.ensure_worker_availability_mode("listed", observed) is True
+        storage.commit()
+        assert storage.get_worker_availability_states() == {}
+        assert storage.get_collection_coverage("worker_availability")["intervals"] == []
+        assert storage.get_seen_task_runs() == {"w1": {("t1", 0)}}
+
+        assert storage.ensure_worker_availability_mode("listed", observed) is False
+        storage.commit()
 
 
 def test_collection_coverage_storage_parity(sqlite, pg):
