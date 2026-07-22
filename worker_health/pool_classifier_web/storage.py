@@ -431,6 +431,41 @@ class SqliteStorage:
         ]
         return _coverage_summary(source, intervals, range_start, range_end)
 
+    def get_utilization(self, range_start: str, range_end: str, bucket_seconds: int) -> dict:
+        from worker_health.pool_classifier_web.utilization import calculate_utilization
+
+        task_runs = [
+            dict(row)
+            for row in self.db.execute(
+                "SELECT worker_id, run_started AS start_at, run_resolved AS end_at"
+                " FROM task_results"
+                " WHERE run_started IS NOT NULL AND run_resolved IS NOT NULL"
+                "   AND julianday(run_started) < julianday(?)"
+                "   AND julianday(run_resolved) > julianday(?)",
+                (range_end, range_start),
+            )
+        ]
+        availability_transitions = [
+            dict(row)
+            for row in self.db.execute(
+                "SELECT id, worker_id, available, effective_at, observed_at"
+                " FROM worker_availability_transitions"
+                " WHERE julianday(effective_at) < julianday(?)"
+                " ORDER BY observed_at, id",
+                (range_end,),
+            )
+        ]
+        return calculate_utilization(
+            self.pool_id,
+            range_start,
+            range_end,
+            bucket_seconds,
+            task_runs,
+            availability_transitions,
+            self.get_collection_coverage("task_runs")["intervals"],
+            self.get_collection_coverage("worker_availability")["intervals"],
+        )
+
     def record_worker_availability_transition(
         self,
         worker_id: str,
@@ -1094,6 +1129,63 @@ class PostgresStorage:
                 for row in cur.fetchall()
             ]
         return _coverage_summary(source, intervals, range_start, range_end)
+
+    def get_utilization(self, range_start: str, range_end: str, bucket_seconds: int) -> dict:
+        from worker_health.pool_classifier_web.utilization import calculate_utilization
+
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT worker_id, run_started AS start_at, run_resolved AS end_at"
+                " FROM task_results"
+                " WHERE pool_id = %s AND run_started IS NOT NULL AND run_resolved IS NOT NULL"
+                "   AND run_started < %s::timestamptz AND run_resolved > %s::timestamptz",
+                (self.pool_id, range_end, range_start),
+            )
+            task_runs = [
+                {
+                    "worker_id": row["worker_id"],
+                    "start_at": _to_iso(row["start_at"]),
+                    "end_at": _to_iso(row["end_at"]),
+                }
+                for row in cur.fetchall()
+            ]
+            cur.execute(
+                "SELECT id, worker_id, available, effective_at, observed_at"
+                " FROM worker_availability_transitions"
+                " WHERE pool_id = %s AND effective_at < %s::timestamptz"
+                " ORDER BY observed_at, id",
+                (self.pool_id, range_end),
+            )
+            availability_transitions = [
+                {
+                    "id": row["id"],
+                    "worker_id": row["worker_id"],
+                    "available": row["available"],
+                    "effective_at": _to_iso(row["effective_at"]),
+                    "observed_at": _to_iso(row["observed_at"]),
+                }
+                for row in cur.fetchall()
+            ]
+            cur.execute(
+                "SELECT source, start_at, end_at FROM collection_coverage_intervals"
+                " WHERE pool_id = %s ORDER BY source, start_at",
+                (self.pool_id,),
+            )
+            coverage_intervals = {source: [] for source in COLLECTION_SOURCES}
+            for row in cur.fetchall():
+                coverage_intervals[row["source"]].append(
+                    {"start_at": _to_iso(row["start_at"]), "end_at": _to_iso(row["end_at"])},
+                )
+        return calculate_utilization(
+            self.pool_id,
+            range_start,
+            range_end,
+            bucket_seconds,
+            task_runs,
+            availability_transitions,
+            coverage_intervals["task_runs"],
+            coverage_intervals["worker_availability"],
+        )
 
     def record_worker_availability_transition(
         self,

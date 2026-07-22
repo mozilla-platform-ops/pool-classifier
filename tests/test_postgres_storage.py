@@ -213,6 +213,44 @@ def test_collection_coverage_storage_parity(sqlite, pg):
     )
 
 
+def test_utilization_storage_parity(sqlite, pg):
+    start = datetime(2026, 7, 21, 10, 0, tzinfo=timezone.utc)
+    end = start + timedelta(hours=1)
+    for storage in (sqlite, pg):
+        for source in ("task_runs", "worker_availability"):
+            storage.record_collection_coverage(source, start.isoformat(), True, 3600)
+            storage.record_collection_coverage(source, end.isoformat(), True, 3600)
+        storage.record_worker_availability_transition(
+            "w1",
+            "group-1",
+            True,
+            False,
+            start.isoformat(),
+            None,
+            "online",
+            start.isoformat(),
+            start.isoformat(),
+        )
+        storage.record_task_result(
+            "t1",
+            "w1",
+            0,
+            "completed",
+            None,
+            None,
+            (start + timedelta(minutes=15)).isoformat(),
+            (start + timedelta(minutes=45)).isoformat(),
+            end.isoformat(),
+        )
+        storage.commit()
+
+    assert sqlite.get_utilization(start.isoformat(), end.isoformat(), 1800) == pg.get_utilization(
+        start.isoformat(),
+        end.isoformat(),
+        1800,
+    )
+
+
 # --- count_alerting ---
 
 
