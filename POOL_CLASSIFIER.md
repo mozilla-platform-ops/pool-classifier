@@ -125,3 +125,11 @@ Match order: patterns are sorted critical → high → low, file order within a 
 | `CLASSIFY_OIDC_AUDIENCE`  | If set, require OIDC bearer on `/classify/*` | unset (off, local dev)     |
 | `CLASSIFY_OIDC_SA_EMAIL`  | Expected `email` claim in the OIDC token    | unset (any caller passes)  |
 | `LOG_JSON`                | Set `true` for structured logs              | unset                      |
+| `WORKER_CONTACT_THRESHOLD_SECONDS` | Maximum healthy worker contact age | `3600`             |
+| `COLLECTION_COVERAGE_MAX_GAP_SECONDS` | Maximum gap coalesced as continuous coverage | twice poll interval |
+
+## Utilization API
+
+See [`docs/utilization-api.md`](docs/utilization-api.md) for the versioned JSON
+endpoint, formulas, units, availability derivation, coverage rules, and example
+responses.

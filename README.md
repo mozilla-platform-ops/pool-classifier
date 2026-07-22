@@ -73,6 +73,7 @@ Useful local URLs:
 - Example pool:
   <http://localhost:8080/pools/proj-autophone/gecko-t-lambda-perf-a55>
 - Health check: <http://localhost:8080/healthz>
+- Utilization API: see [docs/utilization-api.md](docs/utilization-api.md)
 
 Trigger classify cycles:
 
@@ -82,6 +83,15 @@ curl -s -X POST localhost:8080/classify/proj-autophone/gecko-t-lambda-perf-a55 |
 
 # Every enabled pool
 bash pc_fetch_data.sh
+```
+
+Query duration-weighted utilization:
+
+```sh
+curl -sG localhost:8080/api/v1/pools/proj-autophone/gecko-t-lambda-perf-a55/utilization \
+  --data-urlencode 'start=2026-07-21T10:00:00Z' \
+  --data-urlencode 'end=2026-07-21T12:00:00Z' \
+  --data-urlencode 'bucket_seconds=3600' | jq .
 ```
 
 ## Tests

@@ -25,6 +25,7 @@ PROVISIONER = "proj-autophone"
 WORKER_TYPE = "gecko-t-lambda-perf-a55"
 POOL_ID = f"{PROVISIONER}/{WORKER_TYPE}"
 POOL_URL_PREFIX = f"/pools/{PROVISIONER}/{WORKER_TYPE}"
+UTILIZATION_URL = f"/api/v1/pools/{PROVISIONER}/{WORKER_TYPE}/utilization"
 CLASSIFY_URL = f"/classify/{PROVISIONER}/{WORKER_TYPE}"
 
 
@@ -88,6 +89,43 @@ def test_pool_html(client):
 def test_pool_unknown_returns_404(client):
     r = client.get("/pools/unknown-provisioner/unknown-worker-type")
     assert r.status_code == 404
+
+
+def test_utilization_api_postgres_integration(client):
+    start = "2026-07-21T10:00:00+00:00"
+    middle = "2026-07-21T10:30:00+00:00"
+    end = "2026-07-21T11:00:00+00:00"
+    with psycopg.connect(DSN) as conn:
+        with conn.cursor() as cur:
+            for source in ("task_runs", "worker_availability"):
+                cur.execute(
+                    "INSERT INTO collection_coverage_intervals (pool_id, source, start_at, end_at)"
+                    " VALUES (%s,%s,%s,%s)",
+                    (POOL_ID, source, start, end),
+                )
+            cur.execute(
+                "INSERT INTO worker_availability_transitions"
+                " (pool_id, worker_id, worker_group, available, quarantined, last_contact,"
+                "  reason, effective_at, observed_at)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (POOL_ID, "w1", "group-1", True, False, start, "online", start, start),
+            )
+            cur.execute(
+                "INSERT INTO task_results"
+                " (pool_id, task_id, worker_id, run_id, run_state, run_started, run_resolved, classified_at)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (POOL_ID, "t1", "w1", 0, "completed", start, middle, middle),
+            )
+        conn.commit()
+
+    response = client.get(
+        UTILIZATION_URL,
+        query_string={"start": start, "end": end, "bucket_seconds": "1800"},
+    )
+    assert response.status_code == 200
+    assert response.json["pool_id"] == POOL_ID
+    assert response.json["complete"] is True
+    assert [bucket["utilization_pct"] for bucket in response.json["buckets"]] == [100, 0]
 
 
 def test_classify_lock_conflict_returns_409(client):

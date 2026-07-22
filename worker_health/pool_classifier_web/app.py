@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections import Counter
 import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, Response, abort, jsonify, render_template
+from flask import Flask, Response, abort, jsonify, render_template, request
 
 from worker_health.pool_classifier import CONSECUTIVE_FAILURE_ALERT, PoolClassifier
 from worker_health.pool_classifier_web import registry
@@ -25,6 +26,45 @@ logger = logging.getLogger(__name__)
 
 # Keyed by (provisioner, worker_type).
 _classifiers: dict[tuple[str, str], PoolClassifier] = {}
+MAX_UTILIZATION_RANGE_SECONDS = 90 * 24 * 60 * 60
+MAX_UTILIZATION_BUCKETS = 2000
+
+
+def _parse_utilization_datetime(name: str, value: str | None) -> datetime:
+    if not value:
+        raise ValueError(f"{name} is required")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an ISO 8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{name} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _utilization_parameters() -> tuple[str, str, int]:
+    start = _parse_utilization_datetime("start", request.args.get("start"))
+    end = _parse_utilization_datetime("end", request.args.get("end"))
+    if end <= start:
+        raise ValueError("end must be after start")
+    range_seconds = (end - start).total_seconds()
+    if range_seconds > MAX_UTILIZATION_RANGE_SECONDS:
+        raise ValueError("time range must not exceed 90 days")
+
+    bucket_value = request.args.get("bucket_seconds")
+    if not bucket_value:
+        raise ValueError("bucket_seconds is required")
+    try:
+        bucket_seconds = int(bucket_value)
+    except ValueError as exc:
+        raise ValueError("bucket_seconds must be an integer") from exc
+    if bucket_seconds <= 0:
+        raise ValueError("bucket_seconds must be greater than zero")
+    if bucket_seconds > MAX_UTILIZATION_RANGE_SECONDS:
+        raise ValueError(f"bucket_seconds must not exceed {MAX_UTILIZATION_RANGE_SECONDS}")
+    if math.ceil(range_seconds / bucket_seconds) > MAX_UTILIZATION_BUCKETS:
+        raise ValueError(f"bucket_seconds would produce more than {MAX_UTILIZATION_BUCKETS} buckets")
+    return start.isoformat(), end.isoformat(), bucket_seconds
 
 
 def _get_classifier(provisioner: str, worker_type: str) -> PoolClassifier | None:
@@ -210,6 +250,19 @@ def create_app() -> Flask:
         if pc is None:
             abort(404)
         return Response(pc.render_md(), content_type="text/markdown; charset=utf-8")
+
+    @app.get("/api/v1/pools/<provisioner>/<worker_type>/utilization")
+    def pool_utilization(provisioner: str, worker_type: str):
+        try:
+            start, end, bucket_seconds = _utilization_parameters()
+        except ValueError as exc:
+            return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
+        pc = _get_classifier(provisioner, worker_type)
+        if pc is None:
+            return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
+        result = pc.storage.get_utilization(start, end, bucket_seconds)
+        result["api_version"] = 1
+        return jsonify(result)
 
     @app.post("/classify/<provisioner>/<worker_type>")
     @require_scheduler_oidc

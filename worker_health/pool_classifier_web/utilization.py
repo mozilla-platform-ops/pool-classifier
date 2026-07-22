@@ -166,7 +166,8 @@ def calculate_utilization(
     buckets = []
     bucket_start = start
     while bucket_start < end:
-        bucket_end = min(end, bucket_start + timedelta(seconds=bucket_seconds))
+        remaining_seconds = (end - bucket_start).total_seconds()
+        bucket_end = bucket_start + timedelta(seconds=min(bucket_seconds, remaining_seconds))
         bucket_duration = (bucket_end - bucket_start).total_seconds()
         bucket_coverage_seconds = _clip_seconds(combined_coverage, bucket_start, bucket_end)
         complete = _is_complete(combined_coverage, bucket_start, bucket_end)
