@@ -215,3 +215,44 @@ def calculate_utilization(
         "complete": _is_complete(combined_coverage, start, end),
         "buckets": buckets,
     }
+
+
+def calculate_utilization_summary(
+    pool_id: str,
+    windows: Dict[str, int],
+    task_runs: List[dict],
+    availability_transitions: List[dict],
+    task_coverage_intervals: List[dict],
+    availability_coverage_intervals: List[dict],
+) -> dict:
+    """Calculate fixed trailing windows against one common coverage boundary."""
+    task_coverage = [(_parse(row["start_at"]), _parse(row["end_at"])) for row in task_coverage_intervals]
+    availability_coverage = [
+        (_parse(row["start_at"]), _parse(row["end_at"]))
+        for row in availability_coverage_intervals
+    ]
+    common_coverage = _intersection(task_coverage, availability_coverage)
+    if not common_coverage:
+        return {"pool_id": pool_id, "data_through": None, "windows": {}}
+
+    # The end of the newest common interval is deliberately used instead of
+    # browser/server now: polling naturally leaves a tail between observations.
+    end = max(interval_end for _interval_start, interval_end in common_coverage)
+    results = {}
+    for label, seconds in windows.items():
+        start = end - timedelta(seconds=seconds)
+        try:
+            result = calculate_utilization(
+                pool_id,
+                start.isoformat(),
+                end.isoformat(),
+                seconds,
+                task_runs,
+                availability_transitions,
+                task_coverage_intervals,
+                availability_coverage_intervals,
+            )
+            results[label] = {"status": "ok", "utilization": result["buckets"][0]}
+        except Exception as exc:  # Keep a bad range from hiding the others.
+            results[label] = {"status": "error", "error": str(exc)}
+    return {"pool_id": pool_id, "data_through": end.isoformat(), "windows": results}

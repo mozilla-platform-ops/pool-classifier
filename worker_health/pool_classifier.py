@@ -1351,6 +1351,9 @@ class PoolClassifier:
             "  .summary-grid > div { min-width: 0; }",
             "  .offenders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .25rem 2rem; }",
             "  .availability-note { max-width: 80rem; margin: 0 0 1rem; padding: .65rem .8rem; border-left: 3px solid #f90; background: #1a1a1a; color: #aaa; font-size: .85em; line-height: 1.45; }",
+            "  .util-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:.8rem; max-width:80rem; }",
+            "  .util-card { border:1px solid #444; border-radius:4px; background:#1a1a1a; padding:.8rem; min-height:7rem; }",
+            "  .util-card h3 { margin:0 0 .5rem; color:#ddd; } .util-card p { margin:.25rem 0; } .util-detail { color:#aaa; font-size:.85em; }",
             "</style>",
             "</head>",
             "<body>",
@@ -1376,6 +1379,15 @@ class PoolClassifier:
                 "A listed worker may be dormant or physically unhealthy; listing does not confirm that the device is live.</p>",
             )
 
+        summary_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization/summary"
+        guide_url = f"/pools/{self.provisioner}/{self.worker_type}/utilization"
+        parts += [
+            '<h2 id="s-utilization">Utilization</h2>',
+            f'<p class="gen">Duration-weighted task time versus available worker time. <a href="{guide_url}">API guide</a></p>',
+            '<p id="util-freshness" class="gen">Loading utilization…</p>',
+            '<div id="util-cards" class="util-grid"></div>',
+        ]
+
         if workers:
             total_tasks = total_failures + total_successes
             sr_pct = f"{100 * total_successes / total_tasks:.1f}%" if total_tasks else "—"
@@ -1396,6 +1408,7 @@ class PoolClassifier:
             '  <a href="#s-attention">Consecutive Failures</a><span class="sep">|</span>',
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
             '  <a href="#s-heatmap">Heatmap</a><span class="sep">|</span>',
+            '  <a href="#s-utilization">Utilization</a><span class="sep">|</span>',
             '  <a href="#s-all">All Workers</a><span class="sep">|</span>',
             '  <a href="#s-offenders">Top Offenders</a>',
             "</nav>",
@@ -1635,6 +1648,23 @@ class PoolClassifier:
             "  const SEV_CLASS = {critical: 'tip-critical', high: 'tip-high', low: 'tip-low'};",
             "  const SEV_ICON  = {critical: '✗', high: '⚠', low: '•'};",
             "  // Heatmap hover card",
+            f"  const UTIL_SUMMARY_URL = {json.dumps(summary_url)};",
+            "  const utilCards = document.getElementById('util-cards');",
+            "  const utilFreshness = document.getElementById('util-freshness');",
+            "  const esc = value => String(value).replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));",
+            "  const utilCard = (label, data) => {",
+            "    if (data.status === 'error') return `<article class='util-card'><h3>${label}</h3><p class='bad'>Request error</p><p class='util-detail'>${esc(data.error || 'Unknown error')}</p></article>`;",
+            "    const u = data.utilization;",
+            "    if (!u || !u.complete) return `<article class='util-card'><h3>${label}</h3><p>Collecting data</p><p class='util-detail'>Coverage: ${(u?.coverage_pct ?? 0).toFixed(1)}%</p></article>`;",
+            "    if (u.status === 'unavailable') return `<article class='util-card'><h3>${label}</h3><p>No available capacity</p><p class='util-detail'>Busy: ${u.busy_worker_hours.toFixed(2)} worker-hours</p></article>`;",
+            "    const quality = u.utilization_pct > 100 ? `<p class='warn'>Over 100% — possible data-quality issue</p>` : '';",
+            "    return `<article class='util-card'><h3>${label}</h3><p><strong>${u.utilization_pct.toFixed(1)}%</strong> utilization</p><p class='util-detail'>Busy: ${u.busy_worker_hours.toFixed(2)} worker-hours<br>Available: ${u.available_worker_hours.toFixed(2)} worker-hours<br>Coverage: 100%</p>${quality}</article>`;",
+            "  };",
+            "  fetch(UTIL_SUMMARY_URL).then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))).then(data => {",
+            "    const through = data.data_through; const age = through ? Math.max(0, Math.round((Date.now() - new Date(through)) / 60000)) : null;",
+            "    utilFreshness.textContent = through ? `Data through ${formatTime(through, document.querySelector('input[name=\"tz\"]:checked').value)} (${age < 60 ? age + 'm' : Math.floor(age / 60) + 'h'} old)` : 'Collecting data: no common coverage boundary yet.';",
+            "    utilCards.innerHTML = ['1h','24h','7d','30d'].map(label => utilCard(label, data.windows[label] || {status:'error', error:'Missing response'})).join('');",
+            "  }).catch(error => { utilFreshness.textContent = 'Utilization could not be loaded.'; utilCards.innerHTML = ['1h','24h','7d','30d'].map(label => utilCard(label, {status:'error', error:error.message})).join(''); });",
             "  const tip = document.getElementById('hm-tip');",
             "  document.querySelectorAll('.hm-cell').forEach(cell => {",
             "    cell.addEventListener('mouseenter', e => {",

@@ -12,6 +12,7 @@ from worker_health.pool_classifier_web.storage import SqliteStorage
 
 
 API_PATH = "/api/v1/pools/provisioner/worker-type/utilization"
+SUMMARY_PATH = f"{API_PATH}/summary"
 API_START = datetime(2026, 7, 21, 10, 0, tzinfo=timezone.utc)
 
 
@@ -266,6 +267,47 @@ def test_utilization_api_incomplete_data(monkeypatch, tmp_path):
     assert bucket["available_worker_hours"] is None
     assert bucket["worker_equivalents"] is None
     assert bucket["utilization_pct"] is None
+
+
+def test_utilization_summary_uses_one_common_freshness_boundary(monkeypatch, tmp_path):
+    client = _api_client(monkeypatch, _api_storage(tmp_path, coverage_minutes=60))
+    response = client.get(SUMMARY_PATH)
+
+    assert response.status_code == 200
+    assert response.json["data_through"] == (API_START + timedelta(hours=1)).isoformat()
+    assert response.json["availability_mode"] == "recent_contact"
+    assert set(response.json["windows"]) == {"1h", "24h", "7d", "30d"}
+    assert response.json["windows"]["1h"]["status"] == "ok"
+    assert response.json["windows"]["1h"]["utilization"]["complete"] is True
+    assert response.json["windows"]["24h"]["utilization"]["complete"] is False
+
+
+def test_utilization_summary_collects_before_any_common_coverage(monkeypatch, tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    storage.init_schema()
+    client = _api_client(monkeypatch, storage)
+
+    response = client.get(SUMMARY_PATH)
+
+    assert response.status_code == 200
+    assert response.json["data_through"] is None
+    assert response.json["windows"] == {}
+
+
+def test_pool_utilization_guide_is_pool_aware(monkeypatch):
+    pool = SimpleNamespace(provisioner="provisioner", worker_type="worker-type")
+    monkeypatch.setattr(app_module.registry, "get_pool", lambda *_args: pool)
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/pools/provisioner/worker-type/utilization")
+
+    assert response.status_code == 200
+    assert b"/api/v1/pools/provisioner/worker-type/utilization?start=" in response.data
+    assert b"Copy curl" in response.data
+    assert b"inclusive" in response.data
+    assert b"90 days" in response.data
 
 
 def test_utilization_api_unknown_pool_returns_404(monkeypatch, tmp_path):

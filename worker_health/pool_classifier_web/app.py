@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 _classifiers: dict[tuple[str, str], PoolClassifier] = {}
 MAX_UTILIZATION_RANGE_SECONDS = 90 * 24 * 60 * 60
 MAX_UTILIZATION_BUCKETS = 2000
+UTILIZATION_WINDOWS = {"1h": 60 * 60, "24h": 24 * 60 * 60, "7d": 7 * 24 * 60 * 60, "30d": 30 * 24 * 60 * 60}
 
 
 def _parse_utilization_datetime(name: str, value: str | None) -> datetime:
@@ -270,6 +271,22 @@ def create_app() -> Flask:
         result["api_version"] = 1
         result["availability_mode"] = pc.availability_mode
         return jsonify(result)
+
+    @app.get("/api/v1/pools/<provisioner>/<worker_type>/utilization/summary")
+    def pool_utilization_summary(provisioner: str, worker_type: str):
+        pc = _get_classifier(provisioner, worker_type)
+        if pc is None:
+            return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
+        result = pc.storage.get_utilization_summary(UTILIZATION_WINDOWS)
+        result.update({"api_version": 1, "availability_mode": pc.availability_mode})
+        return jsonify(result)
+
+    @app.get("/pools/<provisioner>/<worker_type>/utilization")
+    def pool_utilization_guide(provisioner: str, worker_type: str):
+        pool = registry.get_pool(provisioner, worker_type)
+        if pool is None:
+            abort(404)
+        return render_template("utilization_guide.html", pool=pool)
 
     @app.post("/classify/<provisioner>/<worker_type>")
     @require_scheduler_oidc

@@ -496,6 +496,39 @@ class SqliteStorage:
             self.get_collection_coverage("worker_availability")["intervals"],
         )
 
+    def get_utilization_summary(self, windows: dict[str, int]) -> dict:
+        from worker_health.pool_classifier_web.utilization import calculate_utilization_summary
+
+        coverage = {
+            source: self.get_collection_coverage(source)["intervals"]
+            for source in COLLECTION_SOURCES
+        }
+        # The function only needs task runs in the longest requested window;
+        # transitions remain historical to establish state at its start.
+        from worker_health.pool_classifier_web.utilization import _intersection, _parse
+
+        common = _intersection(
+            [(_parse(row["start_at"]), _parse(row["end_at"])) for row in coverage["task_runs"]],
+            [(_parse(row["start_at"]), _parse(row["end_at"])) for row in coverage["worker_availability"]],
+        )
+        if not common:
+            return calculate_utilization_summary(self.pool_id, windows, [], [], coverage["task_runs"], coverage["worker_availability"])
+        end = max(interval_end for _start, interval_end in common).isoformat()
+        start = (max(interval_end for _start, interval_end in common) - timedelta(seconds=max(windows.values()))).isoformat()
+        return self._utilization_summary_from_records(windows, start, end, coverage)
+
+    def _utilization_summary_from_records(self, windows, start, end, coverage):
+        from worker_health.pool_classifier_web.utilization import calculate_utilization_summary
+
+        task_runs = [dict(row) for row in self.db.execute(
+            "SELECT worker_id, run_started AS start_at, run_resolved AS end_at FROM task_results"
+            " WHERE run_started IS NOT NULL AND run_resolved IS NOT NULL"
+            " AND julianday(run_started) < julianday(?) AND julianday(run_resolved) > julianday(?)", (end, start))]
+        transitions = [dict(row) for row in self.db.execute(
+            "SELECT id, worker_id, available, effective_at, observed_at FROM worker_availability_transitions"
+            " WHERE julianday(effective_at) < julianday(?) ORDER BY observed_at, id", (end,))]
+        return calculate_utilization_summary(self.pool_id, windows, task_runs, transitions, coverage["task_runs"], coverage["worker_availability"])
+
     def record_worker_availability_transition(
         self,
         worker_id: str,
@@ -1255,6 +1288,29 @@ class PostgresStorage:
             coverage_intervals["task_runs"],
             coverage_intervals["worker_availability"],
         )
+
+    def get_utilization_summary(self, windows: dict[str, int]) -> dict:
+        from worker_health.pool_classifier_web.utilization import _intersection, _parse, calculate_utilization_summary
+
+        with self._cursor() as cur:
+            cur.execute("SELECT source, start_at, end_at FROM collection_coverage_intervals WHERE pool_id = %s ORDER BY source, start_at", (self.pool_id,))
+            coverage = {source: [] for source in COLLECTION_SOURCES}
+            for row in cur.fetchall():
+                coverage[row["source"]].append({"start_at": _to_iso(row["start_at"]), "end_at": _to_iso(row["end_at"])})
+            common = _intersection(
+                [(_parse(row["start_at"]), _parse(row["end_at"])) for row in coverage["task_runs"]],
+                [(_parse(row["start_at"]), _parse(row["end_at"])) for row in coverage["worker_availability"]],
+            )
+            if not common:
+                return calculate_utilization_summary(self.pool_id, windows, [], [], coverage["task_runs"], coverage["worker_availability"])
+            end_dt = max(interval_end for _start, interval_end in common)
+            start = (end_dt - timedelta(seconds=max(windows.values()))).isoformat()
+            end = end_dt.isoformat()
+            cur.execute("SELECT worker_id, run_started AS start_at, run_resolved AS end_at FROM task_results WHERE pool_id = %s AND run_started IS NOT NULL AND run_resolved IS NOT NULL AND run_started < %s::timestamptz AND run_resolved > %s::timestamptz", (self.pool_id, end, start))
+            task_runs = [{"worker_id": row["worker_id"], "start_at": _to_iso(row["start_at"]), "end_at": _to_iso(row["end_at"])} for row in cur.fetchall()]
+            cur.execute("SELECT id, worker_id, available, effective_at, observed_at FROM worker_availability_transitions WHERE pool_id = %s AND effective_at < %s::timestamptz ORDER BY observed_at, id", (self.pool_id, end))
+            transitions = [{"id": row["id"], "worker_id": row["worker_id"], "available": row["available"], "effective_at": _to_iso(row["effective_at"]), "observed_at": _to_iso(row["observed_at"])} for row in cur.fetchall()]
+        return calculate_utilization_summary(self.pool_id, windows, task_runs, transitions, coverage["task_runs"], coverage["worker_availability"])
 
     def record_worker_availability_transition(
         self,

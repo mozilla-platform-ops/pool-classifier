@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Utilization API guide</title>
+<style>body{font-family:monospace;background:#111;color:#ccc;padding:1.5rem;max-width:75rem;line-height:1.5}a{color:#58a6ff}code,pre{background:#1a1a1a;padding:.2rem .4rem}pre{padding:1rem;white-space:pre-wrap}h1,h2{color:#f90}</style></head><body>
+<p><a href="/pools/{{ pool.provisioner }}/{{ pool.worker_type }}">← pool detail</a></p>
+<h1>Utilization API</h1>
+<p>Duration-weighted utilization is busy worker-seconds ÷ available worker-seconds × 100. It is not an average of bucket percentages.</p>
+<button id="copy-curl">Copy curl</button><pre id="curl-example">curl '{{ request.host_url.rstrip('/') }}/api/v1/pools/{{ pool.provisioner }}/{{ pool.worker_type }}/utilization?start=2026-07-21T10:00:00Z&amp;end=2026-07-21T12:00:00Z&amp;bucket_seconds=3600'</pre>
+<h2>Parameters and limits</h2><p><code>start</code> is inclusive and <code>end</code> exclusive; both are ISO 8601 timestamps with timezones. <code>bucket_seconds</code> is a positive integer. Ranges are limited to 90 days and 2,000 buckets.</p>
+<h2>Response and coverage</h2><p>Each bucket returns <code>busy_worker_hours</code> and <code>available_worker_hours</code> (hours), <code>worker_equivalents</code> (average busy workers), <code>utilization_pct</code>, <code>coverage_pct</code>, <code>complete</code>, and <code>status</code>. Complete, zero-capacity buckets are <code>unavailable</code>; incomplete buckets have null metrics and report coverage. The summary endpoint anchors all standard windows to the latest common task and availability coverage boundary.</p>
+<h2>Availability and quarantine</h2><p><code>recent_contact</code> counts recently contacting, non-quarantined workers. <code>listed</code> counts non-quarantined workers returned by Taskcluster. Listed workers can be dormant or physically dead, so listing is not liveness confirmation. Quarantine excludes a worker from available capacity.</p>
+<p>The repository's <a href="https://github.com/mozilla-platform-ops/pool-classifier/blob/main/docs/utilization-api.md">authoritative API documentation</a> has the complete response schema and collection details.</p>
+<script>document.getElementById('copy-curl').addEventListener('click', () => navigator.clipboard.writeText(document.getElementById('curl-example').textContent).then(() => { document.getElementById('copy-curl').textContent = 'Copied'; }));</script>
+</body></html>
