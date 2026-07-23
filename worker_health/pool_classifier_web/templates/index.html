@@ -29,11 +29,6 @@
   .disabled-label { color: #666; font-style: italic; font-size: .9em; }
   .disabled-reason { color: #555; font-size: .85em; font-style: italic; }
   .mode-listed { color: #f90; font-size: .8em; margin-left: .25rem; }
-  .metric-control { margin: 0 0 1rem; display: flex; gap: .4rem; align-items: center; font-size: .85em; }
-  .metric-control .label { color: #666; margin-right: .25rem; }
-  .metric-control button { padding: .2rem .55rem; border-radius: 3px; background: #1a1a1a; color: #aaa; cursor: pointer; border: 1px solid #2a2a2a; font: inherit; }
-  .metric-control button:hover { color: #fff; border-color: #444; }
-  .metric-control button.active { color: #f90; border-color: #f90; }
   .metric-window { margin-left: .35rem; white-space: nowrap; }
   .metric-window button { padding: 0; margin-left: .25rem; border: 0; background: transparent; color: #777; cursor: pointer; font: inherit; }
   .metric-window button:hover, .metric-window button.active { color: #f90; }
@@ -63,14 +58,13 @@
 </nav>
 
 <div id="os-filters" class="os-filters"><span class="label">OS:</span></div>
-<div id="utilization-window" class="metric-control"><span class="label">Utilization:</span><button type="button" data-window="1h">1h</button><button type="button" data-window="24h">24h</button></div>
 
 <table id="pools-table">
   <thead>
     <tr>
       <th>Pool</th>
       <th>OS</th>
-      <th id="utilization-header">Utilization</th>
+      <th id="utilization-header">Utilization <span class="metric-window" data-metric="utilization"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
       <th>Hosts</th>
       <th>Alerting</th>
       <th id="errors-header">Err/Host <span class="metric-window" data-metric="errors"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
@@ -182,16 +176,13 @@
   }
   function setUtilizationWindow(window) {
     utilizationWindow = window;
-    document.querySelectorAll('#utilization-window button').forEach(button => {
+    document.querySelectorAll('.metric-window[data-metric="utilization"] button').forEach(button => {
       button.classList.toggle('active', button.dataset.window === window);
     });
     document.querySelectorAll('.utilization-cell').forEach(renderUtilization);
     updateUtilizationSort();
     try { localStorage.setItem(UTILIZATION_WINDOW_KEY, window); } catch(_) {}
   }
-  document.querySelectorAll('#utilization-window button').forEach(button => {
-    button.addEventListener('click', () => setUtilizationWindow(button.dataset.window));
-  });
   document.querySelectorAll('.utilization-cell').forEach(cell => {
     const path = `/api/v1/pools/${encodeURIComponent(cell.dataset.provisioner)}/${encodeURIComponent(cell.dataset.workerType)}/utilization/summary`;
     fetch(path)
@@ -244,7 +235,8 @@
     button.addEventListener('click', event => {
       event.stopPropagation();
       const metric = button.parentElement.dataset.metric;
-      setOutcomeWindow(metric, button.dataset.window);
+      if (metric === 'utilization') setUtilizationWindow(button.dataset.window);
+      else setOutcomeWindow(metric, button.dataset.window);
     });
   });
   for (const metric of Object.keys(outcomeWindows)) setOutcomeWindow(metric, outcomeWindows[metric]);
