@@ -69,7 +69,7 @@
       <th>Success % (1h)</th>
       <th>Err/Host (24h)</th>
       <th>Success % (24h)</th>
-      <th>Oldest Data</th>
+      <th>Coverage</th>
       <th>Schedule</th>
     </tr>
   </thead>
@@ -116,8 +116,8 @@
         {% elif row.success_rate_24h >= 80 %}<span class="warn">{{ row.success_rate_24h }}%</span>
         {% else %}<span class="bad">{{ row.success_rate_24h }}%</span>{% endif %}
       </td>
-      <td>
-        {% if row.oldest %}{{ row.oldest[:19] | replace("T", " ") }} UTC
+      <td{% if row.coverage_seconds is not none %} data-sort-value="{{ row.coverage_seconds }}"{% endif %}>
+        {% if row.coverage %}{{ row.coverage }}
         {% else %}<span class="no-data">no data</span>{% endif %}
       </td>
       <td>{{ row.pool.schedule | humanize_cron }}</td>
@@ -128,7 +128,7 @@
 <script>
   const SORT_KEY = 'pc-index-sort';
   function cellVal(tr, idx) {
-    return tr.children[idx].textContent.trim();
+    return tr.children[idx].dataset.sortValue || tr.children[idx].textContent.trim();
   }
   function applySort(idx, asc) {
     const table = document.getElementById('pools-table');

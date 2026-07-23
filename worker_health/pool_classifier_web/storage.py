@@ -846,7 +846,7 @@ def pool_summaries_global(dsn: str, alert_threshold: int, since_1h: str, since_2
 
     Replaces ~7 per-pool queries (run on a per-pool connection) with two
     GROUP BY pool_id queries on one connection. Returns
-    {pool_id: {workers, alerting, oldest, err_1h, ok_1h, err_24h, ok_24h}}.
+    {pool_id: {workers, alerting, oldest, latest, err_1h, ok_1h, err_24h, ok_24h}}.
     Pools with no rows simply won't appear — callers must default them.
     """
     if psycopg is None:
@@ -857,7 +857,7 @@ def pool_summaries_global(dsn: str, alert_threshold: int, since_1h: str, since_2
     def _entry(pool_id: str) -> dict:
         return summaries.setdefault(
             pool_id,
-            {"workers": 0, "alerting": 0, "oldest": None, "err_1h": 0, "ok_1h": 0, "err_24h": 0, "ok_24h": 0},
+            {"workers": 0, "alerting": 0, "oldest": None, "latest": None, "err_1h": 0, "ok_1h": 0, "err_24h": 0, "ok_24h": 0},
         )
 
     with psycopg.connect(dsn) as conn:
@@ -872,10 +872,10 @@ def pool_summaries_global(dsn: str, alert_threshold: int, since_1h: str, since_2
             for pool_id, workers, alerting in cur.fetchall():
                 e = _entry(pool_id)
                 e["workers"], e["alerting"] = workers, alerting
-        # task_results → oldest + windowed error/success counts per pool, one scan
+        # task_results → data coverage bounds + windowed error/success counts per pool, one scan
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT pool_id, MIN(classified_at) AS oldest,"
+                "SELECT pool_id, MIN(classified_at) AS oldest, MAX(classified_at) AS latest,"
                 " COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND classified_at >= %(s1h)s) AS err_1h,"
                 " COUNT(*) FILTER (WHERE run_state = 'completed'            AND classified_at >= %(s1h)s) AS ok_1h,"
                 " COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND classified_at >= %(s24h)s) AS err_24h,"
@@ -883,9 +883,10 @@ def pool_summaries_global(dsn: str, alert_threshold: int, since_1h: str, since_2
                 " FROM task_results GROUP BY pool_id",
                 {"s1h": since_1h, "s24h": since_24h},
             )
-            for pool_id, oldest, err_1h, ok_1h, err_24h, ok_24h in cur.fetchall():
+            for pool_id, oldest, latest, err_1h, ok_1h, err_24h, ok_24h in cur.fetchall():
                 e = _entry(pool_id)
                 e["oldest"] = _to_iso(oldest)
+                e["latest"] = _to_iso(latest)
                 e["err_1h"], e["ok_1h"], e["err_24h"], e["ok_24h"] = err_1h, ok_1h, err_24h, ok_24h
     return summaries
 

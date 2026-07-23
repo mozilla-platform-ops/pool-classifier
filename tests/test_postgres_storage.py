@@ -465,6 +465,7 @@ def test_pool_summaries_global_parity(pg):
     assert s["workers"] == pg.count_workers()
     assert s["alerting"] == pg.count_alerting(threshold)
     assert s["oldest"] == pg.oldest_classified_at()
+    assert s["latest"] is not None
     assert s["err_1h"] == pg.count_recent_errors(since_1h)
     assert s["ok_1h"] == pg.count_recent_successes(since_1h)
     assert s["err_24h"] == pg.count_recent_errors(since_24h)

@@ -29,6 +29,7 @@ _classifiers: dict[tuple[str, str], PoolClassifier] = {}
 MAX_UTILIZATION_RANGE_SECONDS = 90 * 24 * 60 * 60
 MAX_UTILIZATION_BUCKETS = 2000
 UTILIZATION_WINDOWS = {"1h": 60 * 60, "24h": 24 * 60 * 60, "7d": 7 * 24 * 60 * 60, "30d": 30 * 24 * 60 * 60}
+COVERAGE_STALE_AFTER = timedelta(hours=1)
 
 
 def _parse_utilization_datetime(name: str, value: str | None) -> datetime:
@@ -109,6 +110,30 @@ def _humanize_cron(expr: str) -> str:
     return expr
 
 
+def _format_elapsed(delta: timedelta) -> str:
+    """Return a compact, whole-unit elapsed-time label."""
+    seconds = max(0, int(delta.total_seconds()))
+    if seconds >= 24 * 60 * 60:
+        return f"{seconds // (24 * 60 * 60)}d"
+    if seconds >= 60 * 60:
+        return f"{seconds // (60 * 60)}h"
+    return f"{seconds // 60}m"
+
+
+def _coverage_label(oldest: str | None, latest: str | None, now: datetime) -> tuple[str | None, int | None]:
+    """Format a pool's observed data range and flag a stale latest result."""
+    if not oldest or not latest:
+        return None, None
+    start = _parse_utilization_datetime("oldest", oldest)
+    end = _parse_utilization_datetime("latest", latest)
+    coverage_seconds = max(0, int((end - start).total_seconds()))
+    label = _format_elapsed(timedelta(seconds=coverage_seconds))
+    staleness = now - end
+    if staleness > COVERAGE_STALE_AFTER:
+        label += f" \u00b7 {_format_elapsed(staleness)} stale"
+    return label, coverage_seconds
+
+
 def create_app() -> Flask:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = Flask(__name__)
@@ -166,7 +191,8 @@ def create_app() -> Flask:
                         "pool": pool,
                         "os": detect_os(pool),
                         "alerting": None,
-                        "oldest": None,
+                        "coverage": None,
+                        "coverage_seconds": None,
                         "workers": None,
                         "errors_per_host_1h": None,
                         "success_rate_1h": None,
@@ -178,18 +204,20 @@ def create_app() -> Flask:
             s = summaries.get(f"{pool.provisioner}/{pool.worker_type}")
             if s is None:
                 # No rows yet for this pool (never classified).
-                workers = alerting = oldest = None
+                workers = alerting = oldest = latest = None
                 errors_per_host_1h = success_rate_1h = errors_per_host_24h = success_rate_24h = None
             else:
-                workers, alerting, oldest = s["workers"], s["alerting"], s["oldest"]
+                workers, alerting, oldest, latest = s["workers"], s["alerting"], s["oldest"], s["latest"]
                 errors_per_host_1h, success_rate_1h = _eph(s["err_1h"], workers), _sr(s["err_1h"], s["ok_1h"])
                 errors_per_host_24h, success_rate_24h = _eph(s["err_24h"], workers), _sr(s["err_24h"], s["ok_24h"])
+            coverage, coverage_seconds = _coverage_label(oldest, latest, now_dt)
             rows.append(
                 {
                     "pool": pool,
                     "os": detect_os(pool),
                     "alerting": alerting,
-                    "oldest": oldest,
+                    "coverage": coverage,
+                    "coverage_seconds": coverage_seconds,
                     "workers": workers,
                     "errors_per_host_1h": errors_per_host_1h,
                     "success_rate_1h": success_rate_1h,
