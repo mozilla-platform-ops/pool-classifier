@@ -23,12 +23,20 @@
   td { padding: .35rem .8rem; border-bottom: 1px solid #2a2a2a; }
   tr:hover td { background: #1a1a1a; }
   .pool-name { color: #fff; font-size: 1.05em; }
+  .pool-provisioner { color: #666; font-size: .8em; }
   .no-data { color: #555; font-style: italic; }
   .disabled-row td { color: #444; }
   .disabled-label { color: #666; font-style: italic; font-size: .9em; }
   .disabled-reason { color: #555; font-size: .85em; font-style: italic; }
-  .mode { border: 1px solid #444; border-radius: 3px; padding: .1rem .4rem; font-size: .8em; color: #aaa; }
-  .mode-listed { border-color: #f90; color: #f90; }
+  .mode-listed { color: #f90; font-size: .8em; margin-left: .25rem; }
+  .metric-control { margin: 0 0 1rem; display: flex; gap: .4rem; align-items: center; font-size: .85em; }
+  .metric-control .label { color: #666; margin-right: .25rem; }
+  .metric-control button { padding: .2rem .55rem; border-radius: 3px; background: #1a1a1a; color: #aaa; cursor: pointer; border: 1px solid #2a2a2a; font: inherit; }
+  .metric-control button:hover { color: #fff; border-color: #444; }
+  .metric-control button.active { color: #f90; border-color: #f90; }
+  .metric-window { margin-left: .35rem; white-space: nowrap; }
+  .metric-window button { padding: 0; margin-left: .25rem; border: 0; background: transparent; color: #777; cursor: pointer; font: inherit; }
+  .metric-window button:hover, .metric-window button.active { color: #f90; }
   .page-nav { display: flex; align-items: center; gap: 0; flex-wrap: wrap; width: fit-content; margin: 0 0 1rem; padding: .3rem .6rem; background: #1a1a1a; border-radius: 4px; font-size: .8em; }
   .page-nav a { color: #58a6ff; padding: .2rem .6rem; border-radius: 3px; }
   .page-nav a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }
@@ -55,22 +63,19 @@
 </nav>
 
 <div id="os-filters" class="os-filters"><span class="label">OS:</span></div>
+<div id="utilization-window" class="metric-control"><span class="label">Utilization:</span><button type="button" data-window="1h">1h</button><button type="button" data-window="24h">24h</button></div>
 
 <table id="pools-table">
   <thead>
     <tr>
       <th>Pool</th>
-      <th>Provisioner</th>
       <th>OS</th>
-      <th>Availability</th>
+      <th id="utilization-header">Utilization</th>
       <th>Hosts</th>
       <th>Alerting</th>
-      <th>Err/Host (1h)</th>
-      <th>Success % (1h)</th>
-      <th>Err/Host (24h)</th>
-      <th>Success % (24h)</th>
+      <th id="errors-header">Err/Host <span class="metric-window" data-metric="errors"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
+      <th id="success-header">Success % <span class="metric-window" data-metric="success"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
       <th>Coverage</th>
-      <th>Schedule</th>
     </tr>
   </thead>
   <tbody>
@@ -79,12 +84,14 @@
       <td>
         <a class="pool-name" href="/pools/{{ row.pool.provisioner }}/{{ row.pool.worker_type }}"
           {% if not row.pool.enabled %}style="color:#555"{% endif %}>{{ row.pool.worker_type }}</a>
+        <br><span class="pool-provisioner">{{ row.pool.provisioner }}</span>
         {% if not row.pool.enabled %}<span class="disabled-label"> — disabled</span>{% endif %}
         {% if not row.pool.enabled and row.pool.reason %}<br><span class="disabled-reason">{{ row.pool.reason }}</span>{% endif %}
       </td>
-      <td>{{ row.pool.provisioner }}</td>
       <td>{{ row.os }}</td>
-      <td><span class="mode{% if row.pool.availability_mode == 'listed' %} mode-listed{% endif %}" title="{% if row.pool.availability_mode == 'listed' %}Eligible listed capacity; not confirmed live device capacity{% else %}Requires recent Taskcluster worker contact{% endif %}">{{ row.pool.availability_mode }}</span></td>
+      <td class="utilization-cell" data-provisioner="{{ row.pool.provisioner }}" data-worker-type="{{ row.pool.worker_type }}">
+        <span class="utilization-value no-data">—</span>{% if row.pool.availability_mode == 'listed' %}<span class="mode-listed" title="Uses Taskcluster-listed capacity, which does not confirm a live device">[L]</span>{% endif %}
+      </td>
       <td>
         {% if row.workers is none %}<span class="no-data">—</span>
         {% else %}{{ row.workers }}{% endif %}
@@ -94,39 +101,28 @@
         {% elif row.alerting > 0 %}<span class="bad">{{ row.alerting }}</span>
         {% else %}<span class="ok">0</span>{% endif %}
       </td>
-      <td>
+      <td class="outcome-cell" data-metric="errors" data-errors-1h="{% if row.errors_per_host_1h is not none %}{{ row.errors_per_host_1h }}{% endif %}" data-errors-24h="{% if row.errors_per_host_24h is not none %}{{ row.errors_per_host_24h }}{% endif %}">
         {% if row.errors_per_host_1h is none %}<span class="no-data">—</span>
         {% elif row.errors_per_host_1h > 0 %}<span class="warn">{{ row.errors_per_host_1h }}</span>
         {% else %}<span class="ok">0</span>{% endif %}
       </td>
-      <td>
+      <td class="outcome-cell" data-metric="success" data-success-1h="{% if row.success_rate_1h is not none %}{{ row.success_rate_1h }}{% endif %}" data-success-24h="{% if row.success_rate_24h is not none %}{{ row.success_rate_24h }}{% endif %}">
         {% if row.success_rate_1h is none %}<span class="no-data">—</span>
         {% elif row.success_rate_1h >= 95 %}<span class="ok">{{ row.success_rate_1h }}%</span>
         {% elif row.success_rate_1h >= 80 %}<span class="warn">{{ row.success_rate_1h }}%</span>
         {% else %}<span class="bad">{{ row.success_rate_1h }}%</span>{% endif %}
       </td>
-      <td>
-        {% if row.errors_per_host_24h is none %}<span class="no-data">—</span>
-        {% elif row.errors_per_host_24h > 0 %}<span class="warn">{{ row.errors_per_host_24h }}</span>
-        {% else %}<span class="ok">0</span>{% endif %}
-      </td>
-      <td>
-        {% if row.success_rate_24h is none %}<span class="no-data">—</span>
-        {% elif row.success_rate_24h >= 95 %}<span class="ok">{{ row.success_rate_24h }}%</span>
-        {% elif row.success_rate_24h >= 80 %}<span class="warn">{{ row.success_rate_24h }}%</span>
-        {% else %}<span class="bad">{{ row.success_rate_24h }}%</span>{% endif %}
-      </td>
       <td{% if row.coverage_seconds is not none %} data-sort-value="{{ row.coverage_seconds }}"{% endif %}>
         {% if row.coverage %}{{ row.coverage }}
         {% else %}<span class="no-data">no data</span>{% endif %}
       </td>
-      <td>{{ row.pool.schedule | humanize_cron }}</td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
 <script>
   const SORT_KEY = 'pc-index-sort';
+  const UTILIZATION_WINDOW_KEY = 'pc-index-utilization-window';
   function cellVal(tr, idx) {
     return tr.children[idx].dataset.sortValue || tr.children[idx].textContent.trim();
   }
@@ -159,6 +155,99 @@
     const saved = JSON.parse(localStorage.getItem(SORT_KEY));
     if (saved) applySort(saved.idx, saved.asc);
   } catch(_) {}
+
+  let utilizationWindow = '1h';
+  try {
+    const savedWindow = localStorage.getItem(UTILIZATION_WINDOW_KEY);
+    if (savedWindow === '1h' || savedWindow === '24h') utilizationWindow = savedWindow;
+  } catch(_) {}
+  function formatUtilization(value) {
+    return value === null || value === undefined ? '—' : `${Number(value).toFixed(1)}%`;
+  }
+  function renderUtilization(cell) {
+    const value = cell.dataset[`utilization${utilizationWindow}`];
+    const numericValue = value === undefined ? '' : value;
+    cell.dataset.sortValue = numericValue;
+    const label = cell.querySelector('.utilization-value');
+    if (label) {
+      label.textContent = formatUtilization(numericValue === '' ? null : numericValue);
+      label.className = numericValue === '' ? 'no-data utilization-value' : 'utilization-value';
+    }
+  }
+  function updateUtilizationSort() {
+    const header = document.getElementById('utilization-header');
+    if (header.dataset.sort) {
+      applySort([...header.parentElement.children].indexOf(header), header.dataset.sort === 'asc');
+    }
+  }
+  function setUtilizationWindow(window) {
+    utilizationWindow = window;
+    document.querySelectorAll('#utilization-window button').forEach(button => {
+      button.classList.toggle('active', button.dataset.window === window);
+    });
+    document.querySelectorAll('.utilization-cell').forEach(renderUtilization);
+    updateUtilizationSort();
+    try { localStorage.setItem(UTILIZATION_WINDOW_KEY, window); } catch(_) {}
+  }
+  document.querySelectorAll('#utilization-window button').forEach(button => {
+    button.addEventListener('click', () => setUtilizationWindow(button.dataset.window));
+  });
+  document.querySelectorAll('.utilization-cell').forEach(cell => {
+    const path = `/api/v1/pools/${encodeURIComponent(cell.dataset.provisioner)}/${encodeURIComponent(cell.dataset.workerType)}/utilization/summary`;
+    fetch(path)
+      .then(response => response.ok ? response.json() : Promise.reject())
+      .then(summary => {
+        for (const window of ['1h', '24h']) {
+          const utilization = summary.windows?.[window]?.utilization?.utilization_pct;
+          if (typeof utilization === 'number') cell.dataset[`utilization${window}`] = utilization;
+        }
+        renderUtilization(cell);
+        updateUtilizationSort();
+      })
+      .catch(() => {
+        renderUtilization(cell);
+      });
+  });
+  setUtilizationWindow(utilizationWindow);
+
+  const outcomeWindows = {errors: '1h', success: '1h'};
+  const outcomeWindowKeys = {errors: 'pc-index-errors-window', success: 'pc-index-success-window'};
+  for (const metric of Object.keys(outcomeWindows)) {
+    try {
+      const savedWindow = localStorage.getItem(outcomeWindowKeys[metric]);
+      if (savedWindow === '1h' || savedWindow === '24h') outcomeWindows[metric] = savedWindow;
+    } catch(_) {}
+  }
+  function renderOutcome(cell, metric) {
+    const value = cell.dataset[`${metric}${outcomeWindows[metric]}`];
+    cell.dataset.sortValue = value || '';
+    if (!value) {
+      cell.innerHTML = '<span class="no-data">—</span>';
+    } else if (metric === 'errors') {
+      cell.innerHTML = `<span class="${Number(value) > 0 ? 'warn' : 'ok'}">${value}</span>`;
+    } else {
+      const style = Number(value) >= 95 ? 'ok' : Number(value) >= 80 ? 'warn' : 'bad';
+      cell.innerHTML = `<span class="${style}">${value}%</span>`;
+    }
+  }
+  function setOutcomeWindow(metric, window) {
+    outcomeWindows[metric] = window;
+    document.querySelectorAll(`.metric-window[data-metric="${metric}"] button`).forEach(button => {
+      button.classList.toggle('active', button.dataset.window === window);
+    });
+    document.querySelectorAll(`.outcome-cell[data-metric="${metric}"]`).forEach(cell => renderOutcome(cell, metric));
+    const header = document.getElementById(`${metric === 'errors' ? 'errors' : 'success'}-header`);
+    if (header.dataset.sort) applySort([...header.parentElement.children].indexOf(header), header.dataset.sort === 'asc');
+    try { localStorage.setItem(outcomeWindowKeys[metric], window); } catch(_) {}
+  }
+  document.querySelectorAll('.metric-window button').forEach(button => {
+    button.addEventListener('click', event => {
+      event.stopPropagation();
+      const metric = button.parentElement.dataset.metric;
+      setOutcomeWindow(metric, button.dataset.window);
+    });
+  });
+  for (const metric of Object.keys(outcomeWindows)) setOutcomeWindow(metric, outcomeWindows[metric]);
 
   const FILTER_KEY = 'pc-index-os';
   function buildOsFilters() {
