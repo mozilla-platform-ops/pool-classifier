@@ -159,7 +159,7 @@
     return value === null || value === undefined ? '—' : `${Number(value).toFixed(1)}%`;
   }
   function renderUtilization(cell) {
-    const value = cell.dataset[`utilization${utilizationWindow}`];
+    const value = cell.getAttribute(`data-utilization-${utilizationWindow}`);
     const numericValue = value === undefined ? '' : value;
     cell.dataset.sortValue = numericValue;
     const label = cell.querySelector('.utilization-value');
@@ -190,7 +190,7 @@
       .then(summary => {
         for (const window of ['1h', '24h']) {
           const utilization = summary.windows?.[window]?.utilization?.utilization_pct;
-          if (typeof utilization === 'number') cell.dataset[`utilization${window}`] = utilization;
+          if (typeof utilization === 'number') cell.setAttribute(`data-utilization-${window}`, utilization);
         }
         renderUtilization(cell);
         updateUtilizationSort();
@@ -210,7 +210,7 @@
     } catch(_) {}
   }
   function renderOutcome(cell, metric) {
-    const value = cell.dataset[`${metric}${outcomeWindows[metric]}`];
+    const value = cell.getAttribute(`data-${metric}-${outcomeWindows[metric]}`);
     cell.dataset.sortValue = value || '';
     if (!value) {
       cell.innerHTML = '<span class="no-data">—</span>';
