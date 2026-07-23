@@ -120,15 +120,21 @@ def _format_elapsed(delta: timedelta) -> str:
     return f"{seconds // 60}m"
 
 
-def _coverage_label(oldest: str | None, latest: str | None, now: datetime) -> tuple[str | None, int | None]:
-    """Format a pool's observed data range and flag a stale latest result."""
+def _coverage_label(
+    oldest: str | None,
+    latest: str | None,
+    now: datetime,
+    collection_latest: str | None = None,
+) -> tuple[str | None, int | None]:
+    """Format the task-result range and flag stale successful collection coverage."""
     if not oldest or not latest:
         return None, None
     start = _parse_utilization_datetime("oldest", oldest)
     end = _parse_utilization_datetime("latest", latest)
     coverage_seconds = max(0, int((end - start).total_seconds()))
     label = _format_elapsed(timedelta(seconds=coverage_seconds))
-    staleness = now - end
+    freshness_at = _parse_utilization_datetime("collection_latest", collection_latest) if collection_latest else end
+    staleness = now - freshness_at
     if staleness > COVERAGE_STALE_AFTER:
         label += f" \u00b7 {_format_elapsed(staleness)} stale"
     return label, coverage_seconds
@@ -206,11 +212,13 @@ def create_app() -> Flask:
                 # No rows yet for this pool (never classified).
                 workers = alerting = oldest = latest = None
                 errors_per_host_1h = success_rate_1h = errors_per_host_24h = success_rate_24h = None
+                collection_latest = None
             else:
                 workers, alerting, oldest, latest = s["workers"], s["alerting"], s["oldest"], s["latest"]
+                collection_latest = s["collection_latest"]
                 errors_per_host_1h, success_rate_1h = _eph(s["err_1h"], workers), _sr(s["err_1h"], s["ok_1h"])
                 errors_per_host_24h, success_rate_24h = _eph(s["err_24h"], workers), _sr(s["err_24h"], s["ok_24h"])
-            coverage, coverage_seconds = _coverage_label(oldest, latest, now_dt)
+            coverage, coverage_seconds = _coverage_label(oldest, latest, now_dt, collection_latest)
             rows.append(
                 {
                     "pool": pool,
