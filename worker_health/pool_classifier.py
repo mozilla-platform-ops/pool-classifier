@@ -1364,6 +1364,13 @@ class PoolClassifier:
             "  .util-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:.8rem; max-width:80rem; }",
             "  .util-card { border:1px solid #444; border-radius:4px; background:#1a1a1a; padding:.8rem; min-height:7rem; }",
             "  .util-card h3 { margin:0 0 .5rem; color:#ddd; } .util-card p { margin:.25rem 0; } .util-detail { color:#aaa; font-size:.85em; }",
+            "  .util-timeline-controls { display:flex; align-items:center; gap:.45rem; margin:1.2rem 0 .45rem; font-size:.85em; color:#aaa; }",
+            "  .util-timeline-controls button { border:0; background:transparent; color:#777; cursor:pointer; font:inherit; padding:0; } .util-timeline-controls button:hover, .util-timeline-controls button.active { color:#f90; }",
+            "  .util-timeline-wrap { max-width:80rem; overflow-x:auto; } .util-timeline { display:grid; gap:3px; min-width:36rem; }",
+            "  .util-hour { height:2.1rem; border:0; border-radius:2px; padding:0; cursor:default; outline:1px solid #111; } .util-hour:hover { outline:2px solid #fff; z-index:1; }",
+            "  .util-hour-idle { background:#183c55; } .util-hour-low { background:#216b75; } .util-hour-mid { background:#5a7d3c; } .util-hour-high { background:#b56a1d; } .util-hour-hot { background:#9b3028; }",
+            "  .util-hour-incomplete { background:repeating-linear-gradient(135deg,#303030 0,#303030 4px,#202020 4px,#202020 8px); } .util-hour-unavailable { background:#3b2760; } .util-hour-error { background:#555; }",
+            "  .util-timeline-legend { display:flex; gap:1rem; flex-wrap:wrap; margin:.45rem 0 1.2rem; color:#888; font-size:.8em; }",
             "</style>",
             "</head>",
             "<body>",
@@ -1383,6 +1390,7 @@ class PoolClassifier:
         ]
 
         summary_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization/summary"
+        timeline_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization"
         guide_url = f"/pools/{self.provisioner}/{self.worker_type}/utilization"
 
         if workers:
@@ -1583,6 +1591,9 @@ class PoolClassifier:
             f'<p class="gen">Duration-weighted task time versus available worker time. <a href="{guide_url}">API guide</a></p>',
             '<p id="util-freshness" class="gen">Loading utilization…</p>',
             '<div id="util-cards" class="util-grid"></div>',
+            '<div class="util-timeline-controls"><span>Hourly timeline:</span><button type="button" data-hours="24">[24h]</button><button type="button" data-hours="48">[48h]</button></div>',
+            '<div class="util-timeline-wrap"><div id="util-timeline" class="util-timeline"></div></div>',
+            '<div class="util-timeline-legend"><span>blue: idle</span><span>green: moderate</span><span>orange/red: busy</span><span>striped: incomplete</span><span>purple: no capacity</span></div>',
         ]
 
         total_w = len(workers)
@@ -1660,8 +1671,13 @@ class PoolClassifier:
             "  const SEV_ICON  = {critical: '✗', high: '⚠', low: '•'};",
             "  // Heatmap hover card",
             f"  const UTIL_SUMMARY_URL = {json.dumps(summary_url)};",
+            f"  const UTIL_TIMELINE_URL = {json.dumps(timeline_url)};",
             "  const utilCards = document.getElementById('util-cards');",
             "  const utilFreshness = document.getElementById('util-freshness');",
+            "  const utilTimeline = document.getElementById('util-timeline');",
+            "  const utilTimelineButtons = [...document.querySelectorAll('.util-timeline-controls button')];",
+            "  const UTIL_TIMELINE_KEY = 'pc-utilization-timeline-hours'; let utilTimelineHours = 24; let utilDataThrough = null;",
+            "  try { const saved = Number(localStorage.getItem(UTIL_TIMELINE_KEY)); if (saved === 24 || saved === 48) utilTimelineHours = saved; } catch (_) {}",
             "  const esc = value => String(value).replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));",
             "  const utilCard = (label, data) => {",
             "    if (data.status === 'error') return `<article class='util-card'><h3>${label}</h3><p class='bad'>Request error</p><p class='util-detail'>${esc(data.error || 'Unknown error')}</p></article>`;",
@@ -1671,11 +1687,15 @@ class PoolClassifier:
             "    const quality = u.utilization_pct > 100 ? `<p class='warn'>Over 100% — possible data-quality issue</p>` : '';",
             "    return `<article class='util-card'><h3>${label}</h3><p><strong>${u.utilization_pct.toFixed(1)}%</strong> utilization</p><p class='util-detail'>Busy: ${u.busy_worker_hours.toFixed(2)} worker-hours<br>Available: ${u.available_worker_hours.toFixed(2)} worker-hours<br>Coverage: 100%</p>${quality}</article>`;",
             "  };",
+            "  function loadUtilizationTimeline() { if (!utilDataThrough) return; const end = new Date(utilDataThrough); const start = new Date(end.getTime() - utilTimelineHours * 3600000); const query = new URLSearchParams({start:start.toISOString(), end:end.toISOString(), bucket_seconds:'3600'}); utilTimeline.textContent = 'Loading hourly timeline…'; fetch(`${UTIL_TIMELINE_URL}?${query}`).then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))).then(data => { utilTimeline.style.gridTemplateColumns = `repeat(${data.buckets.length}, minmax(1rem, 1fr))`; utilTimeline.textContent = ''; [...data.buckets].reverse().forEach(bucket => { let klass = 'util-hour-error', status = 'Utilization unavailable'; if (!bucket.complete) [klass, status] = ['util-hour-incomplete', `Incomplete coverage (${bucket.coverage_pct.toFixed(1)}%)`]; else if (bucket.status === 'unavailable') [klass, status] = ['util-hour-unavailable', 'No available capacity']; else if (bucket.status === 'available' && bucket.utilization_pct !== null) { const value = bucket.utilization_pct; klass = `util-hour-${value < 10 ? 'idle' : value < 40 ? 'low' : value < 70 ? 'mid' : value < 90 ? 'high' : 'hot'}`; status = `${value.toFixed(1)}% utilization`; } const cell = document.createElement('div'); cell.className = `util-hour ${klass}`; cell.title = `${bucket.start_at} – ${bucket.end_at}\\n${status}\\nBusy: ${bucket.busy_worker_hours ?? '—'} worker-hours\\nAvailable: ${bucket.available_worker_hours ?? '—'} worker-hours`; utilTimeline.appendChild(cell); }); }).catch(error => { utilTimeline.style.gridTemplateColumns = '1fr'; utilTimeline.innerHTML = `<span class='bad'>Hourly timeline unavailable: ${esc(error.message)}</span>`; }); }",
+            "  function setUtilizationTimeline(hours) { utilTimelineHours = hours; utilTimelineButtons.forEach(button => button.classList.toggle('active', Number(button.dataset.hours) === hours)); try { localStorage.setItem(UTIL_TIMELINE_KEY, String(hours)); } catch (_) {} loadUtilizationTimeline(); }",
+            "  utilTimelineButtons.forEach(button => button.addEventListener('click', () => setUtilizationTimeline(Number(button.dataset.hours))));",
             "  fetch(UTIL_SUMMARY_URL).then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))).then(data => {",
             "    const through = data.data_through; const age = through ? Math.max(0, Math.round((Date.now() - new Date(through)) / 60000)) : null;",
             "    utilFreshness.textContent = through ? `Data through ${formatTime(through, document.querySelector('input[name=\"tz\"]:checked').value)} (${age < 60 ? age + 'm' : Math.floor(age / 60) + 'h'} old)` : 'Collecting data: no common coverage boundary yet.';",
             "    utilCards.innerHTML = ['1h','24h','7d','30d'].map(label => utilCard(label, data.windows[label] || {status:'ok', utilization:null})).join('');",
-            "  }).catch(error => { utilFreshness.textContent = 'Utilization could not be loaded.'; utilCards.innerHTML = ['1h','24h','7d','30d'].map(label => utilCard(label, {status:'error', error:error.message})).join(''); });",
+            "    utilDataThrough = through; if (through) setUtilizationTimeline(utilTimelineHours); else utilTimeline.textContent = 'Collecting data: no complete hourly timeline yet.';",
+            "  }).catch(error => { utilFreshness.textContent = 'Utilization could not be loaded.'; utilCards.innerHTML = ['1h','24h','7d','30d'].map(label => utilCard(label, {status:'error', error:error.message})).join(''); utilTimeline.innerHTML = `<span class='bad'>Hourly timeline unavailable: ${esc(error.message)}</span>`; });",
             "  const tip = document.getElementById('hm-tip');",
             "  document.querySelectorAll('.hm-cell').forEach(cell => {",
             "    cell.addEventListener('mouseenter', e => {",
