@@ -19,8 +19,8 @@ pool and runs **7 queries per pool**:
 | `count_alerting(thr)` | `COUNT(*) FROM workers WHERE consecutive_failures >= ?` |
 | `count_workers()` | `COUNT(*) FROM workers` |
 | `oldest_classified_at()` | `MIN(classified_at) FROM task_results` |
-| `count_recent_errors(1h)` | `COUNT(*) FROM task_results WHERE run_state IN ('failed','exception') AND classified_at >= ?` |
-| `count_recent_successes(1h)` | `COUNT(*) FROM task_results WHERE run_state='completed' AND classified_at >= ?` |
+| `count_recent_errors(1h)` | `COUNT(*) FROM task_results WHERE run_state IN ('failed','exception') AND COALESCE(run_resolved, classified_at) >= ?` |
+| `count_recent_successes(1h)` | `COUNT(*) FROM task_results WHERE run_state='completed' AND COALESCE(run_resolved, classified_at) >= ?` |
 | `count_recent_errors(24h)` | same, 24h window |
 | `count_recent_successes(24h)` | same, 24h window |
 
@@ -53,10 +53,10 @@ FROM workers GROUP BY pool_id;
 -- Query 2: task_results → oldest + 1h/24h error+success counts, all pools, one scan
 SELECT pool_id,
        MIN(classified_at) AS oldest,
-       COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND classified_at >= :s1h)  AS err_1h,
-       COUNT(*) FILTER (WHERE run_state = 'completed'            AND classified_at >= :s1h)    AS ok_1h,
-       COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND classified_at >= :s24h) AS err_24h,
-       COUNT(*) FILTER (WHERE run_state = 'completed'            AND classified_at >= :s24h)   AS ok_24h
+       COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND COALESCE(run_resolved, classified_at) >= :s1h)  AS err_1h,
+       COUNT(*) FILTER (WHERE run_state = 'completed'            AND COALESCE(run_resolved, classified_at) >= :s1h)    AS ok_1h,
+       COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND COALESCE(run_resolved, classified_at) >= :s24h) AS err_24h,
+       COUNT(*) FILTER (WHERE run_state = 'completed'            AND COALESCE(run_resolved, classified_at) >= :s24h)   AS ok_24h
 FROM task_results GROUP BY pool_id;
 ```
 

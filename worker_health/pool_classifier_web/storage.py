@@ -337,13 +337,15 @@ class SqliteStorage:
 
     def count_recent_errors(self, since: str) -> int:
         return self.db.execute(
-            "SELECT COUNT(*) FROM task_results WHERE run_state IN ('failed','exception') AND classified_at >= ?",
+            "SELECT COUNT(*) FROM task_results WHERE run_state IN ('failed','exception')"
+            " AND COALESCE(run_resolved, classified_at) >= ?",
             (since,),
         ).fetchone()[0]
 
     def count_recent_successes(self, since: str) -> int:
         return self.db.execute(
-            "SELECT COUNT(*) FROM task_results WHERE run_state = 'completed' AND classified_at >= ?",
+            "SELECT COUNT(*) FROM task_results WHERE run_state = 'completed'"
+            " AND COALESCE(run_resolved, classified_at) >= ?",
             (since,),
         ).fetchone()[0]
 
@@ -883,10 +885,10 @@ def pool_summaries_global(dsn: str, alert_threshold: int, since_1h: str, since_2
                 ") "
                 "SELECT task_results.pool_id, MIN(classified_at) AS oldest, MAX(classified_at) AS latest,"
                 " task_coverage.collection_latest,"
-                " COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND classified_at >= %(s1h)s) AS err_1h,"
-                " COUNT(*) FILTER (WHERE run_state = 'completed'            AND classified_at >= %(s1h)s) AS ok_1h,"
-                " COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND classified_at >= %(s24h)s) AS err_24h,"
-                " COUNT(*) FILTER (WHERE run_state = 'completed'            AND classified_at >= %(s24h)s) AS ok_24h"
+                " COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND COALESCE(run_resolved, classified_at) >= %(s1h)s) AS err_1h,"
+                " COUNT(*) FILTER (WHERE run_state = 'completed'            AND COALESCE(run_resolved, classified_at) >= %(s1h)s) AS ok_1h,"
+                " COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND COALESCE(run_resolved, classified_at) >= %(s24h)s) AS err_24h,"
+                " COUNT(*) FILTER (WHERE run_state = 'completed'            AND COALESCE(run_resolved, classified_at) >= %(s24h)s) AS ok_24h"
                 " FROM task_results LEFT JOIN task_coverage USING (pool_id)"
                 " GROUP BY task_results.pool_id, task_coverage.collection_latest",
                 {"s1h": since_1h, "s24h": since_24h},
@@ -1595,7 +1597,8 @@ class PostgresStorage:
         with self._cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM task_results"
-                " WHERE pool_id = %s AND run_state IN ('failed','exception') AND classified_at >= %s",
+                " WHERE pool_id = %s AND run_state IN ('failed','exception')"
+                " AND COALESCE(run_resolved, classified_at) >= %s",
                 (self.pool_id, since),
             )
             return cur.fetchone()["cnt"]
@@ -1604,7 +1607,8 @@ class PostgresStorage:
         with self._cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM task_results"
-                " WHERE pool_id = %s AND run_state = 'completed' AND classified_at >= %s",
+                " WHERE pool_id = %s AND run_state = 'completed'"
+                " AND COALESCE(run_resolved, classified_at) >= %s",
                 (self.pool_id, since),
             )
             return cur.fetchone()["cnt"]

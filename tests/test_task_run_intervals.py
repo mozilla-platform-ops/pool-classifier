@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 from worker_health.pool_classifier import PoolClassifier
 from worker_health.pool_classifier_web.storage import SqliteStorage
@@ -39,6 +40,32 @@ def test_sqlite_records_resolved_time_and_distinct_retries(tmp_path):
     assert storage.get_seen_task_runs() == {
         "worker-1": {("task-1", 0), ("task-1", 1), ("task-1", 2)},
     }
+
+
+def test_recent_outcome_counts_use_task_resolution_time(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    storage.init_schema()
+    now = datetime.now(timezone.utc)
+
+    storage.record_task_result(
+        "old-completed", "worker-1", 0, "completed", None, None,
+        (now - timedelta(hours=3)).isoformat(), (now - timedelta(hours=2)).isoformat(), now.isoformat(),
+    )
+    storage.record_task_result(
+        "recent-failed", "worker-1", 0, "failed", None, None,
+        (now - timedelta(hours=1)).isoformat(), (now - timedelta(minutes=30)).isoformat(),
+        (now - timedelta(hours=2)).isoformat(),
+    )
+    # Rows stored before run_resolved existed retain the historical discovery-time fallback.
+    storage.record_task_result(
+        "legacy-completed", "worker-1", 0, "completed", None, None,
+        None, None, (now - timedelta(minutes=20)).isoformat(),
+    )
+    storage.commit()
+
+    since = (now - timedelta(hours=1)).isoformat()
+    assert storage.count_recent_errors(since) == 1
+    assert storage.count_recent_successes(since) == 1
 
 
 def test_sqlite_migrates_legacy_task_results(tmp_path):
