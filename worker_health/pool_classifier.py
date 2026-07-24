@@ -1391,7 +1391,7 @@ class PoolClassifier:
 
         summary_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization/summary"
         timeline_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization"
-        guide_url = f"/pools/{self.provisioner}/{self.worker_type}/utilization"
+        guide_url = f"/pools/{self.provisioner}/{self.worker_type}/utilization-api-guide"
 
         if workers:
             total_tasks = total_failures + total_successes

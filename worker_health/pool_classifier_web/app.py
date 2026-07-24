@@ -316,7 +316,7 @@ def create_app() -> Flask:
         result.update({"api_version": 1, "availability_mode": pc.availability_mode})
         return jsonify(result)
 
-    @app.get("/pools/<provisioner>/<worker_type>/utilization")
+    @app.get("/pools/<provisioner>/<worker_type>/utilization-api-guide")
     def pool_utilization_guide(provisioner: str, worker_type: str):
         pool = registry.get_pool(provisioner, worker_type)
         if pool is None:

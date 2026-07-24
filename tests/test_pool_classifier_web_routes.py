@@ -301,7 +301,7 @@ def test_pool_utilization_guide_is_pool_aware(monkeypatch):
     app.config["TESTING"] = True
 
     with app.test_client() as client:
-        response = client.get("/pools/provisioner/worker-type/utilization")
+        response = client.get("/pools/provisioner/worker-type/utilization-api-guide")
 
     assert response.status_code == 200
     assert b"/api/v1/pools/provisioner/worker-type/utilization?start=" in response.data
