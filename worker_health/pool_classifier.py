@@ -1383,12 +1383,12 @@ class PoolClassifier:
             "</style>",
             "</head>",
             "<body>",
-            '<div style="display:flex;align-items:center;gap:1.5rem;margin:0 0 1.5rem">',
+            '<div style="display:flex;align-items:last baseline;gap:1.5rem;margin:0 0 1.5rem">',
             '<a href="/" style="text-decoration:none"><pre style="color:#0ff;line-height:1;margin:0;font-size:1rem">',
             " ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀",
             " ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ ",
             "</pre></a>",
-            f'<span style="color:#ccc;font-size:1.1rem;letter-spacing:.02em;position:relative;top:4px"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a>'
+            f'<span style="color:#ccc;font-size:1.1rem;letter-spacing:.02em"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a>'
             + (
                 f' <span style="font-size:.75rem;background:#333;color:#aaa;border-radius:3px;padding:1px 6px;vertical-align:middle;position:relative;top:-1px">{os_label}</span>'
                 if os_label
