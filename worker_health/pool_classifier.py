@@ -1402,13 +1402,7 @@ class PoolClassifier:
             " ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀",
             " ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ ",
             "</pre></a>",
-            f'<span class="site-title"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a>'
-            + (
-                f' <span style="font-size:.75rem;background:#333;color:#aaa;border-radius:3px;padding:1px 6px;vertical-align:middle;position:relative;top:-1px">{os_label}</span>'
-                if os_label
-                else ""
-            )
-            + "</span>",
+            f'<span class="site-title"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a></span>',
             '<details class="global-menu">',
             '  <summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary>',
             '  <nav class="menu-popover" aria-label="Global navigation"><a href="/">Overview</a><a href="/patterns">Patterns</a></nav>',
@@ -1424,9 +1418,11 @@ class PoolClassifier:
             total_tasks = total_failures + total_successes
             sr_pct = f"{100 * total_successes / total_tasks:.1f}%" if total_tasks else "—"
             window_str = f"Last {_humanize(oldest_ts).removesuffix(' ago')}" if oldest_ts else "Observed period"
+            worker_os = {"android": "Android", "macos": "macOS", "windows": "Windows", "linux": "Linux"}.get(os_label, os_label)
+            worker_label = f"{worker_os} workers" if worker_os else "workers"
             parts.append(
                 f'<p class="gen"><strong>{window_str}</strong> · {total_tasks} completed tasks '
-                f'· <strong>{sr_pct} success rate</strong> · {len(workers)} observed workers</p>',
+                f'· <strong>{sr_pct} success rate</strong> · {len(workers)} observed {worker_label}</p>',
             )
 
         parts += [
