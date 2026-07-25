@@ -1384,7 +1384,7 @@ class PoolClassifier:
             "  .summary-grid > div { min-width: 0; }",
             "  .offenders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .25rem 2rem; }",
             "  .availability-note { max-width:80rem; margin:.75rem 0 0; color:#777; font-size:.85em; line-height:1.45; }",
-            "  .footnote-ref, .footnote-marker { color:#f90; } .footnote-ref { font-size:.75em; margin-left:.1em; vertical-align:super; }",
+            "  .footnote-ref, .footnote-ref:visited, .footnote-marker { color:#f90; } .footnote-ref { font-size:.75em; margin-left:.1em; vertical-align:super; }",
             "  .util-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:.8rem; max-width:80rem; }",
             "  .util-card { border:1px solid #444; border-radius:4px; background:#1a1a1a; padding:.8rem; min-height:7rem; }",
             "  .util-card.complete { border-color:#554070; box-shadow:inset 3px 0 #4c1d95; } .util-card.incomplete { color:#999; } .util-card.incomplete h3 { color:#aaa; }",
