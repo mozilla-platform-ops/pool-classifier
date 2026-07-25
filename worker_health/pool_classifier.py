@@ -1120,7 +1120,7 @@ class PoolClassifier:
             lines.append("")
 
         if alerting:
-            lines += [f"## Consecutive Failures (≥{CONSECUTIVE_FAILURE_ALERT})", ""]
+            lines += ["## Consecutive Failures", ""]
             for wid, w in sorted(alerting.items(), key=lambda x: -x[1].get("consecutive_failures", 0)):
                 sr = self._sr_pct(w)
                 sr_str = f"{sr:.0%}" if sr is not None else "—"
@@ -1459,7 +1459,7 @@ class PoolClassifier:
         if alerting:
             parts += [
                 "<div>",
-                f'<h2 id="s-attention">&#x26A0; Consecutive Failures (≥{CONSECUTIVE_FAILURE_ALERT})</h2>',
+                '<h2 id="s-attention">Consecutive Failures</h2>',
                 "<ul>",
             ]
             for wid, w in sorted(alerting.items(), key=lambda x: -x[1].get("consecutive_failures", 0)):
