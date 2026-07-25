@@ -4,6 +4,7 @@ import collections
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -69,6 +70,14 @@ logger = logging.getLogger(__name__)
 
 def _c(code: str, text: str, use_color: bool = True) -> str:
     return f"\033[{code}m{text}\033[0m" if use_color else text
+
+
+def _natural_sort_key(value: str) -> Tuple[Tuple[int, object], ...]:
+    """Sort embedded numeric fragments numerically, while ignoring case."""
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.lower())
+        for part in re.split(r"(\d+)", value)
+    )
 
 
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -1632,7 +1641,7 @@ class PoolClassifier:
             "  <tbody>",
         ]
 
-        for wid, w in sorted(workers.items()):
+        for wid, w in sorted(workers.items(), key=lambda item: _natural_sort_key(item[0])):
             consec = w.get("consecutive_failures", 0)
             row_class = ' class="alert"' if consec >= CONSECUTIVE_FAILURE_ALERT else ""
             consec_class = (
@@ -1770,7 +1779,7 @@ class PoolClassifier:
             "      const ad = Date.parse(av), bd = Date.parse(bv);",
             "      if (!isNaN(ad) && !isNaN(bd)) { const cmp = ad - bd; return asc ? cmp : -cmp; }",
             "      const an = parseFloat(av.replace('%','')), bn = parseFloat(bv.replace('%',''));",
-            "      const cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : av.localeCompare(bv);",
+            "      const cmp = (!isNaN(an) && !isNaN(bn)) ? an - bn : av.localeCompare(bv, undefined, {numeric:true, sensitivity:'base'});",
             "      return asc ? cmp : -cmp;",
             "    });",
             "    rows.forEach(r => tbody.appendChild(r));",
