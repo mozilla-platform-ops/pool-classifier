@@ -1414,8 +1414,8 @@ class PoolClassifier:
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
             '  <a href="#s-utilization">Utilization</a><span class="sep">|</span>',
             '  <a href="#s-heatmap">Heatmap</a><span class="sep">|</span>',
-            '  <a href="#s-all">All Workers</a><span class="sep">|</span>',
-            '  <a href="#s-offenders">Top Offenders</a>',
+            '  <a href="#s-offenders">Top Offenders</a><span class="sep">|</span>',
+            '  <a href="#s-all">All Workers</a>',
             "</nav>",
         ]
 
@@ -1581,7 +1581,7 @@ class PoolClassifier:
                 )
 
             parts += [
-                '<h2 id="s-heatmap">12h Heatmap</h2>',
+                '<h2 id="s-heatmap">Heatmap</h2>',
                 '<p class="gen">Only hosts with activity in the last 12 hours are shown.</p>',
                 '<div class="hm-legend">',
                 '  <span><span class="hm-swatch" style="background:#1a4a20"></span>success</span>',
@@ -1595,6 +1595,27 @@ class PoolClassifier:
                 hm_table(halves[1]),
                 "</div>",
             ]
+
+        if category_totals:
+            parts += [
+                "<h2 id=\"s-offenders\">Top Offenders by Category <span class='cat-total'>(last 1d)</span></h2>",
+                '<div class="offenders-grid">',
+            ]
+            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
+                offenders = self._top_offenders(cat, since=since_1d)
+                offender_items = ""
+                for wid, n in offenders:
+                    q_badge = ""
+                    if quarantined and wid in quarantined:
+                        dur = self._quarantine_duration(quarantined[wid])
+                        dur_str = f" ({dur})" if dur and dur != "expired" else ""
+                        q_badge = f' <span class="quarantine">&#x1F512;{dur_str}</span>'
+                    offender_items += f"<li>{tc_link(wid)}{q_badge}: {n}</li>"
+                parts.append(
+                    f'<div><h3 class="cat-header">{cat} <span class="cat-total">({count} total all-time)</span></h3>'
+                    f'<ul class="offenders">{offender_items}</ul></div>',
+                )
+            parts.append("</div>")
 
         total_w = len(workers)
         quarantined_w = sum(1 for wid in workers if wid in quarantined)
@@ -1639,27 +1660,6 @@ class PoolClassifier:
             )
 
         parts += ["  </tbody>", "</table>"]
-
-        if category_totals:
-            parts += [
-                "<h2 id=\"s-offenders\">Top Offenders by Category <span class='cat-total'>(last 1d)</span></h2>",
-                '<div class="offenders-grid">',
-            ]
-            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                offenders = self._top_offenders(cat, since=since_1d)
-                offender_items = ""
-                for wid, n in offenders:
-                    q_badge = ""
-                    if quarantined and wid in quarantined:
-                        dur = self._quarantine_duration(quarantined[wid])
-                        dur_str = f" ({dur})" if dur and dur != "expired" else ""
-                        q_badge = f' <span class="quarantine">&#x1F512;{dur_str}</span>'
-                    offender_items += f"<li>{tc_link(wid)}{q_badge}: {n}</li>"
-                parts.append(
-                    f'<div><h3 class="cat-header">{cat} <span class="cat-total">({count} total all-time)</span></h3>'
-                    f'<ul class="offenders">{offender_items}</ul></div>',
-                )
-            parts.append("</div>")
 
         hm_sev_map = {cat: sev for sev in ("critical", "high", "low") for cat in categories_by_severity(sev)}
         parts += [
