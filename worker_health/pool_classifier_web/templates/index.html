@@ -32,12 +32,20 @@
   .metric-window { margin-left: .35rem; white-space: nowrap; }
   .metric-window button { padding: 0; margin-left: .25rem; border: 0; background: transparent; color: #777; cursor: pointer; font: inherit; }
   .metric-window button:hover, .metric-window button.active { color: #f90; }
-  .page-nav { display: flex; align-items: center; gap: 0; flex-wrap: wrap; width: fit-content; margin: 0 0 1rem; padding: .3rem .6rem; background: #1a1a1a; border-radius: 4px; font-size: .8em; }
-  .page-nav a { color: #58a6ff; padding: .2rem .6rem; border-radius: 3px; }
-  .page-nav a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }
-  .page-nav a.current { color: #ccc; cursor: default; }
-  .page-nav a.current:hover { background: transparent; }
-  .page-nav span.sep { color: #444; user-select: none; }
+  .site-header { display: flex; align-items: center; gap: 1.5rem; margin: 0 0 1.5rem; }
+  .site-title { color: #ccc; font-size: 1.1rem; letter-spacing: .02em; position: relative; top: 4px; }
+  .global-menu { position: relative; margin-left: auto; }
+  .global-menu summary { display: flex; align-items: center; justify-content: center; width: 2.25rem; height: 2.25rem; box-sizing: border-box; color: #aaa; border: 1px solid #333; border-radius: 4px; cursor: pointer; list-style: none; }
+  .global-menu summary::-webkit-details-marker { display: none; }
+  .global-menu summary:hover, .global-menu[open] summary { color: #0ff; border-color: #0aa; background: #1a1a1a; }
+  .menu-icon, .menu-icon::before, .menu-icon::after { display: block; width: 1rem; height: 2px; background: currentColor; }
+  .menu-icon { position: relative; }
+  .menu-icon::before, .menu-icon::after { content: ''; position: absolute; left: 0; }
+  .menu-icon::before { top: -5px; }
+  .menu-icon::after { top: 5px; }
+  .menu-popover { position: absolute; z-index: 1; top: calc(100% + .4rem); right: 0; min-width: 10rem; padding: .35rem; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; box-shadow: 0 .5rem 1.5rem #0008; }
+  .menu-popover a { display: block; padding: .45rem .6rem; color: #58a6ff; border-radius: 3px; }
+  .menu-popover a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }
   .os-filters { margin: 0 0 1rem; display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; font-size: .85em; }
   .os-filters .label { color: #666; margin-right: .25rem; }
   .os-filters .chip { padding: .2rem .55rem; border-radius: 3px; background: #1a1a1a; color: #aaa; cursor: pointer; border: 1px solid #2a2a2a; user-select: none; }
@@ -47,15 +55,15 @@
 </style>
 </head>
 <body>
-<div style="display:flex;align-items:center;gap:1.5rem;margin:0 0 1.5rem">
+<header class="site-header">
 <a href="/" style="text-decoration:none"><pre style="color:#0ff;line-height:1;margin:0;font-size:1rem"> ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀
  ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ </pre></a>
-<span style="color:#ccc;font-size:1.1rem;letter-spacing:.02em;position:relative;top:4px">Dashboard</span>
-</div>
-<nav class="page-nav">
-  <a class="current" href="/">Dashboard</a><span class="sep">|</span>
-  <a href="/patterns">Patterns</a>
-</nav>
+<span class="site-title">Overview</span>
+<details class="global-menu">
+  <summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary>
+  <nav class="menu-popover" aria-label="Global navigation"><a href="/patterns">Patterns</a></nav>
+</details>
+</header>
 
 <div id="os-filters" class="os-filters"><span class="label">OS:</span></div>
 
