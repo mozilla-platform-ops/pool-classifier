@@ -1367,7 +1367,7 @@ class PoolClassifier:
             "  .util-timeline-controls { display:flex; align-items:center; gap:.45rem; margin:1.2rem 0 .45rem; font-size:.85em; color:#aaa; }",
             "  .util-timeline-controls button { border:0; background:transparent; color:#777; cursor:pointer; font:inherit; padding:0; } .util-timeline-controls button:hover, .util-timeline-controls button.active { color:#f90; }",
             "  .util-timeline-wrap { max-width:80rem; overflow-x:auto; } .util-timeline { display:grid; gap:3px; min-width:36rem; }",
-            "  .util-hour { height:2.1rem; border:0; border-radius:2px; padding:0; cursor:default; outline:1px solid #111; } .util-hour:hover { outline:2px solid #fff; z-index:1; }",
+            "  .util-hour { height:2.1rem; border:0; border-radius:2px; padding:0; cursor:default; outline:1px solid #111; } .util-hour:hover { filter:brightness(1.15); }",
             "  .util-hour-usage { background:#16111d; }",
             "  .util-hour-incomplete { background:repeating-linear-gradient(135deg,#303030 0,#303030 4px,#202020 4px,#202020 8px); } .util-hour-unavailable { background:#6b1d1d; } .util-hour-error { background:#555; }",
             "  .util-timeline-legend { display:flex; gap:1rem; flex-wrap:wrap; margin:.45rem 0 1.2rem; color:#888; font-size:.8em; }",
