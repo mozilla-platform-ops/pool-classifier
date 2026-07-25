@@ -1317,6 +1317,17 @@ class PoolClassifier:
             "  .page-nav a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }",
             "  .page-nav a:visited { color: #58a6ff; }",
             "  .page-nav span.sep { color: #444; user-select: none; }",
+            "  .site-header { display:flex; align-items:last baseline; gap:1.5rem; margin:0 0 1.5rem; }",
+            "  .site-title { color:#ccc; font-size:1.1rem; letter-spacing:.02em; }",
+            "  .global-menu { position:relative; margin-left:auto; }",
+            "  .global-menu summary { display:flex; align-items:center; justify-content:center; width:2.25rem; height:2.25rem; box-sizing:border-box; color:#aaa; border:1px solid #333; border-radius:4px; cursor:pointer; list-style:none; }",
+            "  .global-menu summary::-webkit-details-marker { display:none; }",
+            "  .global-menu summary:hover, .global-menu[open] summary { color:#0ff; border-color:#0aa; background:#1a1a1a; }",
+            "  .menu-icon, .menu-icon::before, .menu-icon::after { display:block; width:1rem; height:2px; background:currentColor; }",
+            "  .menu-icon { position:relative; } .menu-icon::before, .menu-icon::after { content:''; position:absolute; left:0; } .menu-icon::before { top:-5px; } .menu-icon::after { top:5px; }",
+            "  .menu-popover { position:absolute; z-index:1; top:calc(100% + .4rem); right:0; min-width:10rem; padding:.35rem; background:#1a1a1a; border:1px solid #333; border-radius:4px; box-shadow:0 .5rem 1.5rem #0008; }",
+            "  .menu-popover a, .menu-popover .current { display:block; padding:.45rem .6rem; border-radius:3px; }",
+            "  .menu-popover a { color:#58a6ff; } .menu-popover a:hover { color:#a0c8ff; background:#2a2a2a; text-decoration:none; } .menu-popover .current { color:#666; cursor:default; }",
             "  table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }",
             "  th { background: #222; color: #aaa; text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #444; cursor: pointer; user-select: none; }",
             "  th:hover { color: #fff; }",
@@ -1383,19 +1394,23 @@ class PoolClassifier:
             "</style>",
             "</head>",
             "<body>",
-            '<div style="display:flex;align-items:last baseline;gap:1.5rem;margin:0 0 1.5rem">',
+            '<header class="site-header">',
             '<a href="/" style="text-decoration:none"><pre style="color:#0ff;line-height:1;margin:0;font-size:1rem">',
             " ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀",
             " ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ ",
             "</pre></a>",
-            f'<span style="color:#ccc;font-size:1.1rem;letter-spacing:.02em"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a>'
+            f'<span class="site-title"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a>'
             + (
                 f' <span style="font-size:.75rem;background:#333;color:#aaa;border-radius:3px;padding:1px 6px;vertical-align:middle;position:relative;top:-1px">{os_label}</span>'
                 if os_label
                 else ""
             )
             + "</span>",
-            "</div>",
+            '<details class="global-menu">',
+            '  <summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary>',
+            '  <nav class="menu-popover" aria-label="Global navigation"><a href="/">Overview</a><a href="/patterns">Patterns</a></nav>',
+            "</details>",
+            "</header>",
         ]
 
         summary_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization/summary"

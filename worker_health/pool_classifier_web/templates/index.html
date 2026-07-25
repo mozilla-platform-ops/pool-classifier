@@ -46,6 +46,7 @@
   .menu-popover { position: absolute; z-index: 1; top: calc(100% + .4rem); right: 0; min-width: 10rem; padding: .35rem; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; box-shadow: 0 .5rem 1.5rem #0008; }
   .menu-popover a { display: block; padding: .45rem .6rem; color: #58a6ff; border-radius: 3px; }
   .menu-popover a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }
+  .menu-popover .current { display: block; padding: .45rem .6rem; color: #666; cursor: default; }
   .os-filters { margin: 0 0 1rem; display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; font-size: .85em; }
   .os-filters .label { color: #666; margin-right: .25rem; }
   .os-filters .chip { padding: .2rem .55rem; border-radius: 3px; background: #1a1a1a; color: #aaa; cursor: pointer; border: 1px solid #2a2a2a; user-select: none; }
@@ -61,7 +62,10 @@
 <span class="site-title">Overview</span>
 <details class="global-menu">
   <summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary>
-  <nav class="menu-popover" aria-label="Global navigation"><a href="/patterns">Patterns</a></nav>
+  <nav class="menu-popover" aria-label="Global navigation">
+    <span class="current" aria-current="page">Overview</span>
+    <a href="/patterns">Patterns</a>
+  </nav>
 </details>
 </header>
 

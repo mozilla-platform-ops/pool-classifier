@@ -27,6 +27,7 @@
   .menu-popover { position: absolute; z-index: 1; top: calc(100% + .4rem); right: 0; min-width: 10rem; padding: .35rem; background: #1a1a1a; border: 1px solid #333; border-radius: 4px; box-shadow: 0 .5rem 1.5rem #0008; }
   .menu-popover a { display: block; padding: .45rem .6rem; color: #58a6ff; border-radius: 3px; }
   .menu-popover a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }
+  .menu-popover .current { display: block; padding: .45rem .6rem; color: #666; cursor: default; }
   .blurb { color: #888; font-size: .85em; max-width: 70rem; margin: 0 0 1rem; }
   .search { margin: 0 0 1rem; }
   .search input { background: #1a1a1a; color: #ccc; border: 1px solid #333; padding: .35rem .6rem; border-radius: 3px; font-family: monospace; width: 24rem; }
@@ -57,7 +58,10 @@
 <span class="site-title">Patterns</span>
 <details class="global-menu">
   <summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary>
-  <nav class="menu-popover" aria-label="Global navigation"><a href="/">Overview</a></nav>
+  <nav class="menu-popover" aria-label="Global navigation">
+    <a href="/">Overview</a>
+    <span class="current" aria-current="page">Patterns</span>
+  </nav>
 </details>
 </header>
 <p class="blurb">
