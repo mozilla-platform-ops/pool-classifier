@@ -159,7 +159,7 @@ def main() -> None:
     launcher = TmuxLauncher(
         session_name="pool-classifier",
         num_panes=3,
-        root=Path(__file__).resolve().parent,
+        root=Path(__file__).resolve().parent.parent,
         default_shell="zsh",
         panes=[
             PaneSpec(name="pool-classifier", commands=["./pc_start.sh --debug"]),
