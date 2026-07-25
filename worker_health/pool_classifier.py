@@ -1509,6 +1509,23 @@ class PoolClassifier:
                 )
             parts += ["  </tbody>", "</table>"]
 
+        parts += [
+            '<h2 id="s-utilization">Utilization</h2>',
+            *(
+                ['<p class="availability-note"><strong>Availability mode: listed.</strong> '
+                 "Utilization counts every worker returned by Taskcluster and not quarantined as eligible capacity. "
+                 "A listed worker may be dormant or physically unhealthy; listing does not confirm that the device is live.</p>"]
+                if self.availability_mode == "listed"
+                else []
+            ),
+            f'<p class="gen">Duration-weighted task time versus available worker time. <a href="{guide_url}">API guide</a></p>',
+            '<p id="util-freshness" class="gen">Loading utilization…</p>',
+            '<div id="util-cards" class="util-grid"></div>',
+            '<div class="util-timeline-controls"><span>Hourly timeline:</span><button type="button" data-hours="24">[24h]</button><button type="button" data-hours="48">[48h]</button></div>',
+            '<div class="util-timeline-wrap"><div id="util-timeline" class="util-timeline"></div></div>',
+            '<div class="util-timeline-legend"><span><span class="hm-swatch" style="width:3rem; background:linear-gradient(90deg,#16111d,#4c1d95)"></span>purple: 0% to 100% utilization</span><span><span class="hm-swatch" style="background:repeating-linear-gradient(135deg,#303030 0,#303030 4px,#202020 4px,#202020 8px)"></span>striped: no data</span><span><span class="hm-swatch" style="background:#6b1d1d"></span>dark red: no available capacity</span></div>',
+        ]
+
         if heatmap:
             hour_period = ["< 1h ago"] + [f"{i}–{i + 1}h ago" for i in range(1, 12)]
 
@@ -1578,23 +1595,6 @@ class PoolClassifier:
                 hm_table(halves[1]),
                 "</div>",
             ]
-
-        parts += [
-            '<h2 id="s-utilization">Utilization</h2>',
-            *(
-                ['<p class="availability-note"><strong>Availability mode: listed.</strong> '
-                 "Utilization counts every worker returned by Taskcluster and not quarantined as eligible capacity. "
-                 "A listed worker may be dormant or physically unhealthy; listing does not confirm that the device is live.</p>"]
-                if self.availability_mode == "listed"
-                else []
-            ),
-            f'<p class="gen">Duration-weighted task time versus available worker time. <a href="{guide_url}">API guide</a></p>',
-            '<p id="util-freshness" class="gen">Loading utilization…</p>',
-            '<div id="util-cards" class="util-grid"></div>',
-            '<div class="util-timeline-controls"><span>Hourly timeline:</span><button type="button" data-hours="24">[24h]</button><button type="button" data-hours="48">[48h]</button></div>',
-            '<div class="util-timeline-wrap"><div id="util-timeline" class="util-timeline"></div></div>',
-            '<div class="util-timeline-legend"><span><span class="hm-swatch" style="width:3rem; background:linear-gradient(90deg,#16111d,#4c1d95)"></span>purple: 0% to 100% utilization</span><span><span class="hm-swatch" style="background:repeating-linear-gradient(135deg,#303030 0,#303030 4px,#202020 4px,#202020 8px)"></span>striped: no data</span><span><span class="hm-swatch" style="background:#6b1d1d"></span>dark red: no available capacity</span></div>',
-        ]
 
         total_w = len(workers)
         quarantined_w = sum(1 for wid in workers if wid in quarantined)
