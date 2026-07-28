@@ -64,6 +64,7 @@ DEFAULT_WORKER_TYPE = "gecko-t-lambda-perf-a55"
 DEFAULT_POLL_INTERVAL = 900  # seconds (15 minutes)
 WORKER_REFRESH_INTERVAL = 300  # seconds between re-listing workers
 WORKER_THREAD_COUNT = 8
+UNRESOLVED_TASK_RUN_BATCH_SIZE = 1000
 CONSECUTIVE_FAILURE_ALERT = 2
 DEFAULT_WORKER_CONTACT_THRESHOLD_SECONDS = 60 * 60
 
@@ -483,90 +484,88 @@ class PoolClassifier:
 
     # --- polling ---
 
-    def _new_terminal_tasks(self, worker_id: str, worker_group: str) -> Tuple[List[Tuple], bool]:
-        """Return newly terminal runs and whether recent-task collection was complete."""
-        if worker_id not in self.seen_task_runs:
-            self.seen_task_runs[worker_id] = set()
-        seen = self.seen_task_runs[worker_id]
-        results = []
+    def _resolve_observed_task_runs(self, references: List[dict]) -> Tuple[Dict[str, List[Tuple]], bool]:
+        """Resolve durable task-run references, returning terminal runs by worker."""
+        by_task: Dict[str, Dict[str, set]] = {}
+        for reference in references:
+            by_task.setdefault(reference["task_id"], {}).setdefault(reference["worker_id"], set()).add(reference["run_id"])
 
+        results: Dict[str, List[Tuple]] = {}
+        complete = True
+        for task_id, workers in by_task.items():
+            checked_at = datetime.now(timezone.utc).isoformat()
+            for run_ids in workers.values():
+                for run_id in run_ids:
+                    self.storage.record_task_run_check(task_id, run_id, checked_at)
+            # Check attempts survive Queue failures and process interruptions.
+            self.storage.commit()
+            try:
+                logger.debug("  fetching status for %s", task_id)
+                status_resp = self._get_task_status(task_id)
+            except Exception as exc:
+                logger.warning("%s: status fetch error: %s", task_id, exc)
+                complete = False
+                continue
+            if not status_resp:
+                # Queue's `None` result is its definitive 404 signal.  Persist
+                # an expiry marker so stale references are never retried.
+                logger.info("task %s no longer has a status record; expiring observed references", task_id)
+                for worker_id, run_ids in workers.items():
+                    for run_id in run_ids:
+                        if self.storage.expire_task_run(task_id, run_id, checked_at):
+                            self.seen_task_runs.setdefault(worker_id, set()).add((task_id, run_id))
+                self.storage.commit()
+                continue
+
+            runs = {run.get("runId"): run for run in status_resp.get("status", {}).get("runs", [])}
+            for worker_id, run_ids in workers.items():
+                for run_id in run_ids:
+                    run = runs.get(run_id)
+                    if not run or run.get("workerId") != worker_id:
+                        complete = False
+                        continue
+                    run_state = run.get("state")
+                    if run_state not in ("completed", "failed", "exception"):
+                        logger.debug("  %s: task %s run %s still running (state=%s)", worker_id, task_id, run_id, run_state)
+                        continue
+                    self.seen_task_runs.setdefault(worker_id, set()).add((task_id, run_id))
+                    results.setdefault(worker_id, []).append(
+                        (
+                            task_id, run_id, run_state, run.get("started"), run.get("resolved"),
+                            run.get("reasonResolved"), run.get("scheduled"), run.get("reasonCreated"),
+                        ),
+                    )
+        return results, complete
+
+    def _retry_unresolved_task_runs(self) -> Tuple[Dict[str, List[Tuple]], bool]:
+        """Retry a bounded durable backlog, including rows from prior processes."""
+        return self._resolve_observed_task_runs(
+            self.storage.list_unresolved_task_runs(UNRESOLVED_TASK_RUN_BATCH_SIZE),
+        )
+
+    def _new_terminal_tasks(self, worker_id: str, worker_group: str) -> Tuple[List[Tuple], bool]:
+        """Persist recent references before resolving their Queue status."""
+        seen = self.seen_task_runs.setdefault(worker_id, set())
         try:
             recent = self._get_recent_tasks(worker_group, worker_id)
-        except Exception as e:
-            logger.warning(f"{worker_id}: failed to fetch recent tasks: {e}")
-            return results, False
+        except Exception as exc:
+            logger.warning("%s: failed to fetch recent tasks: %s", worker_id, exc)
+            return [], False
 
-        complete = True
-
-        unseen_run_ids_by_task: Dict[str, set] = {}
+        references = []
+        observed_at = datetime.now(timezone.utc).isoformat()
         for task in recent:
             task_id = task.get("taskId")
             run_id = task.get("runId")
             if task_id and (task_id, run_id) not in seen:
-                unseen_run_ids_by_task.setdefault(task_id, set()).add(run_id)
-        task_ids = list(unseen_run_ids_by_task)
-        if task_ids:
-            logger.debug(f"  {worker_id}: checking {len(task_ids)} recent task(s)")
-
-        for task_id in task_ids:
-            try:
-                logger.debug(f"  {worker_id}: fetching status for {task_id}")
-                status_resp = self._get_task_status(task_id)
-            except Exception as e:
-                logger.warning(f"{task_id}: status fetch error: {e}")
-                complete = False
-                continue
-            if not status_resp:
-                # getWorker.recentTasks can retain references to Taskcluster
-                # tasks whose status documents have expired. A 404 is a
-                # definitive tombstone, unlike a connection or 5xx failure;
-                # retrying it forever would make the entire pool's coverage
-                # permanently incomplete. Remember every referenced run for
-                # this process so subsequent polls do not repeat the lookup.
-                logger.info(
-                    "%s: task %s no longer has a status record; skipping stale recent-task reference",
-                    worker_id,
-                    task_id,
-                )
-                seen.update((task_id, run_id) for run_id in unseen_run_ids_by_task[task_id])
-                continue
-
-            runs = status_resp.get("status", {}).get("runs", [])
-            my_runs = [r for r in runs if r.get("workerId") == worker_id]
-
-            if not my_runs:
-                complete = False
-                continue
-
-            for run in my_runs:
-                run_id = run.get("runId")
-                run_key = (task_id, run_id)
-                if run_key in seen:
-                    continue
-                run_state = run.get("state")
-                if run_state not in ("completed", "failed", "exception"):
-                    logger.debug(
-                        f"  {worker_id}: task {task_id} run {run_id} still running "
-                        f"(state={run_state}), will re-check",
-                    )
-                    continue
-
-                seen.add(run_key)
-                logger.debug(f"  {worker_id}: task {task_id} run {run_id} terminal (state={run_state})")
-                results.append(
-                    (
-                        task_id,
-                        run_id,
-                        run_state,
-                        run.get("started"),
-                        run.get("resolved"),
-                        run.get("reasonResolved"),
-                        run.get("scheduled"),
-                        run.get("reasonCreated"),
-                    ),
-                )
-
-        return results, complete
+                self.storage.record_observed_task_run(task_id, worker_id, run_id, observed_at)
+                references.append({"task_id": task_id, "worker_id": worker_id, "run_id": run_id})
+        # getWorker references must be durable before any Queue status request.
+        self.storage.commit()
+        if references:
+            logger.debug("  %s: checking %d recent task run(s)", worker_id, len(references))
+        resolved, complete = self._resolve_observed_task_runs(references)
+        return resolved.get(worker_id, []), complete
 
     def _poll_one_worker(self, worker: dict) -> Tuple[str, str, List[Tuple], bool]:
         worker_id = worker["workerId"]
@@ -797,6 +796,12 @@ class PoolClassifier:
             poll_results = []
             scanned = 0
             task_collection_complete = True
+            retried_tasks, retry_complete = self._retry_unresolved_task_runs()
+            task_collection_complete = task_collection_complete and retry_complete
+            poll_results = [
+                (worker_id, None, terminal_tasks)
+                for worker_id, terminal_tasks in retried_tasks.items()
+            ]
             thread_pool = ThreadPool(WORKER_THREAD_COUNT)
             terminated = False
             try:

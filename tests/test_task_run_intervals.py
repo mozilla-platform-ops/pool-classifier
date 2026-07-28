@@ -381,6 +381,64 @@ def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatc
     assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], False)
 
 
+def test_observed_run_retries_after_restart_and_reaches_terminal_path(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(
+        classifier, "_get_recent_tasks", lambda _group, _worker: [{"taskId": "task-1", "runId": 0}],
+    )
+    monkeypatch.setattr(classifier, "_get_task_status", lambda _task: (_ for _ in ()).throw(RuntimeError("Queue busy")))
+
+    assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], False)
+    assert storage.list_unresolved_task_runs(10)[0]["task_id"] == "task-1"
+
+    restarted = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path,
+        storage=SqliteStorage("provisioner/worker-type", tmp_path), use_color=False,
+    )
+    restarted._init_db()
+    monkeypatch.setattr(
+        restarted,
+        "_get_task_status",
+        lambda _task: {"status": {"runs": [{
+            "runId": 0, "workerId": "worker-1", "state": "completed",
+            "started": "2026-07-14T10:00:00+00:00", "resolved": "2026-07-14T10:05:00+00:00",
+        }]}},
+    )
+
+    recovered, complete = restarted._retry_unresolved_task_runs()
+    assert complete is True
+    restarted._process_results("worker-1", recovered["worker-1"], worker_group="group-1")
+    row = restarted.storage.db.execute(
+        "SELECT run_state, observed_at, last_checked_at FROM task_results WHERE task_id = 'task-1'",
+    ).fetchone()
+    assert row["run_state"] == "completed"
+    assert row["observed_at"] < row["last_checked_at"]
+
+
+def test_terminal_collection_persists_queue_404_as_expired(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(
+        classifier, "_get_recent_tasks", lambda _group, _worker: [{"taskId": "expired-task", "runId": 0}],
+    )
+    status_calls = []
+    monkeypatch.setattr(classifier, "_get_task_status", lambda task_id: status_calls.append(task_id) and None)
+
+    assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], True)
+    assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], True)
+    assert status_calls == ["expired-task"]
+    assert storage.db.execute(
+        "SELECT run_state FROM task_results WHERE task_id = 'expired-task'",
+    ).fetchone()[0] == "expired"
+
+
 def test_terminal_collection_skips_expired_task_status_references(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier(

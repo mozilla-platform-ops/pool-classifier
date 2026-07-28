@@ -267,7 +267,10 @@ class SqliteStorage:
 
     def get_seen_task_runs(self) -> Dict[str, set]:
         seen: Dict[str, set] = {}
-        for row in self.db.execute("SELECT worker_id, task_id, run_id FROM task_results"):
+        for row in self.db.execute(
+            "SELECT worker_id, task_id, run_id FROM task_results"
+            " WHERE run_state IN ('completed','failed','exception','expired')",
+        ):
             seen.setdefault(row["worker_id"], set()).add((row["task_id"], row["run_id"]))
         return seen
 
@@ -1122,7 +1125,8 @@ class PostgresStorage:
         seen: Dict[str, set] = {}
         with self._cursor() as cur:
             cur.execute(
-                "SELECT worker_id, task_id, run_id FROM task_results WHERE pool_id = %s",
+                "SELECT worker_id, task_id, run_id FROM task_results"
+                " WHERE pool_id = %s AND run_state IN ('completed','failed','exception','expired')",
                 (self.pool_id,),
             )
             for row in cur.fetchall():
