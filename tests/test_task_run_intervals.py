@@ -295,6 +295,19 @@ def test_start_lag_backfill_logs_backlog_before_selecting_batch(tmp_path, monkey
     assert "Start-lag backfill backlog: 3 runs across 2 tasks" in caplog.text
 
 
+def test_start_lag_dashboard_links_trend_and_heatmap_hover(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+
+    html = classifier._write_html({})
+
+    assert "const lagKey" in html
+    assert "data-lag-key" in html
+    assert "bindLagHover();" in html
+    assert ".lag-hm-cell.lag-linked-hover" in html
+
+
 def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier(
