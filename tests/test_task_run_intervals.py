@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
+import json
+
 from worker_health.pool_classifier import PoolClassifier
 from worker_health.pool_classifier_web.storage import SqliteStorage
 
@@ -244,6 +246,33 @@ def test_start_lag_backfill_reports_expired_status_without_modifying_run(tmp_pat
 
     assert result["expired_tasks"] == 1
     assert storage.db.execute("SELECT run_scheduled FROM task_results").fetchone()[0] is None
+
+
+def test_start_lag_backfill_persists_and_pages_past_unavailable_runs(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+    for task_id, resolved_at in (
+        ("expired", "2026-07-14T10:10:00+00:00"),
+        ("available", "2026-07-14T10:05:00+00:00"),
+    ):
+        storage.record_task_result(
+            task_id, "worker-1", 0, "completed", None, "completed",
+            "2026-07-14T10:00:00+00:00", resolved_at, resolved_at,
+        )
+    storage.commit()
+    state_file = tmp_path / ".backfill-state.json"
+    monkeypatch.setattr(classifier, "_ensure_tc", lambda: None)
+    monkeypatch.setattr(classifier, "_get_task_status", lambda task_id: None if task_id == "expired" else {
+        "status": {"runs": [{"runId": 0, "scheduled": "2026-07-14T09:55:00+00:00"}]},
+    })
+
+    first = classifier.backfill_start_lag(batch_size=1, concurrency=1, retries=0, state_file=state_file)
+    second = classifier.backfill_start_lag(batch_size=1, concurrency=1, retries=0, state_file=state_file)
+
+    assert first["expired_tasks"] == 1
+    assert second["enriched_runs"] == 1
+    assert json.loads(state_file.read_text())["pools"]["provisioner/worker-type"]["expired_task_ids"] == ["expired"]
 
 
 def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatch):

@@ -9,7 +9,8 @@ python pool_classifier.py --backfill-start-lag \
   --provisioner proj-autophone --worker-type gecko-t-bitbar-gw-perf-a51 \
   --results-dir pool_classifier_results \
   --backfill-batch-size 500 --backfill-concurrency 5 \
-  --backfill-requests-per-second 5
+  --backfill-requests-per-second 5 \
+  --backfill-state-file .backfill-start-lag-state.json
 ```
 
 For the deployed Postgres store, set `DATABASE_URL` (or pass
@@ -26,3 +27,8 @@ removes those rows from later batches, so it is safe to rerun after an
 interruption. Expired or unmatched Queue status documents are reported but are
 not reconstructed: this backfill only covers terminal runs already stored by
 the classifier.
+
+The state file records Queue 404 task IDs and runs that lack a Queue
+`scheduled` timestamp. Later invocations skip those known-unavailable records
+and page past them to reach older rows. Delete the file (or choose another path
+with `--backfill-state-file`) to retry them.

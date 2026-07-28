@@ -92,6 +92,7 @@ if __name__ == "__main__":
     parser.add_argument("--backfill-concurrency", type=int, default=5, metavar="REQUESTS", help="concurrent Queue status requests for --backfill-start-lag (default: 5)")
     parser.add_argument("--backfill-retries", type=int, default=2, metavar="COUNT", help="retries per transient status request (default: 2)")
     parser.add_argument("--backfill-requests-per-second", type=float, default=5.0, metavar="RATE", help="maximum Queue status requests per second for --backfill-start-lag (default: 5)")
+    parser.add_argument("--backfill-state-file", type=Path, default=Path(".backfill-start-lag-state.json"), metavar="FILE", help="persist Queue 404 and unmatched-run skips here (default: .backfill-start-lag-state.json)")
     args = parser.parse_args()
 
     if args.no_color:
@@ -132,7 +133,7 @@ if __name__ == "__main__":
     )
     if args.backfill_start_lag:
         classifier._init_db()
-        print(classifier.backfill_start_lag(args.backfill_batch_size, args.backfill_concurrency, args.backfill_retries, args.backfill_requests_per_second))
+        print(classifier.backfill_start_lag(args.backfill_batch_size, args.backfill_concurrency, args.backfill_retries, args.backfill_requests_per_second, args.backfill_state_file))
     elif args.reclassify:
         classifier.reclassify_unclassified(
             target_category=args.reclassify_category,

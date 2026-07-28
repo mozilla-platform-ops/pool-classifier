@@ -9,6 +9,7 @@ from threading import Lock
 import re
 import signal
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from multiprocessing.pool import ThreadPool
@@ -274,6 +275,7 @@ class PoolClassifier:
 
     def backfill_start_lag(
         self, batch_size: int = 500, concurrency: int = 5, retries: int = 2, requests_per_second: float = 5.0,
+        state_file: Optional[Path] = None,
     ) -> dict:
         """Enrich one bounded batch of stored runs with Queue schedule metadata.
 
@@ -286,7 +288,30 @@ class PoolClassifier:
         self._ensure_tc()
         stats = {"selected_runs": 0, "selected_tasks": 0, "enriched_runs": 0, "expired_tasks": 0, "unmatched_runs": 0, "transient_failures": 0}
         with self.storage.classify_lock():
-            rows = self.storage.list_task_runs_missing_schedule(batch_size)
+            state = self._load_backfill_state(state_file)
+            pool_state = state.setdefault("pools", {}).setdefault(f"{self.provisioner}/{self.worker_type}", {})
+            expired_task_ids = {item for item in pool_state.get("expired_task_ids", []) if isinstance(item, str)}
+            unmatched_runs = {
+                (item[0], item[1]) for item in pool_state.get("unmatched_runs", [])
+                if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], int)
+            }
+            rows = []
+            offset = 0
+            while len(rows) < batch_size:
+                candidates = self.storage.list_task_runs_missing_schedule(batch_size, offset)
+                if not candidates:
+                    break
+                offset += len(candidates)
+                for row in candidates:
+                    key = (row["task_id"], row["run_id"])
+                    if row["task_id"] in expired_task_ids or key in unmatched_runs:
+                        continue
+                    else:
+                        rows.append(row)
+                        if len(rows) == batch_size:
+                            break
+                if len(candidates) < batch_size:
+                    break
             by_task: Dict[str, List[int]] = {}
             for row in rows:
                 by_task.setdefault(row["task_id"], []).append(row["run_id"])
@@ -316,20 +341,48 @@ class PoolClassifier:
                     # `None` is a definitive Queue 404; a missing key was a transient failure.
                     if task_id in statuses:
                         stats["expired_tasks"] += 1
+                        expired_task_ids.add(task_id)
                     continue
                 runs = {run.get("runId"): run for run in status_response.get("status", {}).get("runs", [])}
                 for run_id in run_ids:
                     run = runs.get(run_id)
                     if not run or not run.get("scheduled"):
                         stats["unmatched_runs"] += 1
+                        unmatched_runs.add((task_id, run_id))
                         continue
                     if self.storage.enrich_task_run_queue_metadata(
                         task_id, run_id, run["scheduled"], run.get("reasonCreated"),
                     ):
                         stats["enriched_runs"] += 1
             self.storage.commit()
+            pool_state["expired_task_ids"] = sorted(expired_task_ids)
+            pool_state["unmatched_runs"] = [list(item) for item in sorted(unmatched_runs)]
+            self._save_backfill_state(state_file, state)
         logger.info("start-lag backfill: %s", stats)
         return stats
+
+    @staticmethod
+    def _load_backfill_state(state_file: Optional[Path]) -> dict:
+        if state_file is None or not state_file.exists():
+            return {"version": 1, "pools": {}}
+        try:
+            state = json.loads(state_file.read_text())
+            if isinstance(state, dict) and isinstance(state.get("pools"), dict):
+                return state
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("ignoring unreadable start-lag backfill state %s: %s", state_file, exc)
+        return {"version": 1, "pools": {}}
+
+    @staticmethod
+    def _save_backfill_state(state_file: Optional[Path], state: dict) -> None:
+        if state_file is None:
+            return
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=state_file.parent, delete=False) as output:
+            json.dump(state, output, indent=2, sort_keys=True)
+            output.write("\n")
+            temporary_path = Path(output.name)
+        temporary_path.replace(state_file)
 
     def _fetch_log_tail(self, task_id: str, run_id: int) -> Tuple[str, str]:
         """Fetch head+tail of the task log with size, time, and byte caps.
