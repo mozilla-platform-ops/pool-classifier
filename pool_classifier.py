@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 from pathlib import Path
 
 from worker_health.pool_classifier import (
@@ -11,6 +12,7 @@ from worker_health.pool_classifier import (
     PoolClassifier,
 )
 from worker_health.pool_classifier_web import registry
+from worker_health.pool_classifier_web.storage import PostgresStorage
 
 # ANSI helpers
 _use_color = True
@@ -55,6 +57,12 @@ if __name__ == "__main__":
         metavar="DIR",
         help="directory for DB and OVERVIEW reports (default: pool_classifier_results/)",
     )
+    parser.add_argument(
+        "--database-url",
+        default=os.environ.get("DATABASE_URL"),
+        metavar="URL",
+        help="use Postgres storage at URL instead of --results-dir (default: DATABASE_URL)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="enable debug logging")
     parser.add_argument("--no-color", action="store_true", help="disable color output")
     parser.add_argument(
@@ -79,6 +87,11 @@ if __name__ == "__main__":
         action="store_true",
         help="save re-fetched logs that still don't match any pattern to reclassify_logs/{category}/",
     )
+    parser.add_argument("--backfill-start-lag", action="store_true", help="enrich one batch of stored runs with Queue scheduled metadata, then exit")
+    parser.add_argument("--backfill-batch-size", type=int, default=500, metavar="RUNS", help="runs to inspect for --backfill-start-lag (default: 500)")
+    parser.add_argument("--backfill-concurrency", type=int, default=5, metavar="REQUESTS", help="concurrent Queue status requests for --backfill-start-lag (default: 5)")
+    parser.add_argument("--backfill-retries", type=int, default=2, metavar="COUNT", help="retries per transient status request (default: 2)")
+    parser.add_argument("--backfill-requests-per-second", type=float, default=5.0, metavar="RATE", help="maximum Queue status requests per second for --backfill-start-lag (default: 5)")
     args = parser.parse_args()
 
     if args.no_color:
@@ -103,15 +116,24 @@ if __name__ == "__main__":
     )
 
     configured_pool = registry.get_pool(args.provisioner, args.worker_type)
+    storage = (
+        PostgresStorage(pool_id=f"{args.provisioner}/{args.worker_type}", dsn=args.database_url)
+        if args.database_url
+        else None
+    )
     classifier = PoolClassifier(
         provisioner=args.provisioner,
         worker_type=args.worker_type,
         results_dir=args.results_dir,
+        storage=storage,
         poll_interval=args.poll_interval,
         use_color=_use_color,
         availability_mode=(configured_pool.availability_mode if configured_pool else "recent_contact"),
     )
-    if args.reclassify:
+    if args.backfill_start_lag:
+        classifier._init_db()
+        print(classifier.backfill_start_lag(args.backfill_batch_size, args.backfill_concurrency, args.backfill_retries, args.backfill_requests_per_second))
+    elif args.reclassify:
         classifier.reclassify_unclassified(
             target_category=args.reclassify_category,
             save_unmatched_logs=args.save_unmatched_logs,

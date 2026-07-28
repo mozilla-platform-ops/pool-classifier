@@ -190,6 +190,62 @@ def test_terminal_collection_returns_all_unseen_runs_with_intervals(tmp_path, mo
     assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], True)
 
 
+def test_start_lag_backfill_enriches_existing_runs_once_per_task(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+    for run_id in (0, 1):
+        storage.record_task_result(
+            "task-1", "worker-1", run_id, "completed", None, "completed",
+            "2026-07-14T10:00:00+00:00", "2026-07-14T10:05:00+00:00", "2026-07-14T10:05:00+00:00",
+        )
+    storage.commit()
+    calls = []
+
+    def status(task_id):
+        calls.append(task_id)
+        return {"status": {"runs": [
+            {"runId": 0, "scheduled": "2026-07-14T09:55:00+00:00", "reasonCreated": "scheduled"},
+            {"runId": 1, "scheduled": "2026-07-14T10:06:00+00:00", "reasonCreated": "retry"},
+        ]}}
+
+    monkeypatch.setattr(classifier, "_get_task_status", status)
+    monkeypatch.setattr(classifier, "_ensure_tc", lambda: None)
+    result = classifier.backfill_start_lag(batch_size=10, concurrency=1, retries=0)
+
+    assert result == {
+        "selected_runs": 2, "selected_tasks": 1, "enriched_runs": 2,
+        "expired_tasks": 0, "unmatched_runs": 0, "transient_failures": 0,
+    }
+    assert calls == ["task-1"]
+    rows = storage.db.execute(
+        "SELECT run_id, run_scheduled, reason_created FROM task_results ORDER BY run_id",
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        (0, "2026-07-14T09:55:00+00:00", "scheduled"),
+        (1, "2026-07-14T10:06:00+00:00", "retry"),
+    ]
+    assert classifier.backfill_start_lag(batch_size=10, concurrency=1, retries=0)["selected_runs"] == 0
+
+
+def test_start_lag_backfill_reports_expired_status_without_modifying_run(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+    storage.record_task_result(
+        "expired", "worker-1", 0, "completed", None, "completed",
+        "2026-07-14T10:00:00+00:00", "2026-07-14T10:05:00+00:00", "2026-07-14T10:05:00+00:00",
+    )
+    storage.commit()
+    monkeypatch.setattr(classifier, "_get_task_status", lambda _task_id: None)
+    monkeypatch.setattr(classifier, "_ensure_tc", lambda: None)
+
+    result = classifier.backfill_start_lag(batch_size=10, concurrency=1, retries=0)
+
+    assert result["expired_tasks"] == 1
+    assert storage.db.execute("SELECT run_scheduled FROM task_results").fetchone()[0] is None
+
+
 def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier(

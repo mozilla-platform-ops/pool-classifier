@@ -4,6 +4,8 @@ import collections
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 import re
 import signal
 import sys
@@ -87,6 +89,24 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+class _RequestRateLimiter:
+    """Thread-safe spacing for a bounded stream of Queue requests."""
+
+    def __init__(self, requests_per_second: float):
+        self._interval = 1 / requests_per_second
+        self._next_at = 0.0
+        self._lock = Lock()
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            scheduled_at = max(now, self._next_at)
+            self._next_at = scheduled_at + self._interval
+        delay = scheduled_at - now
+        if delay > 0:
+            time.sleep(delay)
 
 
 class PoolClassifier:
@@ -235,6 +255,81 @@ class PoolClassifier:
             if e.status_code == 404:
                 return None
             raise
+
+    def _get_task_status_with_retry(
+        self, task_id: str, retries: int, rate_limiter: _RequestRateLimiter,
+    ) -> Optional[dict]:
+        """Fetch Queue status with bounded retry/backoff for backfill work."""
+        for attempt in range(retries + 1):
+            try:
+                rate_limiter.wait()
+                return self._get_task_status(task_id)
+            except Exception as exc:  # Queue clients expose several transient exception types.
+                if attempt == retries:
+                    raise
+                delay = 0.25 * (2**attempt)
+                logger.warning("%s: status fetch failed (%s); retrying in %.2fs", task_id, exc, delay)
+                time.sleep(delay)
+        raise AssertionError("unreachable")
+
+    def backfill_start_lag(
+        self, batch_size: int = 500, concurrency: int = 5, retries: int = 2, requests_per_second: float = 5.0,
+    ) -> dict:
+        """Enrich one bounded batch of stored runs with Queue schedule metadata.
+
+        This is intentionally separate from terminal-run collection: it updates
+        only metadata that was absent when an existing result was first stored.
+        Re-running it is safe because enriched rows no longer qualify.
+        """
+        if batch_size <= 0 or concurrency <= 0 or retries < 0 or requests_per_second <= 0:
+            raise ValueError("batch_size, concurrency, and requests_per_second must be positive; retries must not be negative")
+        self._ensure_tc()
+        stats = {"selected_runs": 0, "selected_tasks": 0, "enriched_runs": 0, "expired_tasks": 0, "unmatched_runs": 0, "transient_failures": 0}
+        with self.storage.classify_lock():
+            rows = self.storage.list_task_runs_missing_schedule(batch_size)
+            by_task: Dict[str, List[int]] = {}
+            for row in rows:
+                by_task.setdefault(row["task_id"], []).append(row["run_id"])
+            stats["selected_runs"] = len(rows)
+            stats["selected_tasks"] = len(by_task)
+            if not by_task:
+                return stats
+
+            statuses: Dict[str, Optional[dict]] = {}
+            rate_limiter = _RequestRateLimiter(requests_per_second)
+            with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="start-lag-backfill") as executor:
+                futures = {
+                    executor.submit(self._get_task_status_with_retry, task_id, retries, rate_limiter): task_id
+                    for task_id in by_task
+                }
+                for future in as_completed(futures):
+                    task_id = futures[future]
+                    try:
+                        statuses[task_id] = future.result()
+                    except Exception:
+                        logger.exception("%s: status fetch failed after retries", task_id)
+                        stats["transient_failures"] += 1
+
+            for task_id, run_ids in by_task.items():
+                status_response = statuses.get(task_id)
+                if status_response is None:
+                    # `None` is a definitive Queue 404; a missing key was a transient failure.
+                    if task_id in statuses:
+                        stats["expired_tasks"] += 1
+                    continue
+                runs = {run.get("runId"): run for run in status_response.get("status", {}).get("runs", [])}
+                for run_id in run_ids:
+                    run = runs.get(run_id)
+                    if not run or not run.get("scheduled"):
+                        stats["unmatched_runs"] += 1
+                        continue
+                    if self.storage.enrich_task_run_queue_metadata(
+                        task_id, run_id, run["scheduled"], run.get("reasonCreated"),
+                    ):
+                        stats["enriched_runs"] += 1
+            self.storage.commit()
+        logger.info("start-lag backfill: %s", stats)
+        return stats
 
     def _fetch_log_tail(self, task_id: str, run_id: int) -> Tuple[str, str]:
         """Fetch head+tail of the task log with size, time, and byte caps.

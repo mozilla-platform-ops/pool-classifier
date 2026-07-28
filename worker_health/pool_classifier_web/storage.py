@@ -100,6 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_task_results_worker ON task_results (worker_id);
 CREATE INDEX IF NOT EXISTS idx_task_results_started ON task_results (run_started);
 CREATE INDEX IF NOT EXISTS idx_task_results_cat ON task_results (category);
 
+
 CREATE TABLE IF NOT EXISTS quarantine_cache (
     worker_id        TEXT PRIMARY KEY,
     quarantine_until TEXT NOT NULL,
@@ -255,6 +256,27 @@ class SqliteStorage:
         for row in self.db.execute("SELECT worker_id, task_id, run_id FROM task_results"):
             seen.setdefault(row["worker_id"], set()).add((row["task_id"], row["run_id"]))
         return seen
+
+    def list_task_runs_missing_schedule(self, limit: int) -> List[dict]:
+        return [
+            dict(row)
+            for row in self.db.execute(
+                "SELECT task_id, run_id FROM task_results"
+                " WHERE run_scheduled IS NULL AND run_id IS NOT NULL"
+                " ORDER BY COALESCE(run_resolved, classified_at) DESC, task_id, run_id LIMIT ?",
+                (limit,),
+            )
+        ]
+
+    def enrich_task_run_queue_metadata(
+        self, task_id: str, run_id: int, scheduled: Optional[str], reason_created: Optional[str],
+    ) -> bool:
+        cursor = self.db.execute(
+            "UPDATE task_results SET run_scheduled = ?, reason_created = ?"
+            " WHERE task_id = ? AND run_id = ? AND run_scheduled IS NULL",
+            (scheduled, reason_created, task_id, run_id),
+        )
+        return cursor.rowcount > 0
 
     def record_task_result(
         self,
@@ -1021,6 +1043,27 @@ class PostgresStorage:
             for row in cur.fetchall():
                 seen.setdefault(row["worker_id"], set()).add((row["task_id"], row["run_id"]))
         return seen
+
+    def list_task_runs_missing_schedule(self, limit: int) -> List[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT task_id, run_id FROM task_results"
+                " WHERE pool_id = %s AND run_scheduled IS NULL AND run_id IS NOT NULL"
+                " ORDER BY COALESCE(run_resolved, classified_at) DESC, task_id, run_id LIMIT %s",
+                (self.pool_id, limit),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    def enrich_task_run_queue_metadata(
+        self, task_id: str, run_id: int, scheduled: Optional[str], reason_created: Optional[str],
+    ) -> bool:
+        with self._write_cursor() as cur:
+            cur.execute(
+                "UPDATE task_results SET run_scheduled = %s::timestamptz, reason_created = %s"
+                " WHERE pool_id = %s AND task_id = %s AND run_id = %s AND run_scheduled IS NULL",
+                (scheduled, reason_created, self.pool_id, task_id, run_id),
+            )
+            return cur.rowcount > 0
 
     def record_task_result(
         self,
