@@ -1712,8 +1712,8 @@ class PoolClassifier:
             else ""
         )
         parts += [
-            '<h2 id="s-start-lag">Observed scheduled-to-start lag</h2>',
-            '<p class="gen">Terminal task runs observed after they started. This excludes jobs that never started, so it is not a queue total, drop rate, or pool-health verdict.</p>',
+            '<h2 id="s-start-lag">Start Lag</h2>',
+            '<p class="gen">Observed scheduled-to-start time for terminal task runs. This excludes jobs that never started, so it is not a queue total, drop rate, or pool-health verdict.</p>',
             '<p id="lag-freshness" class="gen">Loading observed start lag…</p>',
             '<div class="lag-legend"><span><span class="lag-line" style="border-color:#5dd"></span>p50</span><span><span class="lag-line" style="border-color:#f90"></span>p95</span><span><span class="lag-line" style="border-color:#f44;border-top-style:dashed"></span>SLO</span><span>bars: sample count</span></div>',
             '<div id="lag-chart-wrap" class="lag-chart-wrap"><svg id="lag-chart" class="lag-chart" viewBox="0 0 960 240" role="img" aria-label="Hourly observed start lag p50 and p95 trend"></svg></div>',
