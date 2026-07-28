@@ -45,6 +45,52 @@ def test_sqlite_records_resolved_time_and_distinct_retries(tmp_path):
     }
 
 
+def test_sqlite_persists_observed_runs_and_guards_terminal_transitions(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    storage.init_schema()
+    observed = "2026-07-14T10:00:00+00:00"
+    checked = "2026-07-14T10:02:00+00:00"
+    classified = "2026-07-14T10:05:00+00:00"
+
+    storage.record_observed_task_run("task-1", "worker-1", 0, observed)
+    assert storage.record_task_run_check("task-1", 0, checked) is True
+    assert storage.list_unresolved_task_runs(10) == [{
+        "task_id": "task-1", "worker_id": "worker-1", "run_id": 0,
+        "run_state": "observed", "observed_at": observed, "last_checked_at": checked,
+    }]
+
+    storage.record_task_result(
+        "task-1", "worker-1", 0, "failed", "infra", "worker-shutdown",
+        "2026-07-14T10:01:00+00:00", "2026-07-14T10:04:00+00:00", classified,
+    )
+    # A late observation must never erase or downgrade a terminal outcome.
+    storage.record_observed_task_run("task-1", "other-worker", 0, "2026-07-14T10:06:00+00:00")
+    storage.commit()
+
+    row = storage.db.execute(
+        "SELECT worker_id, run_state, category, reason_resolved, observed_at, last_checked_at"
+        " FROM task_results WHERE task_id = 'task-1'",
+    ).fetchone()
+    assert tuple(row) == (
+        "worker-1", "failed", "infra", "worker-shutdown", observed, classified,
+    )
+    assert storage.list_unresolved_task_runs(10) == []
+
+
+def test_sqlite_expired_observed_runs_are_not_reopened(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    storage.init_schema()
+    storage.record_observed_task_run("expired", "worker-1", 0, "2026-07-14T10:00:00+00:00")
+    assert storage.expire_task_run("expired", 0, "2026-07-14T10:02:00+00:00") is True
+    storage.record_observed_task_run("expired", "worker-1", 0, "2026-07-14T10:03:00+00:00")
+    storage.commit()
+
+    row = storage.db.execute(
+        "SELECT run_state, observed_at, last_checked_at FROM task_results WHERE task_id = 'expired'",
+    ).fetchone()
+    assert tuple(row) == ("expired", "2026-07-14T10:00:00+00:00", "2026-07-14T10:02:00+00:00")
+
+
 def test_recent_outcome_counts_use_task_resolution_time(tmp_path):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     storage.init_schema()
