@@ -543,15 +543,19 @@ class PoolClassifier:
             self.storage.list_unresolved_task_runs(UNRESOLVED_TASK_RUN_BATCH_SIZE),
         )
 
-    def _new_terminal_tasks(self, worker_id: str, worker_group: str) -> Tuple[List[Tuple], bool]:
+    def _new_terminal_tasks_with_continuity(
+        self, worker_id: str, worker_group: str,
+    ) -> Tuple[List[Tuple], bool, Optional[bool], bool]:
         """Persist recent references before resolving their Queue status."""
         seen = self.seen_task_runs.setdefault(worker_id, set())
         try:
             recent = self._get_recent_tasks(worker_group, worker_id)
         except Exception as exc:
             logger.warning("%s: failed to fetch recent tasks: %s", worker_id, exc)
-            return [], False
+            return [], False, False, True
 
+        window = [(task.get("taskId"), task.get("runId")) for task in recent if task.get("taskId")]
+        continuity = self.storage.task_run_window_continuity(worker_id, window)
         references = []
         observed_at = datetime.now(timezone.utc).isoformat()
         for task in recent:
@@ -565,16 +569,21 @@ class PoolClassifier:
         if references:
             logger.debug("  %s: checking %d recent task run(s)", worker_id, len(references))
         resolved, complete = self._resolve_observed_task_runs(references)
-        return resolved.get(worker_id, []), complete
+        return resolved.get(worker_id, []), complete, continuity, bool(window)
 
-    def _poll_one_worker(self, worker: dict) -> Tuple[str, str, List[Tuple], bool]:
+    def _new_terminal_tasks(self, worker_id: str, worker_group: str) -> Tuple[List[Tuple], bool]:
+        """Return newly terminal task runs, retaining the legacy private API."""
+        tasks, complete, _continuity, _window_observed = self._new_terminal_tasks_with_continuity(worker_id, worker_group)
+        return tasks, complete
+
+    def _poll_one_worker(self, worker: dict) -> Tuple[str, str, List[Tuple], bool, Optional[bool], bool]:
         worker_id = worker["workerId"]
         worker_group = worker["workerGroup"]
         logger.debug(f"  polling {worker_id}")
-        tasks, complete = self._new_terminal_tasks(worker_id, worker_group)
+        tasks, complete, continuity, window_observed = self._new_terminal_tasks_with_continuity(worker_id, worker_group)
         if tasks:
             logger.debug(f"  {worker_id}: {len(tasks)} new terminal task(s)")
-        return worker_id, worker_group, tasks, complete
+        return worker_id, worker_group, tasks, complete, continuity, window_observed
 
     def _record_collection_coverage(
         self,
@@ -589,7 +598,7 @@ class PoolClassifier:
             source,
             observed_at.astimezone(timezone.utc).isoformat(),
             success,
-            self.coverage_max_gap_seconds,
+            None if source == "task_runs" else self.coverage_max_gap_seconds,
         )
         self.storage.commit()
 
@@ -795,9 +804,9 @@ class PoolClassifier:
             logger.info(f"Scanning {total_workers} workers...")
             poll_results = []
             scanned = 0
-            task_collection_complete = True
-            retried_tasks, retry_complete = self._retry_unresolved_task_runs()
-            task_collection_complete = task_collection_complete and retry_complete
+            task_coverage_observed = False
+            task_coverage_continuous = True
+            retried_tasks, _retry_complete = self._retry_unresolved_task_runs()
             poll_results = [
                 (worker_id, None, terminal_tasks)
                 for worker_id, terminal_tasks in retried_tasks.items()
@@ -806,21 +815,24 @@ class PoolClassifier:
             terminated = False
             try:
                 with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
-                    for worker_id, worker_group, tasks, complete in thread_pool.imap_unordered(
+                    for worker_id, worker_group, tasks, _complete, continuity, window_observed in thread_pool.imap_unordered(
                         self._poll_one_worker,
                         workers,
                     ):
                         scanned += 1
                         bar()
                         poll_results.append((worker_id, worker_group, tasks))
-                        task_collection_complete = task_collection_complete and complete
+                        if window_observed:
+                            task_coverage_observed = True
+                            task_coverage_continuous = task_coverage_continuous and continuity is not False
                         if self._interrupted:
                             thread_pool.terminate()
                             terminated = True
                             break
             except Exception as e:
                 logger.warning(f"Poll error: {e}")
-                task_collection_complete = False
+                task_coverage_observed = True
+                task_coverage_continuous = False
                 thread_pool.terminate()
                 terminated = True
             finally:
@@ -828,13 +840,12 @@ class PoolClassifier:
                     thread_pool.close()
                 thread_pool.join()
 
-            task_collection_complete = (
-                task_collection_complete
-                and scanned == total_workers
-                and not terminated
-                and not self._interrupted
-            )
-            self._record_collection_coverage("task_runs", task_collection_complete)
+            polls_complete = scanned == total_workers and not terminated and not self._interrupted
+            if task_coverage_observed:
+                self._record_collection_coverage(
+                    "task_runs",
+                    task_coverage_continuous and polls_complete,
+                )
 
             new_total = sum(len(tasks) for _, _wg, tasks in poll_results if tasks)
 

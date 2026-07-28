@@ -173,6 +173,7 @@ class SqliteStorage:
         self.pool_id = pool_id
         self.results_dir = results_dir
         self._db: Optional[sqlite3.Connection] = None
+        self._db_lock = threading.RLock()
 
     @property
     def db(self) -> sqlite3.Connection:
@@ -182,7 +183,10 @@ class SqliteStorage:
     def init_schema(self) -> None:
         self.results_dir.mkdir(parents=True, exist_ok=True)
         db_path = self.results_dir / "pool_classifier.db"
-        self._db = sqlite3.connect(db_path, timeout=30)
+        # Worker polling persists observations before Queue status lookups and
+        # therefore writes from the polling thread pool.  Serialize access to
+        # this one SQLite connection with ``_db_lock`` in those methods.
+        self._db = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(DB_SCHEMA)
@@ -359,25 +363,27 @@ class SqliteStorage:
         self, task_id: str, worker_id: str, run_id: Optional[int], observed_at: str,
     ) -> None:
         """Persist a worker's task reference before its Queue status is known."""
-        self.db.execute(
-            "INSERT INTO task_results"
-            " (task_id, worker_id, run_id, run_state, classified_at, observed_at, last_checked_at)"
-            " VALUES (?,?,?,'observed',?,?,?)"
-            " ON CONFLICT DO UPDATE SET"
-            " last_checked_at = excluded.last_checked_at"
-            " WHERE task_results.run_state NOT IN ('completed','failed','exception','expired')",
-            (task_id, worker_id, run_id, observed_at, observed_at, observed_at),
-        )
+        with self._db_lock:
+            self.db.execute(
+                "INSERT INTO task_results"
+                " (task_id, worker_id, run_id, run_state, classified_at, observed_at, last_checked_at)"
+                " VALUES (?,?,?,'observed',?,?,?)"
+                " ON CONFLICT DO UPDATE SET"
+                " last_checked_at = excluded.last_checked_at"
+                " WHERE task_results.run_state NOT IN ('completed','failed','exception','expired')",
+                (task_id, worker_id, run_id, observed_at, observed_at, observed_at),
+            )
 
     def record_task_run_check(self, task_id: str, run_id: Optional[int], checked_at: str) -> bool:
         """Record a Queue-status attempt for an unresolved observed run."""
-        cursor = self.db.execute(
-            "UPDATE task_results SET last_checked_at = ?"
-            " WHERE task_id = ? AND run_id IS ?"
-            " AND run_state NOT IN ('completed','failed','exception','expired')",
-            (checked_at, task_id, run_id),
-        )
-        return cursor.rowcount > 0
+        with self._db_lock:
+            cursor = self.db.execute(
+                "UPDATE task_results SET last_checked_at = ?"
+                " WHERE task_id = ? AND run_id IS ?"
+                " AND run_state NOT IN ('completed','failed','exception','expired')",
+                (checked_at, task_id, run_id),
+            )
+            return cursor.rowcount > 0
 
     def list_unresolved_task_runs(self, limit: int) -> List[dict]:
         return [
@@ -390,15 +396,32 @@ class SqliteStorage:
             )
         ]
 
+    def task_run_window_continuity(self, worker_id: str, task_runs: List[Tuple[str, Optional[int]]]) -> Optional[bool]:
+        """Return baseline/overlap/gap for a nonempty getWorker recentTasks window."""
+        if not task_runs:
+            return None
+        with self._db_lock:
+            historical = {
+                (row["task_id"], row["run_id"])
+                for row in self.db.execute(
+                    "SELECT task_id, run_id FROM task_results WHERE worker_id = ?",
+                    (worker_id,),
+                )
+            }
+        if not historical:
+            return None
+        return bool(historical.intersection(task_runs))
+
     def expire_task_run(self, task_id: str, run_id: Optional[int], checked_at: str) -> bool:
         """Stop retrying a definitively expired Taskcluster task reference."""
-        cursor = self.db.execute(
-            "UPDATE task_results SET run_state = 'expired', last_checked_at = ?"
-            " WHERE task_id = ? AND run_id IS ?"
-            " AND run_state NOT IN ('completed','failed','exception','expired')",
-            (checked_at, task_id, run_id),
-        )
-        return cursor.rowcount > 0
+        with self._db_lock:
+            cursor = self.db.execute(
+                "UPDATE task_results SET run_state = 'expired', last_checked_at = ?"
+                " WHERE task_id = ? AND run_id IS ?"
+                " AND run_state NOT IN ('completed','failed','exception','expired')",
+                (checked_at, task_id, run_id),
+            )
+            return cursor.rowcount > 0
 
     def upsert_worker(self, worker_id: str, worker_group: Optional[str]) -> None:
         self.db.execute(
@@ -432,7 +455,8 @@ class SqliteStorage:
         )
 
     def commit(self) -> None:
-        self.db.commit()
+        with self._db_lock:
+            self.db.commit()
 
     def update_task_category(self, task_id: str, worker_id: str, category: str) -> None:
         self.db.execute(
@@ -522,11 +546,11 @@ class SqliteStorage:
         source: str,
         observed_at: str,
         success: bool,
-        max_gap_seconds: int,
+        max_gap_seconds: Optional[int],
     ) -> None:
         if source not in COLLECTION_SOURCES:
             raise ValueError(f"unknown collection source: {source}")
-        if max_gap_seconds <= 0:
+        if max_gap_seconds is not None and max_gap_seconds <= 0:
             raise ValueError("max_gap_seconds must be greater than zero")
 
         observed = _parse_iso(observed_at)
@@ -543,7 +567,10 @@ class SqliteStorage:
                 state
                 and state["last_success"]
                 and state["current_interval_id"] is not None
-                and (observed - _parse_iso(state["last_observed_at"])).total_seconds() <= max_gap_seconds
+                and (
+                    max_gap_seconds is None
+                    or (observed - _parse_iso(state["last_observed_at"])).total_seconds() <= max_gap_seconds
+                )
             )
             if can_extend:
                 interval_id = state["current_interval_id"]
@@ -1250,6 +1277,20 @@ class PostgresStorage:
             )
             return [{**dict(row), "observed_at": _to_iso(row["observed_at"]), "last_checked_at": _to_iso(row["last_checked_at"])} for row in cur.fetchall()]
 
+    def task_run_window_continuity(self, worker_id: str, task_runs: List[Tuple[str, Optional[int]]]) -> Optional[bool]:
+        """Return baseline/overlap/gap for a nonempty getWorker recentTasks window."""
+        if not task_runs:
+            return None
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT task_id, run_id FROM task_results WHERE pool_id = %s AND worker_id = %s",
+                (self.pool_id, worker_id),
+            )
+            historical = {(row["task_id"], row["run_id"]) for row in cur.fetchall()}
+        if not historical:
+            return None
+        return bool(historical.intersection(task_runs))
+
     def expire_task_run(self, task_id: str, run_id: Optional[int], checked_at: str) -> bool:
         """Stop retrying a definitively expired Taskcluster task reference."""
         with self._write_cursor() as cur:
@@ -1421,11 +1462,11 @@ class PostgresStorage:
         source: str,
         observed_at: str,
         success: bool,
-        max_gap_seconds: int,
+        max_gap_seconds: Optional[int],
     ) -> None:
         if source not in COLLECTION_SOURCES:
             raise ValueError(f"unknown collection source: {source}")
-        if max_gap_seconds <= 0:
+        if max_gap_seconds is not None and max_gap_seconds <= 0:
             raise ValueError("max_gap_seconds must be greater than zero")
 
         observed = _parse_iso(observed_at)
@@ -1445,7 +1486,10 @@ class PostgresStorage:
                     state
                     and state["last_success"]
                     and state["current_interval_id"] is not None
-                    and (observed - state["last_observed_at"]).total_seconds() <= max_gap_seconds
+                    and (
+                        max_gap_seconds is None
+                        or (observed - state["last_observed_at"]).total_seconds() <= max_gap_seconds
+                    )
                 )
                 if can_extend:
                     interval_id = state["current_interval_id"]

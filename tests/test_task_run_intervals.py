@@ -239,6 +239,37 @@ def test_terminal_collection_returns_all_unseen_runs_with_intervals(tmp_path, mo
     assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], True)
 
 
+def test_task_window_continuity_uses_stored_runs_without_snapshot_state(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(classifier, "_get_task_status", lambda _task: {"status": {"runs": []}})
+
+    monkeypatch.setattr(
+        classifier, "_get_recent_tasks", lambda _group, _worker: [{"taskId": "first", "runId": 0}],
+    )
+    _tasks, complete, continuity, window_observed = classifier._new_terminal_tasks_with_continuity("worker-1", "group-1")
+    assert (complete, continuity, window_observed) == (False, None, True)  # first nonempty window is a baseline
+
+    monkeypatch.setattr(
+        classifier, "_get_recent_tasks", lambda _group, _worker: [{"taskId": "first", "runId": 0}, {"taskId": "next", "runId": 0}],
+    )
+    _tasks, complete, continuity, window_observed = classifier._new_terminal_tasks_with_continuity("worker-1", "group-1")
+    assert (complete, continuity, window_observed) == (False, True, True)
+
+    monkeypatch.setattr(
+        classifier, "_get_recent_tasks", lambda _group, _worker: [{"taskId": "unbridged", "runId": 0}],
+    )
+    _tasks, complete, continuity, window_observed = classifier._new_terminal_tasks_with_continuity("worker-1", "group-1")
+    assert (complete, continuity, window_observed) == (False, False, True)
+
+    monkeypatch.setattr(classifier, "_get_recent_tasks", lambda _group, _worker: [])
+    _tasks, complete, continuity, window_observed = classifier._new_terminal_tasks_with_continuity("worker-1", "group-1")
+    assert (complete, continuity, window_observed) == (True, None, False)
+
+
 def test_start_lag_backfill_enriches_existing_runs_once_per_task(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
