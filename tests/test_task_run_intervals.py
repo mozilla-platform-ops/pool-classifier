@@ -141,16 +141,20 @@ def test_terminal_collection_returns_all_unseen_runs_with_intervals(tmp_path, mo
                         "runId": 0,
                         "workerId": "worker-1",
                         "state": "failed",
+                        "scheduled": "2026-07-14T09:55:00+00:00",
                         "started": "2026-07-14T10:00:00+00:00",
                         "resolved": "2026-07-14T10:05:00+00:00",
+                        "reasonCreated": "scheduled",
                         "reasonResolved": "failed",
                     },
                     {
                         "runId": 1,
                         "workerId": "worker-1",
                         "state": "completed",
+                        "scheduled": "2026-07-14T10:08:00+00:00",
                         "started": "2026-07-14T10:10:00+00:00",
                         "resolved": "2026-07-14T10:20:00+00:00",
+                        "reasonCreated": "retry",
                         "reasonResolved": "completed",
                     },
                 ],
@@ -169,6 +173,8 @@ def test_terminal_collection_returns_all_unseen_runs_with_intervals(tmp_path, mo
             "2026-07-14T10:00:00+00:00",
             "2026-07-14T10:05:00+00:00",
             "failed",
+            "2026-07-14T09:55:00+00:00",
+            "scheduled",
         ),
         (
             "task-1",
@@ -177,6 +183,8 @@ def test_terminal_collection_returns_all_unseen_runs_with_intervals(tmp_path, mo
             "2026-07-14T10:10:00+00:00",
             "2026-07-14T10:20:00+00:00",
             "completed",
+            "2026-07-14T10:08:00+00:00",
+            "retry",
         ),
     ]
     assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], True)

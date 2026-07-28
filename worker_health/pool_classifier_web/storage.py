@@ -89,6 +89,8 @@ CREATE TABLE IF NOT EXISTS task_results (
     run_state        TEXT NOT NULL,
     category         TEXT,
     reason_resolved  TEXT,
+    reason_created   TEXT,
+    run_scheduled    TEXT,
     run_started      TEXT,
     run_resolved     TEXT,
     classified_at    TEXT NOT NULL
@@ -193,6 +195,10 @@ class SqliteStorage:
         columns = {row["name"] for row in table_info}
         if "run_resolved" not in columns:
             self.db.execute("ALTER TABLE task_results ADD COLUMN run_resolved TEXT")
+        if "reason_created" not in columns:
+            self.db.execute("ALTER TABLE task_results ADD COLUMN reason_created TEXT")
+        if "run_scheduled" not in columns:
+            self.db.execute("ALTER TABLE task_results ADD COLUMN run_scheduled TEXT")
 
         legacy_primary_key = any(row["pk"] for row in table_info)
         indexes = {row["name"] for row in self.db.execute("PRAGMA index_list(task_results)")}
@@ -217,15 +223,17 @@ class SqliteStorage:
                 run_state        TEXT NOT NULL,
                 category         TEXT,
                 reason_resolved  TEXT,
+                reason_created   TEXT,
+                run_scheduled    TEXT,
                 run_started      TEXT,
                 run_resolved     TEXT,
                 classified_at    TEXT NOT NULL
             );
             INSERT OR IGNORE INTO task_results
-                (task_id, worker_id, run_id, run_state, category, reason_resolved,
-                 run_started, run_resolved, classified_at)
-            SELECT task_id, worker_id, run_id, run_state, category, reason_resolved,
-                   run_started, run_resolved, classified_at
+                (task_id, worker_id, run_id, run_state, category, reason_resolved, reason_created,
+                 run_scheduled, run_started, run_resolved, classified_at)
+            SELECT task_id, worker_id, run_id, run_state, category, reason_resolved, reason_created,
+                   run_scheduled, run_started, run_resolved, classified_at
             FROM task_results_legacy;
             DROP TABLE task_results_legacy;
             CREATE UNIQUE INDEX idx_task_results_task_run
@@ -259,12 +267,14 @@ class SqliteStorage:
         run_started: Optional[str],
         run_resolved: Optional[str],
         classified_at: str,
+        run_scheduled: Optional[str] = None,
+        reason_created: Optional[str] = None,
     ) -> None:
         self.db.execute(
             "INSERT OR IGNORE INTO task_results"
-            " (task_id, worker_id, run_id, run_state, category, reason_resolved,"
-            "  run_started, run_resolved, classified_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
+            " (task_id, worker_id, run_id, run_state, category, reason_resolved, reason_created,"
+            "  run_scheduled, run_started, run_resolved, classified_at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 task_id,
                 worker_id,
@@ -272,6 +282,8 @@ class SqliteStorage:
                 run_state,
                 category,
                 reason_resolved,
+                reason_created,
+                run_scheduled,
                 run_started,
                 run_resolved,
                 classified_at,
@@ -497,6 +509,21 @@ class SqliteStorage:
             self.get_collection_coverage("task_runs")["intervals"],
             self.get_collection_coverage("worker_availability")["intervals"],
         )
+
+    def get_observed_start_lag(self, range_start: str, range_end: str, slo_seconds: int) -> dict:
+        from worker_health.pool_classifier_web.queue_lag import calculate_observed_start_lag
+
+        runs = [
+            dict(row)
+            for row in self.db.execute(
+                "SELECT run_scheduled AS scheduled, run_started AS started FROM task_results"
+                " WHERE run_scheduled IS NOT NULL AND run_started IS NOT NULL"
+                "   AND julianday(run_scheduled) >= julianday(?)"
+                "   AND julianday(run_scheduled) < julianday(?)",
+                (range_start, range_end),
+            )
+        ]
+        return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
 
     def get_utilization_summary(self, windows: dict[str, int]) -> dict:
         from worker_health.pool_classifier_web.utilization import calculate_utilization_summary
@@ -991,13 +1018,15 @@ class PostgresStorage:
         run_started: Optional[str],
         run_resolved: Optional[str],
         classified_at: str,
+        run_scheduled: Optional[str] = None,
+        reason_created: Optional[str] = None,
     ) -> None:
         with self._write_cursor() as cur:
             cur.execute(
                 "INSERT INTO task_results"
                 " (pool_id, task_id, worker_id, run_id, run_state, category,"
-                "  reason_resolved, run_started, run_resolved, classified_at)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s::timestamptz)"
+                "  reason_resolved, reason_created, run_scheduled, run_started, run_resolved, classified_at)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s::timestamptz,%s::timestamptz)"
                 " ON CONFLICT DO NOTHING",
                 (
                     self.pool_id,
@@ -1007,6 +1036,8 @@ class PostgresStorage:
                     run_state,
                     category,
                     reason_resolved,
+                    reason_created,
+                    run_scheduled,
                     run_started,
                     run_resolved,
                     classified_at,
@@ -1300,6 +1331,22 @@ class PostgresStorage:
             coverage_intervals["task_runs"],
             coverage_intervals["worker_availability"],
         )
+
+    def get_observed_start_lag(self, range_start: str, range_end: str, slo_seconds: int) -> dict:
+        from worker_health.pool_classifier_web.queue_lag import calculate_observed_start_lag
+
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT run_scheduled AS scheduled, run_started AS started FROM task_results"
+                " WHERE pool_id = %s AND run_scheduled IS NOT NULL AND run_started IS NOT NULL"
+                "   AND run_scheduled >= %s::timestamptz AND run_scheduled < %s::timestamptz",
+                (self.pool_id, range_start, range_end),
+            )
+            runs = [
+                {"scheduled": _to_iso(row["scheduled"]), "started": _to_iso(row["started"])}
+                for row in cur.fetchall()
+            ]
+        return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
 
     def get_utilization_summary(self, windows: dict[str, int]) -> dict:
         from worker_health.pool_classifier_web.utilization import _intersection, _parse, calculate_utilization_summary

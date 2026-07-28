@@ -406,6 +406,8 @@ class PoolClassifier:
                         run.get("started"),
                         run.get("resolved"),
                         run.get("reasonResolved"),
+                        run.get("scheduled"),
+                        run.get("reasonCreated"),
                     ),
                 )
 
@@ -545,7 +547,9 @@ class PoolClassifier:
         return transition_count
 
     def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], bar=None, worker_group: str = None):
-        for task_id, run_id, run_state, run_started, run_resolved, reason_resolved in terminal_tasks:
+        for task in terminal_tasks:
+            task_id, run_id, run_state, run_started, run_resolved, reason_resolved, *queue_fields = task
+            run_scheduled, reason_created = (queue_fields + [None, None])[:2]
             if self._interrupted:
                 logger.info(f"  {worker_id}: interrupted, skipping remaining tasks")
                 break
@@ -590,6 +594,8 @@ class PoolClassifier:
                 run_started,
                 run_resolved,
                 classified_at,
+                run_scheduled=run_scheduled,
+                reason_created=reason_created,
             )
             self.storage.upsert_worker(worker_id, worker_group)
 
