@@ -295,6 +295,13 @@ class PoolClassifier:
                 (item[0], item[1]) for item in pool_state.get("unmatched_runs", [])
                 if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], int)
             }
+            backlog = self.storage.count_task_runs_missing_schedule()
+            logger.info(
+                "[%s/%s] Start-lag backfill backlog: %d runs across %d tasks missing Queue scheduled metadata; "
+                "state file skips %d expired tasks and %d unmatched runs",
+                self.provisioner, self.worker_type, backlog["runs"], backlog["tasks"],
+                len(expired_task_ids), len(unmatched_runs),
+            )
             rows = []
             offset = 0
             while len(rows) < batch_size:

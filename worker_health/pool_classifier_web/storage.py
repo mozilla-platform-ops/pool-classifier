@@ -268,6 +268,13 @@ class SqliteStorage:
             )
         ]
 
+    def count_task_runs_missing_schedule(self) -> dict:
+        row = self.db.execute(
+            "SELECT COUNT(*) AS runs, COUNT(DISTINCT task_id) AS tasks FROM task_results"
+            " WHERE run_scheduled IS NULL AND run_id IS NOT NULL",
+        ).fetchone()
+        return {"runs": row["runs"], "tasks": row["tasks"]}
+
     def enrich_task_run_queue_metadata(
         self, task_id: str, run_id: int, scheduled: Optional[str], reason_created: Optional[str],
     ) -> bool:
@@ -1053,6 +1060,16 @@ class PostgresStorage:
                 (self.pool_id, limit, offset),
             )
             return [dict(row) for row in cur.fetchall()]
+
+    def count_task_runs_missing_schedule(self) -> dict:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS runs, COUNT(DISTINCT task_id) AS tasks FROM task_results"
+                " WHERE pool_id = %s AND run_scheduled IS NULL AND run_id IS NOT NULL",
+                (self.pool_id,),
+            )
+            row = cur.fetchone()
+            return {"runs": row["runs"], "tasks": row["tasks"]}
 
     def enrich_task_run_queue_metadata(
         self, task_id: str, run_id: int, scheduled: Optional[str], reason_created: Optional[str],

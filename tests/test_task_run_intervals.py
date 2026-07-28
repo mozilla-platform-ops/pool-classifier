@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import json
+import logging
 
 from worker_health.pool_classifier import PoolClassifier
 from worker_health.pool_classifier_web.storage import SqliteStorage
@@ -273,6 +274,25 @@ def test_start_lag_backfill_persists_and_pages_past_unavailable_runs(tmp_path, m
     assert first["expired_tasks"] == 1
     assert second["enriched_runs"] == 1
     assert json.loads(state_file.read_text())["pools"]["provisioner/worker-type"]["expired_task_ids"] == ["expired"]
+
+
+def test_start_lag_backfill_logs_backlog_before_selecting_batch(tmp_path, monkeypatch, caplog):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+    for task_id, run_id in (("task-1", 0), ("task-1", 1), ("task-2", 0)):
+        storage.record_task_result(
+            task_id, "worker-1", run_id, "completed", None, "completed",
+            "2026-07-14T10:00:00+00:00", "2026-07-14T10:05:00+00:00", "2026-07-14T10:05:00+00:00",
+        )
+    storage.commit()
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(classifier, "_ensure_tc", lambda: None)
+    monkeypatch.setattr(classifier, "_get_task_status", lambda _task_id: None)
+
+    classifier.backfill_start_lag(batch_size=1, concurrency=1, retries=0)
+
+    assert "Start-lag backfill backlog: 3 runs across 2 tasks" in caplog.text
 
 
 def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatch):
