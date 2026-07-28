@@ -60,6 +60,9 @@ git push                # Push to remote
 - Check `br ready` at session start to find available work
 - Update status as you work (in_progress → closed)
 - Create new issues with `br create` when you discover tasks
+- Do not create a bead solely to track administrative changes to other beads
+  (such as status, priority, ownership, or metadata updates); make and commit
+  those tracker updates directly.
 - Use descriptive titles and set appropriate priority/type
 - Always sync before ending session
 
