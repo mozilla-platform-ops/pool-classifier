@@ -15,3 +15,10 @@ drop/expiry rate, or pool-health verdict. It includes only task runs that
 started and were later observed terminal by per-worker polling; jobs that never
 ran are invisible. `scheduled` is retained as the raw Queue scheduled timestamp
 and is not relabeled as a general task-readiness timestamp.
+
+`GET /api/v1/pools/{provisioner}/{worker_type}/observed-start-lag/visualization`
+uses the same window and SLO parameters and adds `min_samples` (default: 5).
+It returns hourly p50/p95 and sample-count buckets plus UTC weekday/hour p95
+cells. Cells below `min_samples` are marked insufficient rather than colored
+as a reliable percentile; the pool dashboard uses this endpoint for its chart
+and heatmap.

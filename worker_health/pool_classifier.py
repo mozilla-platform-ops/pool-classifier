@@ -1402,6 +1402,10 @@ class PoolClassifier:
             "  .util-hour-usage { background:#16111d; }",
             "  .util-hour-incomplete { background:repeating-linear-gradient(135deg,#303030 0,#303030 4px,#202020 4px,#202020 8px); } .util-hour-unavailable { background:#6b1d1d; } .util-hour-error { background:#555; }",
             "  .util-timeline-legend { display:flex; gap:1rem; flex-wrap:wrap; margin:.45rem 0 1.2rem; color:#888; font-size:.8em; }",
+            "  .lag-chart-wrap { max-width:80rem; overflow-x:auto; border:1px solid #333; background:#161616; padding:.5rem; } .lag-chart { min-width:42rem; height:15rem; display:block; }",
+            "  .lag-legend { display:flex; gap:1rem; flex-wrap:wrap; margin:.45rem 0; color:#888; font-size:.8em; } .lag-line { display:inline-block; width:1.5rem; border-top:2px solid; vertical-align:middle; margin-right:.3rem; }",
+            "  .lag-heatmap-wrap { overflow-x:auto; max-width:80rem; } .lag-heatmap { display:grid; grid-template-columns:3rem repeat(24, minmax(1.35rem, 1fr)); gap:3px; min-width:42rem; margin-top:.6rem; }",
+            "  .lag-hm-label { color:#777; font-size:.72em; text-align:center; } .lag-hm-day { text-align:right; padding-right:.4rem; align-self:center; } .lag-hm-cell { height:1.45rem; border:0; border-radius:2px; cursor:default; outline:1px solid #111; } .lag-hm-cell.insufficient { background:repeating-linear-gradient(135deg,#333 0,#333 4px,#222 4px,#222 8px) !important; } .lag-hm-cell:hover { filter:brightness(1.25); outline-color:#aaa; }",
             "</style>",
             "</head>",
             "<body>",
@@ -1420,6 +1424,7 @@ class PoolClassifier:
 
         summary_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization/summary"
         timeline_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization"
+        start_lag_visualization_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/observed-start-lag/visualization"
         guide_url = f"/pools/{self.provisioner}/{self.worker_type}/utilization-api-guide"
 
         if workers:
@@ -1448,6 +1453,7 @@ class PoolClassifier:
             '  <a href="#s-categories">Failure Categories</a><span class="sep">|</span>',
             '  <a href="#s-attention">Consecutive Failures</a><span class="sep">|</span>',
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
+            '  <a href="#s-start-lag">Start lag</a><span class="sep">|</span>',
             '  <a href="#s-utilization">Utilization</a><span class="sep">|</span>',
             '  <a href="#s-heatmap">Heatmap</a><span class="sep">|</span>',
             '  <a href="#s-offenders">Top Offenders</a><span class="sep">|</span>',
@@ -1551,6 +1557,13 @@ class PoolClassifier:
             else ""
         )
         parts += [
+            '<h2 id="s-start-lag">Observed scheduled-to-start lag</h2>',
+            '<p class="gen">Terminal task runs observed after they started. This excludes jobs that never started, so it is not a queue total, drop rate, or pool-health verdict.</p>',
+            '<p id="lag-freshness" class="gen">Loading observed start lag…</p>',
+            '<div class="lag-legend"><span><span class="lag-line" style="border-color:#5dd"></span>p50</span><span><span class="lag-line" style="border-color:#f90"></span>p95</span><span><span class="lag-line" style="border-color:#f44;border-top-style:dashed"></span>SLO</span><span>bars: sample count</span></div>',
+            '<div class="lag-chart-wrap"><svg id="lag-chart" class="lag-chart" viewBox="0 0 960 240" role="img" aria-label="Hourly observed start lag p50 and p95 trend"></svg></div>',
+            '<p class="gen">UTC weekday/hour p95. Striped cells have fewer than five observations.</p>',
+            '<div class="lag-heatmap-wrap"><div id="lag-heatmap" class="lag-heatmap"></div></div>',
             '<h2 id="s-utilization">Utilization</h2>',
             f'<p class="gen">Duration-weighted task time versus available worker capacity{capacity_note_ref}. <a href="{guide_url}">API guide</a></p>',
             '<p id="util-freshness" class="gen">Loading utilization…</p>',
@@ -1711,6 +1724,7 @@ class PoolClassifier:
             "  // Heatmap hover card",
             f"  const UTIL_SUMMARY_URL = {json.dumps(summary_url)};",
             f"  const UTIL_TIMELINE_URL = {json.dumps(timeline_url)};",
+            f"  const START_LAG_VISUALIZATION_URL = {json.dumps(start_lag_visualization_url)};",
             "  const utilCards = document.getElementById('util-cards');",
             "  const utilFreshness = document.getElementById('util-freshness');",
             "  const utilTimeline = document.getElementById('util-timeline');",
@@ -1718,6 +1732,12 @@ class PoolClassifier:
             "  const UTIL_TIMELINE_KEY = 'pc-utilization-timeline-hours'; let utilTimelineHours = 24; let utilDataThrough = null; let timezoneMode = 'local';",
             "  try { const saved = Number(localStorage.getItem(UTIL_TIMELINE_KEY)); if (saved === 24 || saved === 48) utilTimelineHours = saved; } catch (_) {}",
             "  const esc = value => String(value).replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));",
+            "  const lagFreshness = document.getElementById('lag-freshness'), lagChart = document.getElementById('lag-chart'), lagHeatmap = document.getElementById('lag-heatmap');",
+            "  const fmtLag = value => value == null ? '—' : value >= 60 ? `${(value / 60).toFixed(value % 60 ? 1 : 0)}m` : `${value.toFixed(0)}s`;",
+            "  function renderLag(data) { const usable = data.buckets.filter(b => b.sufficient_samples); if (!usable.length) { lagChart.innerHTML = `<text x='24' y='35' fill='#888'>Not enough observed terminal runs yet (need ${data.min_samples} per hour).</text>`; return; } const maxLag = Math.max(data.slo_seconds, ...usable.map(b => b.p95_seconds)), maxCount = Math.max(...data.buckets.map(b => b.sample_count), 1), x = i => 34 + i * 900 / Math.max(data.buckets.length - 1, 1), y = v => 185 - v / maxLag * 145, points = key => usable.map(b => `${x(data.buckets.indexOf(b)).toFixed(1)},${y(b[key]).toFixed(1)}`).join(' '); const bars = data.buckets.map((b,i) => `<rect x='${x(i)-2}' y='${214-b.sample_count/maxCount*22}' width='4' height='${b.sample_count/maxCount*22}' fill='#555'><title>${b.start_at}\\n${b.sample_count} samples\\np50 ${fmtLag(b.p50_seconds)}, p95 ${fmtLag(b.p95_seconds)}</title></rect>`).join(''); lagChart.innerHTML = `<line x1='34' y1='185' x2='934' y2='185' stroke='#555'/><line x1='34' y1='${y(data.slo_seconds)}' x2='934' y2='${y(data.slo_seconds)}' stroke='#f44' stroke-dasharray='5 4'/><text x='38' y='${y(data.slo_seconds)-4}' fill='#f77' font-size='11'>SLO ${fmtLag(data.slo_seconds)}</text>${bars}<polyline points='${points('p50_seconds')}' fill='none' stroke='#5dd' stroke-width='2'/><polyline points='${points('p95_seconds')}' fill='none' stroke='#f90' stroke-width='2'/>`; }",
+            "  function renderLagHeatmap(data) { const names=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'], cells=new Map(data.heatmap.map(c=>[`${c.weekday}-${c.hour}`,c])), max=Math.max(data.slo_seconds,...data.heatmap.filter(c=>c.sufficient_samples).map(c=>c.p95_seconds||0)); let html=`<span></span>${[...Array(24).keys()].map(h=>`<span class='lag-hm-label'>${h}</span>`).join('')}`; for(let d=0;d<7;d++){html+=`<span class='lag-hm-label lag-hm-day'>${names[d]}</span>`;for(let h=0;h<24;h++){const c=cells.get(`${d}-${h}`), sparse=!c.sufficient_samples, light=c.p95_seconds==null?12:16+Math.min(1,c.p95_seconds/max)*34, title=`${names[d]} ${h}:00 UTC\\n${c.sample_count} samples\\np95: ${fmtLag(c.p95_seconds)}\\n${sparse?`Insufficient samples (need ${data.min_samples})`:`${c.started_within_slo_pct}% within SLO`}`;html+=`<div class='lag-hm-cell ${sparse?'insufficient':''}' style='background:hsl(18 75% ${light}%)' title='${esc(title)}'></div>`;}}lagHeatmap.innerHTML=html; }",
+            "  function loadStartLag() { const end=new Date(), start=new Date(end-7*24*3600000), query=new URLSearchParams({start:start.toISOString(),end:end.toISOString(),min_samples:'5'}); fetch(`${START_LAG_VISUALIZATION_URL}?${query}`).then(r=>r.ok?r.json():Promise.reject(new Error(`HTTP ${r.status}`))).then(data=>{lagFreshness.textContent=`Last 7 days · SLO ${fmtLag(data.slo_seconds)} · striped heatmap cells: fewer than ${data.min_samples} samples`;renderLag(data);renderLagHeatmap(data);}).catch(error=>{lagFreshness.textContent='Observed start lag could not be loaded.';lagChart.innerHTML=`<text x='24' y='35' fill='#f44'>${esc(error.message)}</text>`;}); }",
+            "  loadStartLag();",
             "  const utilCard = (label, data) => {",
             "    if (data.status === 'error') return `<article class='util-card incomplete'><h3>${label}</h3><p class='bad'>Request error</p><p class='util-detail'>${esc(data.error || 'Unknown error')}</p></article>`;",
             "    const u = data.utilization;",

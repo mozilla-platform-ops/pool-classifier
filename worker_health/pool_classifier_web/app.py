@@ -31,6 +31,7 @@ MAX_UTILIZATION_RANGE_SECONDS = 90 * 24 * 60 * 60
 MAX_UTILIZATION_BUCKETS = 2000
 UTILIZATION_WINDOWS = {"1h": 60 * 60, "24h": 24 * 60 * 60, "7d": 7 * 24 * 60 * 60, "30d": 30 * 24 * 60 * 60}
 DEFAULT_OBSERVED_START_LAG_SLO_SECONDS = 5 * 60
+DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES = 5
 COVERAGE_STALE_AFTER = timedelta(hours=1)
 REPOSITORY_URL = "https://github.com/mozilla-platform-ops/pool-classifier"
 
@@ -98,6 +99,17 @@ def _observed_start_lag_parameters() -> tuple[str, str, int]:
     if slo_seconds <= 0:
         raise ValueError("slo_seconds must be greater than zero")
     return start.isoformat(), end.isoformat(), slo_seconds
+
+
+def _observed_start_lag_min_samples() -> int:
+    value = request.args.get("min_samples", str(DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES))
+    try:
+        min_samples = int(value)
+    except ValueError as exc:
+        raise ValueError("min_samples must be an integer") from exc
+    if min_samples <= 0:
+        raise ValueError("min_samples must be greater than zero")
+    return min_samples
 
 
 def _get_classifier(provisioner: str, worker_type: str) -> PoolClassifier | None:
@@ -372,6 +384,20 @@ def create_app() -> Flask:
         if pc is None:
             return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
         result = pc.storage.get_observed_start_lag(start, end, slo_seconds)
+        result["api_version"] = 1
+        return jsonify(result)
+
+    @app.get("/api/v1/pools/<provisioner>/<worker_type>/observed-start-lag/visualization")
+    def pool_observed_start_lag_visualization(provisioner: str, worker_type: str):
+        try:
+            start, end, slo_seconds = _observed_start_lag_parameters()
+            min_samples = _observed_start_lag_min_samples()
+        except ValueError as exc:
+            return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
+        pc = _get_classifier(provisioner, worker_type)
+        if pc is None:
+            return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
+        result = pc.storage.get_observed_start_lag_visualization(start, end, slo_seconds, min_samples)
         result["api_version"] = 1
         return jsonify(result)
 

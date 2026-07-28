@@ -525,6 +525,21 @@ class SqliteStorage:
         ]
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
 
+    def get_observed_start_lag_visualization(
+        self, range_start: str, range_end: str, slo_seconds: int, min_samples: int,
+    ) -> dict:
+        from worker_health.pool_classifier_web.queue_lag import calculate_observed_start_lag_visualization
+
+        runs = [dict(row) for row in self.db.execute(
+            "SELECT run_scheduled AS scheduled, run_started AS started FROM task_results"
+            " WHERE run_scheduled IS NOT NULL AND run_started IS NOT NULL"
+            " AND julianday(run_scheduled) >= julianday(?) AND julianday(run_scheduled) < julianday(?)",
+            (range_start, range_end),
+        )]
+        return calculate_observed_start_lag_visualization(
+            self.pool_id, range_start, range_end, slo_seconds, min_samples, runs,
+        )
+
     def get_utilization_summary(self, windows: dict[str, int]) -> dict:
         from worker_health.pool_classifier_web.utilization import calculate_utilization_summary
 
@@ -1347,6 +1362,23 @@ class PostgresStorage:
                 for row in cur.fetchall()
             ]
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
+
+    def get_observed_start_lag_visualization(
+        self, range_start: str, range_end: str, slo_seconds: int, min_samples: int,
+    ) -> dict:
+        from worker_health.pool_classifier_web.queue_lag import calculate_observed_start_lag_visualization
+
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT run_scheduled AS scheduled, run_started AS started FROM task_results"
+                " WHERE pool_id = %s AND run_scheduled IS NOT NULL AND run_started IS NOT NULL"
+                " AND run_scheduled >= %s::timestamptz AND run_scheduled < %s::timestamptz",
+                (self.pool_id, range_start, range_end),
+            )
+            runs = [{"scheduled": _to_iso(row["scheduled"]), "started": _to_iso(row["started"])} for row in cur.fetchall()]
+        return calculate_observed_start_lag_visualization(
+            self.pool_id, range_start, range_end, slo_seconds, min_samples, runs,
+        )
 
     def get_utilization_summary(self, windows: dict[str, int]) -> dict:
         from worker_health.pool_classifier_web.utilization import _intersection, _parse, calculate_utilization_summary

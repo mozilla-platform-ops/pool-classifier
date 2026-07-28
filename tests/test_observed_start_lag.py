@@ -6,7 +6,10 @@ import pytest
 
 from worker_health.pool_classifier_web import app as app_module
 from worker_health.pool_classifier_web.app import create_app
-from worker_health.pool_classifier_web.queue_lag import calculate_observed_start_lag
+from worker_health.pool_classifier_web.queue_lag import (
+    calculate_observed_start_lag,
+    calculate_observed_start_lag_visualization,
+)
 from worker_health.pool_classifier_web.storage import SqliteStorage
 
 
@@ -52,6 +55,27 @@ def test_calculate_observed_start_lag_returns_null_percentiles_without_samples()
     assert result["p50_seconds"] is None
     assert result["p95_seconds"] is None
     assert result["started_within_slo_pct"] is None
+
+
+def test_start_lag_visualization_aggregates_hourly_and_weekday_hour_cells():
+    result = calculate_observed_start_lag_visualization(
+        "pool", START.isoformat(), (START + timedelta(hours=2)).isoformat(), 120, 2,
+        [
+            {"scheduled": _iso(60), "started": _iso(120)},
+            {"scheduled": _iso(120), "started": _iso(300)},
+            {"scheduled": _iso(3605), "started": _iso(3665)},
+        ],
+    )
+
+    first_hour, second_hour = result["buckets"][:2]
+    assert first_hour["sample_count"] == 2
+    assert first_hour["p50_seconds"] == 60
+    assert first_hour["p95_seconds"] == 180
+    assert first_hour["sufficient_samples"] is True
+    assert second_hour["sample_count"] == 1
+    assert second_hour["sufficient_samples"] is False
+    start_hour = next(cell for cell in result["heatmap"] if cell["weekday"] == START.weekday() and cell["hour"] == START.hour)
+    assert start_hour["sample_count"] == 2
 
 
 def _storage(tmp_path):
@@ -100,6 +124,19 @@ def test_observed_start_lag_api_includes_scope_and_configurable_slo(monkeypatch,
         "started_within_slo_count": 1,
         "started_within_slo_pct": 100.0,
     }
+
+
+def test_observed_start_lag_visualization_api(monkeypatch, tmp_path):
+    response = _client(monkeypatch, _storage(tmp_path)).get(
+        f"{PATH}/visualization",
+        query_string={"start": START.isoformat(), "end": END.isoformat(), "min_samples": "1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json["api_version"] == 1
+    assert response.json["min_samples"] == 1
+    assert len(response.json["buckets"]) == 1
+    assert len(response.json["heatmap"]) == 168
 
 
 @pytest.mark.parametrize(
