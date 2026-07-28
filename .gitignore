@@ -3,3 +3,7 @@
 
 # Local Postgres bind-mount data created by pc_db.sh/docker-compose.
 worker_health/pool_classifier_web/pgdata/
+
+# Python bytecode caches.
+__pycache__/
+*.py[cod]
