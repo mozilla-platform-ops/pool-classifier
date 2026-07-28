@@ -1608,7 +1608,7 @@ class PoolClassifier:
             '  <a href="#s-categories">Failure Categories</a><span class="sep">|</span>',
             '  <a href="#s-attention">Consecutive Failures</a><span class="sep">|</span>',
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
-            '  <a href="#s-start-lag">Start lag</a><span class="sep">|</span>',
+            '  <a href="#s-start-lag">Start Lag</a><span class="sep">|</span>',
             '  <a href="#s-utilization">Utilization</a><span class="sep">|</span>',
             '  <a href="#s-heatmap">Worker Activity</a><span class="sep">|</span>',
             '  <a href="#s-offenders">Top Offenders</a><span class="sep">|</span>',

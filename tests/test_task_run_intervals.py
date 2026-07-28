@@ -309,6 +309,7 @@ def test_start_lag_dashboard_links_trend_and_heatmap_hover(tmp_path):
     assert "box-shadow:inset 0 0 0 2px #fff" in html
     assert '<h2 id="s-start-lag">Start Lag</h2>' in html
     assert "Observed scheduled-to-start time for terminal task runs." in html
+    assert '<a href="#s-start-lag">Start Lag</a>' in html
     assert '<a href="#s-heatmap">Worker Activity</a>' in html
 
     offenders_html = classifier._write_html({"worker-1": {"failures_by_category": {"test": 1}}}, quarantined=set())
