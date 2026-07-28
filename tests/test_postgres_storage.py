@@ -146,6 +146,31 @@ def test_record_task_result_preserves_retries_and_resolved_time(sqlite, pg):
     assert sqlite_rows[2]["run_resolved"] is pg_rows[2][1] is None
 
 
+def test_observed_run_upsert_transitions_parity(sqlite, pg):
+    observed = "2026-07-14T10:00:00+00:00"
+    checked = "2026-07-14T10:01:00+00:00"
+    for storage in (sqlite, pg):
+        storage.record_observed_task_run("t1", "w1", 0, observed)
+        assert storage.record_task_run_check("t1", 0, checked) is True
+        storage.record_task_result(
+            "t1", "w1", 0, "completed", None, None,
+            "2026-07-14T10:00:30+00:00", "2026-07-14T10:00:45+00:00", checked,
+        )
+        storage.commit()
+
+    assert sqlite.list_unresolved_task_runs(10) == pg.list_unresolved_task_runs(10) == []
+    sqlite_row = sqlite.db.execute(
+        "SELECT run_state, observed_at, last_checked_at FROM task_results WHERE task_id = 't1'",
+    ).fetchone()
+    with psycopg.connect(DSN) as conn:
+        pg_row = conn.execute(
+            "SELECT run_state, observed_at, last_checked_at FROM task_results"
+            " WHERE pool_id = %s AND task_id = 't1'",
+            (POOL_ID,),
+        ).fetchone()
+    assert tuple(sqlite_row) == (pg_row[0], pg_row[1].isoformat(), pg_row[2].isoformat())
+
+
 # --- upsert_worker: worker_group not overwritten by None ---
 
 

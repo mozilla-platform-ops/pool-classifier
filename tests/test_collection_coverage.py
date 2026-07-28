@@ -93,8 +93,9 @@ def test_classifier_uses_window_continuity_not_status_request_success(tmp_path, 
     monkeypatch.setattr(
         classifier,
         "_poll_one_worker",
-        lambda worker: (worker["workerId"], worker["workerGroup"], [], False, True, True),
+        lambda worker: (worker["workerId"], worker["workerGroup"], [{"taskId": "task-1", "runId": 0}]),
     )
+    monkeypatch.setattr(classifier, "_process_recent_task_window", lambda _worker, _recent: ([], False, True, True))
 
     classifier.classify_cycle(workers=[{"workerId": "worker-1", "workerGroup": "group-1"}])
 

@@ -173,7 +173,6 @@ class SqliteStorage:
         self.pool_id = pool_id
         self.results_dir = results_dir
         self._db: Optional[sqlite3.Connection] = None
-        self._db_lock = threading.RLock()
 
     @property
     def db(self) -> sqlite3.Connection:
@@ -183,10 +182,7 @@ class SqliteStorage:
     def init_schema(self) -> None:
         self.results_dir.mkdir(parents=True, exist_ok=True)
         db_path = self.results_dir / "pool_classifier.db"
-        # Worker polling persists observations before Queue status lookups and
-        # therefore writes from the polling thread pool.  Serialize access to
-        # this one SQLite connection with ``_db_lock`` in those methods.
-        self._db = sqlite3.connect(db_path, timeout=30, check_same_thread=False)
+        self._db = sqlite3.connect(db_path, timeout=30)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(DB_SCHEMA)
@@ -363,27 +359,25 @@ class SqliteStorage:
         self, task_id: str, worker_id: str, run_id: Optional[int], observed_at: str,
     ) -> None:
         """Persist a worker's task reference before its Queue status is known."""
-        with self._db_lock:
-            self.db.execute(
-                "INSERT INTO task_results"
-                " (task_id, worker_id, run_id, run_state, classified_at, observed_at, last_checked_at)"
-                " VALUES (?,?,?,'observed',?,?,?)"
-                " ON CONFLICT DO UPDATE SET"
-                " last_checked_at = excluded.last_checked_at"
-                " WHERE task_results.run_state NOT IN ('completed','failed','exception','expired')",
-                (task_id, worker_id, run_id, observed_at, observed_at, observed_at),
-            )
+        self.db.execute(
+            "INSERT INTO task_results"
+            " (task_id, worker_id, run_id, run_state, classified_at, observed_at, last_checked_at)"
+            " VALUES (?,?,?,'observed',?,?,?)"
+            " ON CONFLICT DO UPDATE SET"
+            " last_checked_at = excluded.last_checked_at"
+            " WHERE task_results.run_state NOT IN ('completed','failed','exception','expired')",
+            (task_id, worker_id, run_id, observed_at, observed_at, observed_at),
+        )
 
     def record_task_run_check(self, task_id: str, run_id: Optional[int], checked_at: str) -> bool:
         """Record a Queue-status attempt for an unresolved observed run."""
-        with self._db_lock:
-            cursor = self.db.execute(
-                "UPDATE task_results SET last_checked_at = ?"
-                " WHERE task_id = ? AND run_id IS ?"
-                " AND run_state NOT IN ('completed','failed','exception','expired')",
-                (checked_at, task_id, run_id),
-            )
-            return cursor.rowcount > 0
+        cursor = self.db.execute(
+            "UPDATE task_results SET last_checked_at = ?"
+            " WHERE task_id = ? AND run_id IS ?"
+            " AND run_state NOT IN ('completed','failed','exception','expired')",
+            (checked_at, task_id, run_id),
+        )
+        return cursor.rowcount > 0
 
     def list_unresolved_task_runs(self, limit: int) -> List[dict]:
         return [
@@ -400,28 +394,26 @@ class SqliteStorage:
         """Return baseline/overlap/gap for a nonempty getWorker recentTasks window."""
         if not task_runs:
             return None
-        with self._db_lock:
-            historical = {
-                (row["task_id"], row["run_id"])
-                for row in self.db.execute(
-                    "SELECT task_id, run_id FROM task_results WHERE worker_id = ?",
-                    (worker_id,),
-                )
-            }
+        historical = {
+            (row["task_id"], row["run_id"])
+            for row in self.db.execute(
+                "SELECT task_id, run_id FROM task_results WHERE worker_id = ?",
+                (worker_id,),
+            )
+        }
         if not historical:
             return None
         return bool(historical.intersection(task_runs))
 
     def expire_task_run(self, task_id: str, run_id: Optional[int], checked_at: str) -> bool:
         """Stop retrying a definitively expired Taskcluster task reference."""
-        with self._db_lock:
-            cursor = self.db.execute(
-                "UPDATE task_results SET run_state = 'expired', last_checked_at = ?"
-                " WHERE task_id = ? AND run_id IS ?"
-                " AND run_state NOT IN ('completed','failed','exception','expired')",
-                (checked_at, task_id, run_id),
-            )
-            return cursor.rowcount > 0
+        cursor = self.db.execute(
+            "UPDATE task_results SET run_state = 'expired', last_checked_at = ?"
+            " WHERE task_id = ? AND run_id IS ?"
+            " AND run_state NOT IN ('completed','failed','exception','expired')",
+            (checked_at, task_id, run_id),
+        )
+        return cursor.rowcount > 0
 
     def upsert_worker(self, worker_id: str, worker_group: Optional[str]) -> None:
         self.db.execute(
@@ -455,8 +447,7 @@ class SqliteStorage:
         )
 
     def commit(self) -> None:
-        with self._db_lock:
-            self.db.commit()
+        self.db.commit()
 
     def update_task_category(self, task_id: str, worker_id: str, category: str) -> None:
         self.db.execute(
@@ -1211,7 +1202,7 @@ class PostgresStorage:
                 " (pool_id, task_id, worker_id, run_id, run_state, category,"
                 "  reason_resolved, reason_created, run_scheduled, run_started, run_resolved, classified_at, observed_at, last_checked_at)"
                 " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s::timestamptz,%s::timestamptz,%s::timestamptz,%s::timestamptz)"
-                " ON CONFLICT DO UPDATE SET"
+                " ON CONFLICT (pool_id, task_id, (COALESCE(run_id, -1))) DO UPDATE SET"
                 " worker_id = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired') THEN task_results.worker_id ELSE EXCLUDED.worker_id END,"
                 " run_state = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired') THEN task_results.run_state ELSE EXCLUDED.run_state END,"
                 " category = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired') THEN task_results.category ELSE EXCLUDED.category END,"
@@ -1250,7 +1241,7 @@ class PostgresStorage:
                 "INSERT INTO task_results"
                 " (pool_id, task_id, worker_id, run_id, run_state, classified_at, observed_at, last_checked_at)"
                 " VALUES (%s,%s,%s,%s,'observed',%s::timestamptz,%s::timestamptz,%s::timestamptz)"
-                " ON CONFLICT DO UPDATE SET last_checked_at = EXCLUDED.last_checked_at"
+                " ON CONFLICT (pool_id, task_id, (COALESCE(run_id, -1))) DO UPDATE SET last_checked_at = EXCLUDED.last_checked_at"
                 " WHERE task_results.run_state NOT IN ('completed','failed','exception','expired')",
                 (self.pool_id, task_id, worker_id, run_id, observed_at, observed_at, observed_at),
             )
