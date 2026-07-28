@@ -288,6 +288,37 @@ def test_collection_coverage_storage_parity(sqlite, pg):
     )
 
 
+def test_observed_run_transition_and_metrics_storage_parity(sqlite, pg):
+    observed = "2026-07-21T10:00:00+00:00"
+    terminal = "2026-07-21T10:05:00+00:00"
+    for storage in (sqlite, pg):
+        storage.record_observed_task_run("completed", "w1", 0, observed)
+        storage.record_observed_task_run("expired", "w2", 0, observed)
+        storage.record_observed_task_run("unresolved", "w3", 0, observed)
+        storage.record_task_run_check("unresolved", 0, "2026-07-21T10:02:00+00:00")
+        storage.record_task_result(
+            "completed", "w1", 0, "completed", None, None, observed, terminal, terminal,
+        )
+        assert storage.expire_task_run("expired", 0, terminal) is True
+        storage.commit()
+
+        assert storage.count_recent_successes("2026-07-21T09:00:00+00:00") == 1
+        assert storage.count_recent_errors("2026-07-21T09:00:00+00:00") == 0
+        assert [row["task_id"] for row in storage.list_unresolved_task_runs(10)] == ["unresolved"]
+
+    sqlite_rows = sqlite.db.execute(
+        "SELECT task_id, run_state FROM task_results ORDER BY task_id",
+    ).fetchall()
+    with pg._cursor() as cur:
+        cur.execute("SELECT task_id, run_state FROM task_results WHERE pool_id = %s ORDER BY task_id", (POOL_ID,))
+        postgres_rows = cur.fetchall()
+    assert [tuple(row) for row in sqlite_rows] == [
+        (row["task_id"], row["run_state"]) for row in postgres_rows
+    ] == [
+        ("completed", "completed"), ("expired", "expired"), ("unresolved", "observed"),
+    ]
+
+
 def test_utilization_storage_parity(sqlite, pg):
     start = datetime(2026, 7, 21, 10, 0, tzinfo=timezone.utc)
     end = start + timedelta(hours=1)

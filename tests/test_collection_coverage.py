@@ -81,26 +81,51 @@ def test_task_run_overlap_extends_coverage_without_a_timer_gap(tmp_path):
     ]
 
 
-def test_classifier_uses_window_continuity_not_status_request_success(tmp_path, monkeypatch):
+def test_classifier_keeps_overlap_coverage_through_transient_status_failure(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier(
         "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
     )
     classifier._init_db()
-    monkeypatch.setattr(classifier, "_retry_unresolved_task_runs", lambda: ({}, False))
     monkeypatch.setattr(classifier, "_update_reports", lambda: None)
-    # An overlap still proves coverage when Queue status work is transiently incomplete.
     monkeypatch.setattr(
         classifier,
-        "_poll_one_worker",
-        lambda worker: (worker["workerId"], worker["workerGroup"], [{"taskId": "task-1", "runId": 0}]),
+        "_get_recent_tasks",
+        lambda _group, _worker: [{"taskId": "task-1", "runId": 0}],
     )
-    monkeypatch.setattr(classifier, "_process_recent_task_window", lambda _worker, _recent: ([], False, True, True))
+    monkeypatch.setattr(
+        classifier, "_get_task_status",
+        lambda _task: (_ for _ in ()).throw(RuntimeError("Queue busy")),
+    )
 
+    classifier.classify_cycle(workers=[{"workerId": "worker-1", "workerGroup": "group-1"}])
     classifier.classify_cycle(workers=[{"workerId": "worker-1", "workerGroup": "group-1"}])
 
     coverage = storage.get_collection_coverage("task_runs")
     assert len(coverage["intervals"]) == 1
+    assert storage.list_unresolved_task_runs(10)[0]["task_id"] == "task-1"
+
+
+def test_classifier_starts_new_coverage_interval_for_unbridged_window(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(classifier, "_update_reports", lambda: None)
+    windows = iter([
+        [{"taskId": "task-1", "runId": 0}],
+        [{"taskId": "task-2", "runId": 0}],
+        [{"taskId": "task-2", "runId": 0}],
+    ])
+    monkeypatch.setattr(classifier, "_get_recent_tasks", lambda _group, _worker: next(windows))
+    monkeypatch.setattr(classifier, "_get_task_status", lambda _task: {"status": {"runs": []}})
+
+    classifier.classify_cycle(workers=[{"workerId": "worker-1", "workerGroup": "group-1"}])
+    classifier.classify_cycle(workers=[{"workerId": "worker-1", "workerGroup": "group-1"}])
+    classifier.classify_cycle(workers=[{"workerId": "worker-1", "workerGroup": "group-1"}])
+
+    assert len(storage.get_collection_coverage("task_runs")["intervals"]) == 2
 
 
 def test_threaded_polling_persists_a_baseline_task_window(tmp_path, monkeypatch):

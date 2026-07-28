@@ -595,6 +595,44 @@ def test_observed_run_retries_after_restart_and_reaches_terminal_path(tmp_path, 
     assert row["observed_at"] < row["last_checked_at"]
 
 
+def test_classify_cycle_recovers_observed_run_after_restart(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(classifier, "_update_reports", lambda: None)
+    monkeypatch.setattr(
+        classifier, "_get_recent_tasks", lambda _group, _worker: [{"taskId": "task-1", "runId": 0}],
+    )
+    monkeypatch.setattr(
+        classifier, "_get_task_status",
+        lambda _task: (_ for _ in ()).throw(RuntimeError("Queue busy")),
+    )
+    classifier.classify_cycle(workers=[{"workerId": "worker-1", "workerGroup": "group-1"}])
+    assert storage.list_unresolved_task_runs(10)[0]["run_state"] == "observed"
+
+    restarted = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path,
+        storage=SqliteStorage("provisioner/worker-type", tmp_path), use_color=False,
+    )
+    restarted._init_db()
+    monkeypatch.setattr(restarted, "_update_reports", lambda: None)
+    monkeypatch.setattr(restarted, "_get_recent_tasks", lambda _group, _worker: [])
+    monkeypatch.setattr(
+        restarted, "_get_task_status",
+        lambda _task: {"status": {"runs": [{
+            "runId": 0, "workerId": "worker-1", "state": "completed",
+            "started": "2026-07-14T10:00:00+00:00", "resolved": "2026-07-14T10:05:00+00:00",
+        }]}},
+    )
+
+    restarted.classify_cycle(workers=[{"workerId": "worker-1", "workerGroup": "group-1"}])
+    assert restarted.storage.db.execute(
+        "SELECT run_state FROM task_results WHERE task_id = 'task-1'",
+    ).fetchone()[0] == "completed"
+
+
 def test_terminal_collection_persists_queue_404_as_expired(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier(
