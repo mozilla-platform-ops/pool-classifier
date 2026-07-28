@@ -1610,7 +1610,7 @@ class PoolClassifier:
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
             '  <a href="#s-start-lag">Start lag</a><span class="sep">|</span>',
             '  <a href="#s-utilization">Utilization</a><span class="sep">|</span>',
-            '  <a href="#s-heatmap">Heatmap</a><span class="sep">|</span>',
+            '  <a href="#s-heatmap">Worker Activity</a><span class="sep">|</span>',
             '  <a href="#s-offenders">Top Offenders</a><span class="sep">|</span>',
             '  <a href="#s-all">All Workers</a>',
             "</nav>",
@@ -1788,7 +1788,7 @@ class PoolClassifier:
                 )
 
             parts += [
-                '<h2 id="s-heatmap">Heatmap</h2>',
+                '<h2 id="s-heatmap">Worker Activity</h2>',
                 '<p class="gen">Only hosts with activity in the last 12 hours are shown.</p>',
                 '<div class="hm-legend">',
                 '  <span><span class="hm-swatch" style="background:#1a4a20"></span>success</span>',
