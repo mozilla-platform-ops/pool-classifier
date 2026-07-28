@@ -311,6 +311,10 @@ def test_start_lag_dashboard_links_trend_and_heatmap_hover(tmp_path):
     assert "Observed scheduled-to-start time for terminal task runs." in html
     assert '<a href="#s-heatmap">Worker Activity</a>' in html
 
+    offenders_html = classifier._write_html({"worker-1": {"failures_by_category": {"test": 1}}}, quarantined=set())
+    assert '<h2 id="s-offenders">Top Offenders</h2>' in offenders_html
+    assert "Workers with the most failures in the last day, grouped by category." in offenders_html
+
 
 def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)

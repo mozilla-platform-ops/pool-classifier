@@ -1329,7 +1329,7 @@ class PoolClassifier:
             lines.append("")
 
         if category_totals:
-            lines += ["## Top Offenders by Category (last 1d)", ""]
+            lines += ["## Top Offenders", "", "Workers with the most failures in the last day, grouped by category.", ""]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
                 lines.append(f"### {cat} ({count} total all-time)")
                 lines.append("")
@@ -1805,7 +1805,8 @@ class PoolClassifier:
 
         if category_totals:
             parts += [
-                "<h2 id=\"s-offenders\">Top Offenders by Category <span class='cat-total'>(last 1d)</span></h2>",
+                "<h2 id=\"s-offenders\">Top Offenders</h2>",
+                '<p class="gen">Workers with the most failures in the last day, grouped by category.</p>',
                 '<div class="offenders-grid">',
             ]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
