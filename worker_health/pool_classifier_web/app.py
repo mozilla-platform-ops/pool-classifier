@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from importlib.metadata import PackageNotFoundError, version
 import logging
 import math
 import os
@@ -30,6 +31,17 @@ MAX_UTILIZATION_RANGE_SECONDS = 90 * 24 * 60 * 60
 MAX_UTILIZATION_BUCKETS = 2000
 UTILIZATION_WINDOWS = {"1h": 60 * 60, "24h": 24 * 60 * 60, "7d": 7 * 24 * 60 * 60, "30d": 30 * 24 * 60 * 60}
 COVERAGE_STALE_AFTER = timedelta(hours=1)
+REPOSITORY_URL = "https://github.com/mozilla-platform-ops/pool-classifier"
+
+
+def _application_version() -> str:
+    """Return the installed application version without requiring package metadata in development."""
+    if configured_version := os.environ.get("POOL_CLASSIFIER_VERSION"):
+        return configured_version
+    try:
+        return version("worker_health")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 def _parse_utilization_datetime(name: str, value: str | None) -> datetime:
@@ -258,6 +270,21 @@ def create_app() -> Flask:
             patterns=rows,
             hits=hits,
             generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        )
+
+    @app.get("/api")
+    def api_overview():
+        return render_template("api.html")
+
+    @app.get("/about")
+    def about():
+        commit = os.environ.get("POOL_CLASSIFIER_COMMIT", "unknown")
+        return render_template(
+            "about.html",
+            repository_url=REPOSITORY_URL,
+            version=_application_version(),
+            commit=commit,
+            commit_url=f"{REPOSITORY_URL}/commit/{commit}" if commit != "unknown" else None,
         )
 
     @app.get("/pools/<provisioner>/<worker_type>")

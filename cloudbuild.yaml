@@ -21,6 +21,7 @@ steps:
     args:
       - build
       - --file=Dockerfile
+      - --build-arg=POOL_CLASSIFIER_COMMIT=$_TAG
       - --tag=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:$_TAG
       - --tag=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:latest
       - --cache-from=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:latest

@@ -1407,7 +1407,7 @@ class PoolClassifier:
             f'<span class="site-title"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a></span>',
             '<details class="global-menu">',
             '  <summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary>',
-            '  <nav class="menu-popover" aria-label="Global navigation"><a href="/">Overview</a><a href="/patterns">Patterns</a></nav>',
+            '  <nav class="menu-popover" aria-label="Global navigation"><a href="/">Overview</a><a href="/patterns">Patterns</a><a href="/api">API</a><a href="/about">About</a></nav>',
             "</details>",
             "</header>",
         ]
