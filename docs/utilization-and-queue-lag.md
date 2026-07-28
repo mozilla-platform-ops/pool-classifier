@@ -20,6 +20,40 @@ created or while it is blocked by dependencies, priority, routing, or another
 capability requirement. Report percentiles (especially p50 and p95) and the
 share of tasks meeting a queue-lag SLO; avoid using only an average.
 
+## Queue-lag roadmap
+
+Queue lag will be introduced in four phases. Each phase must retain its scope
+label in the API and dashboard so a partial view of the workload is never
+presented as a complete queue-health verdict.
+
+1. **Observed scheduled-to-start lag.** Track `runs[].scheduled` to
+   `runs[].started` for terminal runs already discovered through the existing
+   per-worker collection. This is tracked by
+   [pool-classifier-trp](../.beads/issues.jsonl). Before calling
+   `scheduled` a readiness timestamp, verify its Taskcluster semantics and
+   retain the raw timestamp in storage and API responses. Calculate only
+   ordered pairs with both timestamps, then publish a bounded-window count,
+   p50, p95, and the share started within a configurable SLO. Label the result
+   **observed scheduled-to-start lag** (or **observed start lag**): it includes
+   only jobs that started and were later observed as terminal. It must not
+   claim a queued-task total, a drop/expiry rate, or pool health, because jobs
+   that never run are invisible to this collector. Preserve task/run IDs,
+   `scheduled`, `started`, `resolved`, state, `reasonCreated`, and
+   `reasonResolved` where practical for later phases.
+2. **Task-universe capture.** Subscribe to Taskcluster Pulse task-status
+   events and persist a durable, idempotent event ledger. This provides the
+   population needed to observe tasks that do not reach a worker; it is not a
+   replacement for reconciliation.
+3. **Reconciliation and disposition coverage.** Periodically reconcile recent
+   non-terminal tasks with Queue status, and report collection/reconciliation
+   coverage. Model ready tasks that become terminal without a start as explicit
+   dispositions (for example expiry or cancellation), rather than allowing
+   them to disappear from lag metrics.
+4. **Decision-grade presentation.** Publish eligible/ready-to-start percentiles
+   and SLO attainment beside the disposition rate, utilization, freshness, and
+   availability mode. Use the combined signals for sizing decisions only once
+   the task population and coverage are demonstrably complete.
+
 ## How to interpret them together
 
 | Queue lag | Utilization | Likely interpretation |
