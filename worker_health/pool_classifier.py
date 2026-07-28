@@ -64,6 +64,7 @@ DEFAULT_WORKER_TYPE = "gecko-t-lambda-perf-a55"
 DEFAULT_POLL_INTERVAL = 900  # seconds (15 minutes)
 WORKER_REFRESH_INTERVAL = 300  # seconds between re-listing workers
 WORKER_THREAD_COUNT = 8
+TASK_STATUS_THREAD_COUNT = 8
 UNRESOLVED_TASK_RUN_BATCH_SIZE = 1000
 CONSECUTIVE_FAILURE_ALERT = 2
 DEFAULT_WORKER_CONTACT_THRESHOLD_SECONDS = 60 * 60
@@ -543,6 +544,159 @@ class PoolClassifier:
             self.storage.list_unresolved_task_runs(UNRESOLVED_TASK_RUN_BATCH_SIZE),
         )
 
+    def _prepare_observed_task_run_batch(
+        self, fetched_windows: List[Tuple[str, str, List[dict]]],
+    ) -> Tuple[Dict[str, List[dict]], Dict[str, Optional[bool]], bool]:
+        """Durably prepare observed runs for Queue status I/O on this thread.
+
+        ``getWorker`` calls happen in worker-pool threads, but every storage
+        operation here deliberately happens on the classify thread.  The
+        returned references are grouped for one Queue request per task and
+        retain their worker and worker-group routing information for the
+        eventual result-application phase.
+        """
+        continuity_by_worker: Dict[str, Optional[bool]] = {}
+        references_by_key: Dict[Tuple[str, str, Optional[int]], dict] = {}
+        window_observed = False
+        observed_at = datetime.now(timezone.utc).isoformat()
+
+        for worker_id, worker_group, recent in fetched_windows:
+            window = [
+                (task.get("taskId"), task.get("runId"))
+                for task in recent
+                if task.get("taskId")
+            ]
+            if not window:
+                continue
+            window_observed = True
+            continuity_by_worker[worker_id] = self.storage.task_run_window_continuity(
+                worker_id, window,
+            )
+            seen = self.seen_task_runs.setdefault(worker_id, set())
+            for task_id, run_id in window:
+                if (task_id, run_id) in seen:
+                    continue
+                self.storage.record_observed_task_run(task_id, worker_id, run_id, observed_at)
+                references_by_key[(task_id, worker_id, run_id)] = {
+                    "task_id": task_id,
+                    "worker_id": worker_id,
+                    "worker_group": worker_group,
+                    "run_id": run_id,
+                }
+
+        # Newly observed rows are now visible to the restart-safe backlog
+        # query.  Merge that bounded backlog before marking attempts so an
+        # interrupted previous process receives the same durable treatment.
+        for reference in self.storage.list_unresolved_task_runs(UNRESOLVED_TASK_RUN_BATCH_SIZE):
+            key = (reference["task_id"], reference["worker_id"], reference["run_id"])
+            references_by_key.setdefault(key, {
+                "task_id": reference["task_id"],
+                "worker_id": reference["worker_id"],
+                "worker_group": None,
+                "run_id": reference["run_id"],
+            })
+
+        checked_at = datetime.now(timezone.utc).isoformat()
+        by_task: Dict[str, List[dict]] = {}
+        for reference in references_by_key.values():
+            self.storage.record_task_run_check(
+                reference["task_id"], reference["run_id"], checked_at,
+            )
+            by_task.setdefault(reference["task_id"], []).append(reference)
+
+        # A crash after this commit leaves each reference retryable, with its
+        # last attempted timestamp intact.  Queue I/O must start only after it.
+        self.storage.commit()
+        return by_task, continuity_by_worker, window_observed
+
+    def _fetch_prepared_task_statuses(
+        self, references_by_task: Dict[str, List[dict]],
+    ) -> Dict[str, Tuple[str, Optional[dict]]]:
+        """Fetch one Queue status per prepared task without touching state.
+
+        Results are tagged as ``ok``, ``expired`` (the Queue's definitive
+        404), or ``error`` (a retryable transport/API failure).  Applying those
+        results remains a classify-thread responsibility.
+        """
+        if not references_by_task:
+            return {}
+
+        def fetch(task_id: str) -> Tuple[str, Optional[dict]]:
+            try:
+                response = self._get_task_status(task_id)
+            except Exception as exc:
+                logger.warning("%s: status fetch error: %s", task_id, exc)
+                return "error", None
+            return ("expired", None) if response is None else ("ok", response)
+
+        results: Dict[str, Tuple[str, Optional[dict]]] = {}
+        with ThreadPoolExecutor(
+            max_workers=min(TASK_STATUS_THREAD_COUNT, len(references_by_task)),
+            thread_name_prefix="queue-status",
+        ) as executor:
+            futures = {
+                executor.submit(fetch, task_id): task_id
+                for task_id in references_by_task
+            }
+            for future in as_completed(futures):
+                results[futures[future]] = future.result()
+        return results
+
+    def _apply_prepared_task_statuses(
+        self,
+        references_by_task: Dict[str, List[dict]],
+        status_results: Dict[str, Tuple[str, Optional[dict]]],
+    ) -> Tuple[Dict[str, List[Tuple]], bool]:
+        """Apply Queue outcomes on the classify thread and return terminals."""
+        terminal_by_worker: Dict[str, List[Tuple]] = {}
+        complete = True
+        applied_at = datetime.now(timezone.utc).isoformat()
+
+        for task_id, references in references_by_task.items():
+            outcome, status_response = status_results.get(task_id, ("error", None))
+            if outcome == "error":
+                complete = False
+                continue
+            if outcome == "expired":
+                logger.info("task %s no longer has a status record; expiring observed references", task_id)
+                for reference in references:
+                    worker_id = reference["worker_id"]
+                    run_id = reference["run_id"]
+                    if self.storage.expire_task_run(task_id, run_id, applied_at):
+                        self.seen_task_runs.setdefault(worker_id, set()).add((task_id, run_id))
+                continue
+
+            assert status_response is not None
+            runs = {
+                run.get("runId"): run
+                for run in status_response.get("status", {}).get("runs", [])
+            }
+            for reference in references:
+                worker_id = reference["worker_id"]
+                run_id = reference["run_id"]
+                run = runs.get(run_id)
+                if not run or run.get("workerId") != worker_id:
+                    complete = False
+                    continue
+                run_state = run.get("state")
+                if run_state not in ("completed", "failed", "exception"):
+                    logger.debug(
+                        "  %s: task %s run %s still running (state=%s)",
+                        worker_id, task_id, run_id, run_state,
+                    )
+                    continue
+                self.seen_task_runs.setdefault(worker_id, set()).add((task_id, run_id))
+                terminal_by_worker.setdefault(worker_id, []).append(
+                    (
+                        task_id, run_id, run_state, run.get("started"), run.get("resolved"),
+                        run.get("reasonResolved"), run.get("scheduled"), run.get("reasonCreated"),
+                    ),
+                )
+
+        # Expiry markers must survive before the later log/classification work.
+        self.storage.commit()
+        return terminal_by_worker, complete
+
     def _process_recent_task_window(
         self, worker_id: str, recent: List[dict],
     ) -> Tuple[List[Tuple], bool, Optional[bool], bool]:
@@ -813,11 +967,6 @@ class PoolClassifier:
             scanned = 0
             task_coverage_observed = False
             task_coverage_continuous = True
-            retried_tasks, _retry_complete = self._retry_unresolved_task_runs()
-            poll_results = [
-                (worker_id, None, terminal_tasks)
-                for worker_id, terminal_tasks in retried_tasks.items()
-            ]
             fetched_windows = []
             thread_pool = ThreadPool(WORKER_THREAD_COUNT)
             terminated = False
@@ -852,12 +1001,31 @@ class PoolClassifier:
             # getWorker requests are parallel, but all storage state changes
             # happen here on the classify thread.  PostgresStorage deliberately
             # owns one transaction connection per classifier instance.
-            for worker_id, worker_group, recent in fetched_windows:
-                tasks, _complete, continuity, window_observed = self._process_recent_task_window(worker_id, recent)
-                poll_results.append((worker_id, worker_group, tasks))
-                if window_observed:
-                    task_coverage_observed = True
-                    task_coverage_continuous = task_coverage_continuous and continuity is not False
+            prepared_by_task, continuity_by_worker, window_observed = self._prepare_observed_task_run_batch(
+                fetched_windows,
+            )
+            if window_observed:
+                task_coverage_observed = True
+                task_coverage_continuous = task_coverage_continuous and all(
+                    continuity is not False for continuity in continuity_by_worker.values()
+                )
+
+            status_results = self._fetch_prepared_task_statuses(prepared_by_task)
+            resolved, _complete = self._apply_prepared_task_statuses(
+                prepared_by_task, status_results,
+            )
+            prepared_references = [
+                reference for references in prepared_by_task.values() for reference in references
+            ]
+            worker_groups = {
+                reference["worker_id"]: reference["worker_group"]
+                for reference in prepared_references
+                if reference["worker_group"] is not None
+            }
+            poll_results.extend(
+                (worker_id, worker_groups.get(worker_id), terminal_tasks)
+                for worker_id, terminal_tasks in resolved.items()
+            )
 
             polls_complete = scanned == total_workers and not terminated and not self._interrupted
             if task_coverage_observed:

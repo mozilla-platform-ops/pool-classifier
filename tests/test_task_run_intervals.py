@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 
 import json
@@ -75,6 +76,150 @@ def test_sqlite_persists_observed_runs_and_guards_terminal_transitions(tmp_path)
         "worker-1", "failed", "infra", "worker-shutdown", observed, classified,
     )
     assert storage.list_unresolved_task_runs(10) == []
+
+
+def test_prepared_observed_batch_is_durable_deduplicated_and_keeps_routing(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    storage.record_observed_task_run(
+        "from-restart", "old-worker", 0, "2026-07-14T10:00:00+00:00",
+    )
+    storage.commit()
+
+    by_task, continuity, window_observed = classifier._prepare_observed_task_run_batch([
+        ("worker-a", "group-a", [{"taskId": "shared", "runId": 0}]),
+        ("worker-b", "group-b", [{"taskId": "shared", "runId": 1}]),
+    ])
+
+    assert window_observed is True
+    assert continuity == {"worker-a": None, "worker-b": None}
+    assert {
+        task_id: {(item["worker_id"], item["worker_group"], item["run_id"])
+        for item in references}
+        for task_id, references in by_task.items()
+    } == {
+        "from-restart": {("old-worker", None, 0)},
+        "shared": {("worker-a", "group-a", 0), ("worker-b", "group-b", 1)},
+    }
+    rows = storage.list_unresolved_task_runs(10)
+    assert {row["task_id"] for row in rows} == {"from-restart", "shared"}
+    assert all(row["last_checked_at"] > "2026-07-14T10:00:00+00:00" for row in rows)
+
+
+def test_prepared_task_statuses_fetch_once_per_task_and_do_not_raise(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    barrier = threading.Barrier(3)
+    calls = []
+
+    def status(task_id):
+        calls.append(task_id)
+        barrier.wait(timeout=1)
+        if task_id == "expired":
+            return None
+        if task_id == "transient":
+            raise RuntimeError("Queue busy")
+        return {"status": {"runs": []}}
+
+    monkeypatch.setattr(classifier, "_get_task_status", status)
+    results = classifier._fetch_prepared_task_statuses({
+        "ok": [{"task_id": "ok"}, {"task_id": "ok"}],
+        "expired": [{"task_id": "expired"}],
+        "transient": [{"task_id": "transient"}],
+    })
+
+    assert set(calls) == {"ok", "expired", "transient"}
+    assert results["ok"] == ("ok", {"status": {"runs": []}})
+    assert results["expired"] == ("expired", None)
+    assert results["transient"] == ("error", None)
+
+
+def test_apply_prepared_statuses_expires_retries_and_routes_terminals(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    observed = "2026-07-14T10:00:00+00:00"
+    for task_id, worker_id in (("expired", "worker-a"), ("retry", "worker-b"), ("done", "worker-c")):
+        storage.record_observed_task_run(task_id, worker_id, 0, observed)
+    storage.commit()
+    references = {
+        "expired": [{"task_id": "expired", "worker_id": "worker-a", "worker_group": "group-a", "run_id": 0}],
+        "retry": [{"task_id": "retry", "worker_id": "worker-b", "worker_group": "group-b", "run_id": 0}],
+        "done": [{"task_id": "done", "worker_id": "worker-c", "worker_group": "group-c", "run_id": 0}],
+    }
+
+    terminals, complete = classifier._apply_prepared_task_statuses(references, {
+        "expired": ("expired", None),
+        "retry": ("error", None),
+        "done": ("ok", {"status": {"runs": [{
+            "runId": 0, "workerId": "worker-c", "state": "completed",
+            "started": "2026-07-14T10:01:00+00:00", "resolved": "2026-07-14T10:02:00+00:00",
+        }]}}),
+    })
+
+    assert complete is False
+    assert terminals["worker-c"][0][:3] == ("done", 0, "completed")
+    assert classifier.seen_task_runs == {
+        "worker-a": {("expired", 0)},
+        "worker-c": {("done", 0)},
+    }
+    states = dict(storage.db.execute("SELECT task_id, run_state FROM task_results"))
+    assert states == {"expired": "expired", "retry": "observed", "done": "observed"}
+
+
+def test_classify_cycle_deduplicates_status_io_and_serializes_storage(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    main_thread = threading.get_ident()
+    storage_threads = []
+    original_record = storage.record_observed_task_run
+    original_check = storage.record_task_run_check
+
+    def record(*args):
+        storage_threads.append(threading.get_ident())
+        return original_record(*args)
+
+    def check(*args):
+        storage_threads.append(threading.get_ident())
+        return original_check(*args)
+
+    monkeypatch.setattr(storage, "record_observed_task_run", record)
+    monkeypatch.setattr(storage, "record_task_run_check", check)
+    monkeypatch.setattr(
+        classifier, "_get_recent_tasks",
+        lambda _group, worker_id: [{"taskId": "shared", "runId": 0 if worker_id == "worker-a" else 1}],
+    )
+    status_threads = []
+
+    def status(task_id):
+        status_threads.append(threading.get_ident())
+        assert task_id == "shared"
+        return {"status": {"runs": [
+            {"runId": 0, "workerId": "worker-a", "state": "completed"},
+            {"runId": 1, "workerId": "worker-b", "state": "completed"},
+        ]}}
+
+    monkeypatch.setattr(classifier, "_get_task_status", status)
+    monkeypatch.setattr(classifier, "_update_reports", lambda: None)
+    summary = classifier.classify_cycle(workers=[
+        {"workerId": "worker-a", "workerGroup": "group-a"},
+        {"workerId": "worker-b", "workerGroup": "group-b"},
+    ])
+
+    assert summary["new_terminal"] == 2
+    assert len(status_threads) == 1
+    assert status_threads[0] != main_thread
+    assert storage_threads and set(storage_threads) == {main_thread}
 
 
 def test_sqlite_expired_observed_runs_are_not_reopened(tmp_path):
