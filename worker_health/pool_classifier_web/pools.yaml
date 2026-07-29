@@ -113,12 +113,6 @@ pools:
     provisioner: releng-hardware
     worker_type: gecko-t-osx-1500-m4-staging
     schedule: "*/15 * * * *"
-  - id: gecko-t-osx-1500-m-vms
-    provisioner: releng-hardware
-    worker_type: gecko-t-osx-1500-m-vms
-    schedule: "*/15 * * * *"
-    enabled: false
-    reason: "Not long-lived; high job/worker volume overwhelms the tool."
   - id: gecko-t-win7-32-hw
     provisioner: releng-hardware
     worker_type: gecko-t-win7-32-hw
