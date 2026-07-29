@@ -42,3 +42,33 @@ The discovery document also lists the utilization and observed-start-lag
 endpoints. Their request parameters and response schemas remain documented in
 [`utilization-api.md`](utilization-api.md) and
 [`observed-start-lag-api.md`](observed-start-lag-api.md).
+
+## Failures
+
+`GET /api/v1/pools/{provisioner}/{worker_type}/failures` requires timezone-aware
+ISO 8601 `start` and `end` parameters. The interval is start-inclusive and
+end-exclusive, and may be at most 90 days. It returns terminal non-successful
+runs (`failed`, `exception`, and `expired`) grouped by classification category.
+Failures with no category are reported as `unclassified`. An optional exact
+`category` filter narrows the returned group.
+
+## Workers
+
+`GET /api/v1/pools/{provisioner}/{worker_type}/workers` returns worker IDs,
+activity timestamps, lifetime success/failure counters, consecutive failures,
+current availability and quarantine state, and the top failure category in the
+selected time window. The default window is the trailing 24 hours; callers can
+supply the same bounded `start` and `end` interval as the failures endpoint.
+
+Optional filters are `quarantined=true|false`, `alerting=true|false`, and an
+exact failure `category`. Results are ordered by alerting workers first and
+then worker ID. They use opaque cursor pagination: `limit` defaults to 50 and
+is at most 200; pass `pagination.next_cursor` as `cursor` to obtain the next
+page. Empty pages return HTTP 200 with an empty `workers` list.
+
+## Patterns
+
+`GET /api/v1/patterns` returns configured classification-pattern metadata in
+registry order: name, severity, tags, description, and enabled state. It
+includes disabled patterns so consumers can inspect the complete configured
+registry; it intentionally does not return pattern regular expressions.

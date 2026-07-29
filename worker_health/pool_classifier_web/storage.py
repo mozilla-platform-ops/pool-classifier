@@ -472,6 +472,77 @@ class SqliteStorage:
     def count_workers(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM workers").fetchone()[0]
 
+    def get_public_failures(self, start: str, end: str, category: Optional[str]) -> List[dict]:
+        query = (
+            "SELECT COALESCE(category, 'unclassified') AS category, COUNT(*) AS count"
+            " FROM task_results WHERE run_state IN ('failed', 'exception', 'expired')"
+            " AND COALESCE(run_resolved, classified_at) >= ?"
+            " AND COALESCE(run_resolved, classified_at) < ?"
+        )
+        params: list = [start, end]
+        if category:
+            query += " AND COALESCE(category, 'unclassified') = ?"
+            params.append(category)
+        query += " GROUP BY COALESCE(category, 'unclassified') ORDER BY count DESC, category ASC"
+        return [dict(row) for row in self.db.execute(query, params)]
+
+    def get_public_workers(
+        self,
+        start: str,
+        end: str,
+        alert_threshold: int,
+        quarantined: Optional[bool],
+        alerting: Optional[bool],
+        category: Optional[str],
+        limit: int,
+        after: Optional[Tuple[bool, str]],
+    ) -> List[dict]:
+        query = """
+            WITH failure_counts AS (
+                SELECT worker_id, COALESCE(category, 'unclassified') AS category, COUNT(*) AS failures
+                FROM task_results
+                WHERE run_state IN ('failed', 'exception', 'expired')
+                  AND COALESCE(run_resolved, classified_at) >= ?
+                  AND COALESCE(run_resolved, classified_at) < ?
+                GROUP BY worker_id, COALESCE(category, 'unclassified')
+            ), ranked_categories AS (
+                SELECT worker_id, category, failures,
+                    ROW_NUMBER() OVER (PARTITION BY worker_id ORDER BY failures DESC, category ASC) AS rank
+                FROM failure_counts
+            ), base AS (
+                SELECT w.worker_id, w.worker_group, w.successes, w.failures, w.consecutive_failures,
+                    w.last_active, w.last_success, w.last_failure, w.last_failure_category,
+                    COALESCE(a.available, 0) AS available, COALESCE(a.quarantined, 0) AS quarantined,
+                    a.quarantine_until, a.reason AS availability_reason, a.observed_at AS availability_observed_at,
+                    CASE WHEN w.consecutive_failures >= ? THEN 1 ELSE 0 END AS alerting,
+                    rc.category AS top_category, rc.failures AS top_category_failures
+                FROM workers w
+                LEFT JOIN worker_availability_state a ON a.worker_id = w.worker_id
+                LEFT JOIN ranked_categories rc ON rc.worker_id = w.worker_id AND rc.rank = 1
+            )
+            SELECT * FROM base WHERE 1 = 1
+        """
+        params: list = [start, end, alert_threshold]
+        if quarantined is not None:
+            query += " AND quarantined = ?"
+            params.append(int(quarantined))
+        if alerting is not None:
+            query += " AND alerting = ?"
+            params.append(int(alerting))
+        if category:
+            query += " AND EXISTS (SELECT 1 FROM failure_counts fc WHERE fc.worker_id = base.worker_id AND fc.category = ?)"
+            params.append(category)
+        if after:
+            query += " AND (alerting < ? OR (alerting = ? AND worker_id > ?))"
+            params.extend([int(after[0]), int(after[0]), after[1]])
+        query += " ORDER BY alerting DESC, worker_id ASC LIMIT ?"
+        params.append(limit)
+        rows = [dict(row) for row in self.db.execute(query, params)]
+        for row in rows:
+            for key in ("available", "quarantined", "alerting"):
+                row[key] = bool(row[key])
+        return rows
+
     def count_recent_errors(self, since: str) -> int:
         return self.db.execute(
             "SELECT COUNT(*) FROM task_results WHERE run_state IN ('failed','exception')"
@@ -1960,6 +2031,83 @@ class PostgresStorage:
         with self._cursor() as cur:
             cur.execute("SELECT COUNT(*) AS cnt FROM workers WHERE pool_id = %s", (self.pool_id,))
             return cur.fetchone()["cnt"]
+
+    def get_public_failures(self, start: str, end: str, category: Optional[str]) -> List[dict]:
+        query = (
+            "SELECT COALESCE(category, 'unclassified') AS category, COUNT(*) AS count"
+            " FROM task_results WHERE pool_id = %s"
+            " AND run_state IN ('failed', 'exception', 'expired')"
+            " AND COALESCE(run_resolved, classified_at) >= %s::timestamptz"
+            " AND COALESCE(run_resolved, classified_at) < %s::timestamptz"
+        )
+        params: list = [self.pool_id, start, end]
+        if category:
+            query += " AND COALESCE(category, 'unclassified') = %s"
+            params.append(category)
+        query += " GROUP BY COALESCE(category, 'unclassified') ORDER BY count DESC, category ASC"
+        with self._cursor() as cur:
+            cur.execute(query, params)
+            return [dict(row) for row in cur.fetchall()]
+
+    def get_public_workers(
+        self,
+        start: str,
+        end: str,
+        alert_threshold: int,
+        quarantined: Optional[bool],
+        alerting: Optional[bool],
+        category: Optional[str],
+        limit: int,
+        after: Optional[Tuple[bool, str]],
+    ) -> List[dict]:
+        query = """
+            WITH failure_counts AS (
+                SELECT worker_id, COALESCE(category, 'unclassified') AS category, COUNT(*) AS failures
+                FROM task_results
+                WHERE pool_id = %s AND run_state IN ('failed', 'exception', 'expired')
+                  AND COALESCE(run_resolved, classified_at) >= %s::timestamptz
+                  AND COALESCE(run_resolved, classified_at) < %s::timestamptz
+                GROUP BY worker_id, COALESCE(category, 'unclassified')
+            ), ranked_categories AS (
+                SELECT worker_id, category, failures,
+                    ROW_NUMBER() OVER (PARTITION BY worker_id ORDER BY failures DESC, category ASC) AS rank
+                FROM failure_counts
+            ), base AS (
+                SELECT w.worker_id, w.worker_group, w.successes, w.failures, w.consecutive_failures,
+                    w.last_active, w.last_success, w.last_failure, w.last_failure_category,
+                    COALESCE(a.available, FALSE) AS available, COALESCE(a.quarantined, FALSE) AS quarantined,
+                    a.quarantine_until, a.reason AS availability_reason, a.observed_at AS availability_observed_at,
+                    (w.consecutive_failures >= %s) AS alerting,
+                    rc.category AS top_category, rc.failures AS top_category_failures
+                FROM workers w
+                LEFT JOIN worker_availability_state a ON a.pool_id = w.pool_id AND a.worker_id = w.worker_id
+                LEFT JOIN ranked_categories rc ON rc.worker_id = w.worker_id AND rc.rank = 1
+                WHERE w.pool_id = %s
+            )
+            SELECT * FROM base WHERE TRUE
+        """
+        params: list = [self.pool_id, start, end, alert_threshold, self.pool_id]
+        if quarantined is not None:
+            query += " AND quarantined = %s"
+            params.append(quarantined)
+        if alerting is not None:
+            query += " AND alerting = %s"
+            params.append(alerting)
+        if category:
+            query += " AND EXISTS (SELECT 1 FROM failure_counts fc WHERE fc.worker_id = base.worker_id AND fc.category = %s)"
+            params.append(category)
+        if after:
+            query += " AND (alerting < %s OR (alerting = %s AND worker_id > %s))"
+            params.extend([after[0], after[0], after[1]])
+        query += " ORDER BY alerting DESC, worker_id ASC LIMIT %s"
+        params.append(limit)
+        with self._cursor() as cur:
+            cur.execute(query, params)
+            rows = [dict(row) for row in cur.fetchall()]
+        for row in rows:
+            for key in ("last_active", "last_success", "last_failure", "quarantine_until", "availability_observed_at"):
+                row[key] = _to_iso(row[key])
+        return rows
 
     def count_recent_errors(self, since: str) -> int:
         with self._cursor() as cur:

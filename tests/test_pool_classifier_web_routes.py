@@ -14,6 +14,8 @@ from worker_health.pool_classifier_web.storage import SqliteStorage
 
 API_PATH = "/api/v1/pools/provisioner/worker-type/utilization"
 SUMMARY_PATH = f"{API_PATH}/summary"
+FAILURES_PATH = "/api/v1/pools/provisioner/worker-type/failures"
+WORKERS_PATH = "/api/v1/pools/provisioner/worker-type/workers"
 API_START = datetime(2026, 7, 21, 10, 0, tzinfo=timezone.utc)
 
 
@@ -169,6 +171,106 @@ def test_pool_summary_api_returns_404_for_unknown_pool(monkeypatch):
 
     assert response.status_code == 404
     assert response.json == {"error": {"code": "not_found", "message": "pool not found"}}
+
+
+def test_failures_api_groups_terminal_failure_categories(monkeypatch, tmp_path):
+    storage = _api_storage(tmp_path)
+    storage.record_task_result(
+        "failed-task", "worker-1", 0, "failed", "device_error", None,
+        API_START.isoformat(), (API_START + timedelta(minutes=10)).isoformat(), (API_START + timedelta(minutes=10)).isoformat(),
+    )
+    storage.record_task_result(
+        "unknown-task", "worker-2", 0, "exception", None, None,
+        API_START.isoformat(), (API_START + timedelta(minutes=20)).isoformat(), (API_START + timedelta(minutes=20)).isoformat(),
+    )
+    storage.commit()
+    client = _api_client(monkeypatch, storage)
+
+    response = client.get(
+        FAILURES_PATH,
+        query_string={"start": API_START.isoformat(), "end": (API_START + timedelta(hours=1)).isoformat()},
+    )
+
+    assert response.status_code == 200
+    assert response.json["failures"] == [{"category": "device_error", "count": 1}, {"category": "unclassified", "count": 1}]
+    filtered = client.get(
+        FAILURES_PATH,
+        query_string={"start": API_START.isoformat(), "end": (API_START + timedelta(hours=1)).isoformat(), "category": "device_error"},
+    )
+    assert filtered.json["failures"] == [{"category": "device_error", "count": 1}]
+
+
+def test_workers_api_filters_and_paginates(monkeypatch, tmp_path):
+    storage = _api_storage(tmp_path)
+    for worker_id, category, quarantined in (("alert-worker", "device_error", True), ("normal-worker", "network", False)):
+        storage.upsert_worker(worker_id, "group")
+        storage.record_task_result(
+            f"task-{worker_id}", worker_id, 0, "failed", category, None,
+            API_START.isoformat(), (API_START + timedelta(minutes=10)).isoformat(), (API_START + timedelta(minutes=10)).isoformat(),
+        )
+        storage.increment_failure(worker_id, API_START.isoformat(), category)
+        if worker_id == "alert-worker":
+            storage.increment_failure(worker_id, API_START.isoformat(), category)
+            storage.increment_failure(worker_id, API_START.isoformat(), category)
+        storage.upsert_worker_availability_state(
+            worker_id, "group", True, quarantined, API_START.isoformat(), None, "test",
+            API_START.isoformat(), API_START.isoformat(),
+        )
+    storage.commit()
+    client = _api_client(monkeypatch, storage)
+    params = {"start": API_START.isoformat(), "end": (API_START + timedelta(hours=1)).isoformat(), "limit": "1"}
+
+    first = client.get(WORKERS_PATH, query_string=params)
+    assert first.status_code == 200
+    assert first.json["workers"][0]["worker_id"] == "alert-worker"
+    assert first.json["workers"][0]["alerting"] is True
+    assert first.json["workers"][0]["top_category"] == "device_error"
+    cursor = first.json["pagination"]["next_cursor"]
+    assert cursor
+    second = client.get(WORKERS_PATH, query_string={**params, "cursor": cursor})
+    assert [worker["worker_id"] for worker in second.json["workers"]] == ["normal-worker"]
+    filtered = client.get(WORKERS_PATH, query_string={**params, "quarantined": "true"})
+    assert [worker["worker_id"] for worker in filtered.json["workers"]] == ["alert-worker"]
+
+
+def test_patterns_api_exposes_enabled_and_disabled_registry_entries(monkeypatch):
+    monkeypatch.setattr(
+        app_module.patterns_registry,
+        "_patterns",
+        [
+            SimpleNamespace(name="enabled", severity="high", tags=["android"], description="test", enabled=True),
+            SimpleNamespace(name="disabled", severity="low", tags=[], description="", enabled=False),
+        ],
+    )
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/api/v1/patterns")
+
+    assert response.status_code == 200
+    assert response.json == {
+        "api_version": 1,
+        "patterns": [
+            {"name": "enabled", "severity": "high", "tags": ["android"], "description": "test", "enabled": True},
+            {"name": "disabled", "severity": "low", "tags": [], "description": "", "enabled": False},
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "query", "message"),
+    [
+        (FAILURES_PATH, {}, "start and end must be provided together"),
+        (WORKERS_PATH, {"limit": "0"}, "limit must be between 1 and 200"),
+        (WORKERS_PATH, {"cursor": "not-a-cursor"}, "cursor is invalid"),
+    ],
+)
+def test_new_api_endpoints_reject_invalid_parameters(monkeypatch, tmp_path, path, query, message):
+    client = _api_client(monkeypatch, _api_storage(tmp_path))
+    response = client.get(path, query_string=query)
+    assert response.status_code == 400
+    assert response.json == {"error": {"code": "invalid_parameter", "message": message}}
 
 
 def test_classify_all_logs_summary_counts(monkeypatch, caplog):

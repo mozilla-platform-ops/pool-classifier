@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from collections import Counter
+import base64
+import binascii
+import json
 from importlib.metadata import PackageNotFoundError, version
 import logging
 import math
@@ -29,6 +32,9 @@ logger = logging.getLogger(__name__)
 _classifiers: dict[tuple[str, str], PoolClassifier] = {}
 MAX_UTILIZATION_RANGE_SECONDS = 90 * 24 * 60 * 60
 MAX_UTILIZATION_BUCKETS = 2000
+DEFAULT_WORKERS_WINDOW_SECONDS = 24 * 60 * 60
+DEFAULT_WORKERS_LIMIT = 50
+MAX_WORKERS_LIMIT = 200
 UTILIZATION_WINDOWS = {"1h": 60 * 60, "24h": 24 * 60 * 60, "7d": 7 * 24 * 60 * 60, "30d": 30 * 24 * 60 * 60}
 DEFAULT_OBSERVED_START_LAG_SLO_SECONDS = 5 * 60
 DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES = 5
@@ -110,6 +116,66 @@ def _observed_start_lag_min_samples() -> int:
     if min_samples <= 0:
         raise ValueError("min_samples must be greater than zero")
     return min_samples
+
+
+def _bounded_failure_window(default_seconds: int | None = None) -> tuple[str, str]:
+    start_value = request.args.get("start")
+    end_value = request.args.get("end")
+    if not start_value and not end_value and default_seconds is not None:
+        end = datetime.now(timezone.utc).replace(microsecond=0)
+        start = end - timedelta(seconds=default_seconds)
+    elif not start_value or not end_value:
+        raise ValueError("start and end must be provided together")
+    else:
+        start = _parse_utilization_datetime("start", start_value)
+        end = _parse_utilization_datetime("end", end_value)
+    if end <= start:
+        raise ValueError("end must be after start")
+    if (end - start).total_seconds() > MAX_UTILIZATION_RANGE_SECONDS:
+        raise ValueError("time range must not exceed 90 days")
+    return start.isoformat(), end.isoformat()
+
+
+def _optional_bool(name: str) -> bool | None:
+    value = request.args.get(name)
+    if value is None:
+        return None
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
+def _workers_parameters() -> tuple[str, str, bool | None, bool | None, str | None, int, tuple[bool, str] | None]:
+    start, end = _bounded_failure_window(DEFAULT_WORKERS_WINDOW_SECONDS)
+    quarantined = _optional_bool("quarantined")
+    alerting = _optional_bool("alerting")
+    category = request.args.get("category") or None
+    try:
+        limit = int(request.args.get("limit", str(DEFAULT_WORKERS_LIMIT)))
+    except ValueError as exc:
+        raise ValueError("limit must be an integer") from exc
+    if not 1 <= limit <= MAX_WORKERS_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_WORKERS_LIMIT}")
+    cursor = request.args.get("cursor")
+    after = None
+    if cursor:
+        try:
+            padded_cursor = cursor + "=" * (-len(cursor) % 4)
+            decoded = base64.urlsafe_b64decode(padded_cursor)
+            value = json.loads(decoded)
+            if not isinstance(value["alerting"], bool) or not isinstance(value["worker_id"], str):
+                raise ValueError
+            after = (value["alerting"], value["worker_id"])
+        except (binascii.Error, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("cursor is invalid") from exc
+    return start, end, quarantined, alerting, category, limit, after
+
+
+def _workers_cursor(alerting: bool, worker_id: str) -> str:
+    value = json.dumps({"alerting": alerting, "worker_id": worker_id}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(value.encode()).decode().rstrip("=")
 
 
 def _get_classifier(provisioner: str, worker_type: str) -> PoolClassifier | None:
@@ -380,6 +446,9 @@ def create_app() -> Flask:
                 "endpoints": [
                     {"path": "/api/v1/pools", "description": "Configured pool discovery."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/summary", "description": "Pool health summary."},
+                    {"path": "/api/v1/pools/{provisioner}/{worker_type}/failures", "description": "Failure category counts."},
+                    {"path": "/api/v1/pools/{provisioner}/{worker_type}/workers", "description": "Filterable, paginated worker health."},
+                    {"path": "/api/v1/patterns", "description": "Classification-pattern registry."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/utilization", "description": "Duration-weighted utilization."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/utilization/summary", "description": "Standard utilization windows."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/observed-start-lag", "description": "Observed task-run start lag."},
@@ -391,6 +460,24 @@ def create_app() -> Flask:
     @app.get("/api/v1/pools")
     def pools_api():
         return jsonify({"api_version": 1, "pools": [_pool_config(pool) for pool in registry.all_pools_including_disabled()]})
+
+    @app.get("/api/v1/patterns")
+    def patterns_api():
+        return jsonify(
+            {
+                "api_version": 1,
+                "patterns": [
+                    {
+                        "name": pattern.name,
+                        "severity": pattern.severity,
+                        "tags": pattern.tags,
+                        "description": pattern.description,
+                        "enabled": pattern.enabled,
+                    }
+                    for pattern in patterns_registry._patterns  # noqa: SLF001 - public registry includes disabled patterns
+                ],
+            },
+        )
 
     @app.get("/about")
     def about():
@@ -471,6 +558,57 @@ def create_app() -> Flask:
         else:
             now = datetime.now(timezone.utc).replace(microsecond=0)
         return jsonify(_public_pool_summary(pool, summaries.get(f"{provisioner}/{worker_type}"), now))
+
+    @app.get("/api/v1/pools/<provisioner>/<worker_type>/failures")
+    def pool_failures(provisioner: str, worker_type: str):
+        try:
+            start, end = _bounded_failure_window()
+        except ValueError as exc:
+            return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
+        pc = _get_classifier(provisioner, worker_type)
+        if pc is None:
+            return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
+        category = request.args.get("category") or None
+        return jsonify(
+            {
+                "api_version": 1,
+                "pool_id": f"{provisioner}/{worker_type}",
+                "start_at": start,
+                "end_at": end,
+                "category": category,
+                "failures": pc.storage.get_public_failures(start, end, category),
+            },
+        )
+
+    @app.get("/api/v1/pools/<provisioner>/<worker_type>/workers")
+    def pool_workers(provisioner: str, worker_type: str):
+        try:
+            start, end, quarantined, alerting, category, limit, after = _workers_parameters()
+        except ValueError as exc:
+            return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
+        pc = _get_classifier(provisioner, worker_type)
+        if pc is None:
+            return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
+        workers = pc.storage.get_public_workers(
+            start, end, CONSECUTIVE_FAILURE_ALERT, quarantined, alerting, category, limit + 1, after,
+        )
+        has_next = len(workers) > limit
+        workers = workers[:limit]
+        next_cursor = None
+        if has_next:
+            last = workers[-1]
+            next_cursor = _workers_cursor(bool(last["alerting"]), last["worker_id"])
+        return jsonify(
+            {
+                "api_version": 1,
+                "pool_id": f"{provisioner}/{worker_type}",
+                "start_at": start,
+                "end_at": end,
+                "filters": {"quarantined": quarantined, "alerting": alerting, "category": category},
+                "pagination": {"limit": limit, "next_cursor": next_cursor},
+                "workers": workers,
+            },
+        )
 
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/utilization/summary")
     def pool_utilization_summary(provisioner: str, worker_type: str):

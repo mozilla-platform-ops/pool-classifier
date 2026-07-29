@@ -26,6 +26,9 @@ WORKER_TYPE = "test-worker-type"
 POOL_ID = f"{PROVISIONER}/{WORKER_TYPE}"
 POOL_URL_PREFIX = f"/pools/{PROVISIONER}/{WORKER_TYPE}"
 UTILIZATION_URL = f"/api/v1/pools/{PROVISIONER}/{WORKER_TYPE}/utilization"
+SUMMARY_URL = f"/api/v1/pools/{PROVISIONER}/{WORKER_TYPE}/summary"
+FAILURES_URL = f"/api/v1/pools/{PROVISIONER}/{WORKER_TYPE}/failures"
+WORKERS_URL = f"/api/v1/pools/{PROVISIONER}/{WORKER_TYPE}/workers"
 CLASSIFY_URL = f"/classify/{PROVISIONER}/{WORKER_TYPE}"
 
 
@@ -157,6 +160,46 @@ def test_utilization_api_postgres_integration(client):
     assert response.json["availability_mode"] == "listed"
     assert response.json["complete"] is True
     assert [bucket["utilization_pct"] for bucket in response.json["buckets"]] == [100, 0]
+
+
+def test_failures_and_workers_api_postgres_integration(client):
+    start = "2026-07-21T10:00:00+00:00"
+    end = "2026-07-21T11:00:00+00:00"
+    with psycopg.connect(DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO workers (pool_id, worker_id, worker_group, consecutive_failures) VALUES"
+                " (%s,%s,%s,%s), (%s,%s,%s,%s)",
+                (POOL_ID, "alert-worker", "group", 3, POOL_ID, "normal-worker", "group", 0),
+            )
+            cur.execute(
+                "INSERT INTO worker_availability_state"
+                " (pool_id, worker_id, available, quarantined, reason, effective_at, observed_at) VALUES"
+                " (%s,%s,true,true,%s,%s,%s), (%s,%s,true,false,%s,%s,%s)",
+                (POOL_ID, "alert-worker", "test", start, start, POOL_ID, "normal-worker", "test", start, start),
+            )
+            cur.execute(
+                "INSERT INTO task_results"
+                " (pool_id, task_id, worker_id, run_id, run_state, category, run_resolved, classified_at) VALUES"
+                " (%s,%s,%s,0,%s,%s,%s,%s), (%s,%s,%s,0,%s,%s,%s,%s)",
+                (
+                    POOL_ID, "failure-1", "alert-worker", "failed", "device_error", start, start,
+                    POOL_ID, "failure-2", "normal-worker", "exception", "network", start, start,
+                ),
+            )
+        conn.commit()
+
+    failures = client.get(FAILURES_URL, query_string={"start": start, "end": end})
+    assert failures.status_code == 200
+    assert failures.json["failures"] == [{"category": "device_error", "count": 1}, {"category": "network", "count": 1}]
+    workers = client.get(WORKERS_URL, query_string={"start": start, "end": end, "quarantined": "true"})
+    assert workers.status_code == 200
+    assert [worker["worker_id"] for worker in workers.json["workers"]] == ["alert-worker"]
+    assert workers.json["workers"][0]["top_category"] == "device_error"
+    summary = client.get(SUMMARY_URL)
+    assert summary.status_code == 200
+    assert summary.json["metrics"]["workers"] == 2
+    assert summary.json["metrics"]["errors"] == 2
 
 
 def test_classify_lock_conflict_returns_409(client):
