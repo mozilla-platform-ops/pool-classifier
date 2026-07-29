@@ -3,7 +3,9 @@
 `GET /api/v1/pools/{provisioner}/{worker_type}/observed-start-lag` accepts ISO
 8601 `start` and `end` query parameters and an optional positive `slo_seconds`
 parameter. If omitted, the SLO is configurable with
-`OBSERVED_START_LAG_SLO_SECONDS` (default: 300 seconds).
+`OBSERVED_START_LAG_SLO_SECONDS` (default: 14,400 seconds / 4 hours). This
+fleet-wide default is calibrated to the observed 95th-percentile lag; it is
+intended as a meaningful SLO line, not a normal-case target.
 
 The result reports a bounded sample count, nearest-rank p50/p95, and the share
 of samples that started within the selected SLO. A sample is included only when

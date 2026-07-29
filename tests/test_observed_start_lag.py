@@ -126,6 +126,16 @@ def test_observed_start_lag_api_includes_scope_and_configurable_slo(monkeypatch,
     }
 
 
+def test_observed_start_lag_api_defaults_to_four_hour_slo(monkeypatch, tmp_path):
+    response = _client(monkeypatch, _storage(tmp_path)).get(
+        PATH,
+        query_string={"start": START.isoformat(), "end": END.isoformat()},
+    )
+
+    assert response.status_code == 200
+    assert response.json["slo_seconds"] == 4 * 60 * 60
+
+
 def test_observed_start_lag_visualization_api(monkeypatch, tmp_path):
     response = _client(monkeypatch, _storage(tmp_path)).get(
         f"{PATH}/visualization",
