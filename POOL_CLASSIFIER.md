@@ -77,8 +77,11 @@ Then:
 # Single pool
 curl -s -X POST localhost:8080/classify/proj-autophone/gecko-t-lambda-perf-a55 | jq .
 
-# Every enabled pool (autophone first, then releng-hardware, shuffled within each phase)
+# Every enabled non-VM pool (autophone first, then releng-hardware, shuffled within each phase)
 bash pc_fetch_data.sh
+
+# Intentionally include `-vms` worker types too
+INCLUDE_VMS_POOLS=1 bash pc_fetch_data.sh
 ```
 
 OIDC validation is off locally (decorator no-ops when `CLASSIFY_OIDC_AUDIENCE` is unset). In production it requires a Cloud Scheduler-signed JWT.
@@ -98,7 +101,7 @@ pipenv run pytest tests/test_postgres_storage.py tests/test_web_app.py -v
 
 ### Pools (`pool_classifier_web/pools.yaml`)
 
-Registry of pools the dashboard knows about. Disabled pools stay listed (greyed-out on the index) but are not classified. Each pool can override its cron schedule.
+Registry of pools the dashboard knows about. Disabled pools stay listed (greyed-out on the index) but are not classified. Enabled worker types ending in `-vms` are also omitted from automatic classification by default, because their short-lived, high-volume workers overwhelm a normal cycle. Set `INCLUDE_VMS_POOLS=1` to override that default. Each pool can override its cron schedule.
 
 ### Patterns (`pool_classifier_web/patterns.yaml`)
 
@@ -121,6 +124,7 @@ Match order: patterns are sorted critical → high → low, file order within a 
 | `TC_TOKEN_JSON`           | Inline TC token JSON (overrides file)       | unset                      |
 | `TC_ROOT_URL`             | Taskcluster root URL                        | firefox-ci-tc              |
 | `POOLS_FILE`              | Override path to `pools.yaml`               | package-relative           |
+| `INCLUDE_VMS_POOLS`       | Set `1` to include `-vms` pools in automatic classification | unset (skip VM pools) |
 | `PATTERNS_FILE`           | Override path to `patterns.yaml`            | package-relative           |
 | `CLASSIFY_OIDC_AUDIENCE`  | If set, require OIDC bearer on `/classify/*` | unset (off, local dev)     |
 | `CLASSIFY_OIDC_SA_EMAIL`  | Expected `email` claim in the OIDC token    | unset (any caller passes)  |

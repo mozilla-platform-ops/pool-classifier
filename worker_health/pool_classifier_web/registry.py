@@ -11,6 +11,7 @@ import yaml
 
 _DEFAULT_POOLS_FILE = Path(__file__).parent / "pools.yaml"
 AVAILABILITY_MODES = {"recent_contact", "listed"}
+INCLUDE_VMS_POOLS_ENV = "INCLUDE_VMS_POOLS"
 
 
 @dataclass
@@ -55,8 +56,20 @@ def detect_os(pool: "Pool") -> str:
     return "linux"
 
 
+def is_vm_pool(pool: "Pool") -> bool:
+    """Whether a pool follows the Taskcluster ``-vms`` worker-type convention."""
+    return pool.worker_type.lower().endswith("-vms")
+
+
 def all_pools() -> List[Pool]:
-    return [p for p in _pools if p.enabled]
+    """Return pools included in automatic classification.
+
+    VM pools are intentionally omitted by default: they are short-lived and
+    their job and worker volume overwhelms a normal classification cycle. Set
+    ``INCLUDE_VMS_POOLS=1`` to include them for an intentional full run.
+    """
+    include_vms = os.environ.get(INCLUDE_VMS_POOLS_ENV) == "1"
+    return [p for p in _pools if p.enabled and (include_vms or not is_vm_pool(p))]
 
 
 def all_pools_including_disabled() -> List[Pool]:

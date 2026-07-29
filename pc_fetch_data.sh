@@ -27,11 +27,20 @@ classify_pools() {
   done
 }
 
-# VM pools are excluded: they're not long-lived and have a large volume of jobs/workers that overwhelms the tool.
+# VM pools are excluded by default: they're not long-lived and have a large
+# volume of jobs/workers that overwhelms the tool. Set INCLUDE_VMS_POOLS=1 for
+# an intentional full run. Keep this selection in sync with registry.all_pools.
 all_pools=()
 while IFS= read -r pool; do
   all_pools+=("$pool")
-done < <(yq '.pools[] | .provisioner + "/" + .worker_type' "$POOLS_YAML" | grep -viE '\bvms?\b')
+done < <(
+  yq -r '.pools[] | select(.enabled != false) | .provisioner + "/" + .worker_type' "$POOLS_YAML" |
+    if [[ "${INCLUDE_VMS_POOLS:-}" == "1" ]]; then
+      cat
+    else
+      grep -viE -- '-vms$'
+    fi
+)
 
 autophone=()
 rest=()
