@@ -8,6 +8,7 @@ import pytest
 
 from worker_health.pool_classifier_web import app as app_module
 from worker_health.pool_classifier_web.app import create_app
+from worker_health.pool_classifier_web.registry import Pool
 from worker_health.pool_classifier_web.storage import SqliteStorage
 
 
@@ -76,6 +77,98 @@ def test_favicon_serves_svg_icon():
     assert response.status_code == 200
     assert response.content_type.startswith("image/svg+xml")
     assert b"<svg" in response.data
+
+
+def test_api_v1_discovery_lists_versioned_endpoints():
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/api/v1")
+
+    assert response.status_code == 200
+    assert response.json["api_version"] == 1
+    assert {endpoint["path"] for endpoint in response.json["endpoints"]} >= {
+        "/api/v1/pools",
+        "/api/v1/pools/{provisioner}/{worker_type}/summary",
+    }
+
+
+def test_pools_api_returns_enabled_and_disabled_pool_configuration(monkeypatch):
+    enabled = Pool("enabled", "proj", "worker", "*/15 * * * *")
+    disabled = Pool("disabled", "proj", "disabled-worker", "0 * * * *", enabled=False, reason="retired")
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [enabled, disabled])
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/api/v1/pools")
+
+    assert response.status_code == 200
+    assert response.json == {
+        "api_version": 1,
+        "pools": [
+            {
+                "id": "enabled", "provisioner": "proj", "worker_type": "worker", "os": "linux",
+                "enabled": True, "reason": None, "schedule": "*/15 * * * *", "availability_mode": "recent_contact",
+            },
+            {
+                "id": "disabled", "provisioner": "proj", "worker_type": "disabled-worker", "os": "linux",
+                "enabled": False, "reason": "retired", "schedule": "0 * * * *", "availability_mode": "recent_contact",
+            },
+        ],
+    }
+
+
+def test_pool_summary_api_returns_metrics_coverage_and_freshness(monkeypatch):
+    pool = Pool("pool", "proj", "worker", "*/15 * * * *", availability_mode="listed")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(app_module.registry, "get_pool", lambda p, w: pool if (p, w) == ("proj", "worker") else None)
+    monkeypatch.setattr(
+        app_module,
+        "pool_summaries_global",
+        lambda *_args: {
+            "proj/worker": {
+                "workers": 4, "alerting": 1, "task_runs": 12, "successes": 9, "errors": 3,
+                "ok_1h": 3, "err_1h": 1, "ok_24h": 9, "err_24h": 3,
+                "task_collection_started": "2026-07-20T00:00:00+00:00",
+                "collection_latest": "2026-07-21T11:00:00+00:00",
+                "availability_collection_started": "2026-07-20T00:00:00+00:00",
+                "availability_collection_latest": "2026-07-21T11:15:00+00:00",
+            },
+        },
+    )
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/api/v1/pools/proj/worker/summary")
+
+    assert response.status_code == 200
+    assert response.json["api_version"] == 1
+    assert response.json["pool"]["availability_mode"] == "listed"
+    assert response.json["metrics"] == {
+        "workers": 4, "alerting_workers": 1, "task_runs": 12, "successes": 9, "errors": 3,
+        "success_rate_pct": 75.0,
+        "windows": {
+            "1h": {"successes": 3, "errors": 1, "success_rate_pct": 75.0},
+            "24h": {"successes": 9, "errors": 3, "success_rate_pct": 75.0},
+        },
+    }
+    assert response.json["coverage"]["task_runs"]["through"] == "2026-07-21T11:00:00+00:00"
+    assert response.json["freshness"]["collected_at"] == "2026-07-21T11:15:00+00:00"
+
+
+def test_pool_summary_api_returns_404_for_unknown_pool(monkeypatch):
+    monkeypatch.setattr(app_module.registry, "get_pool", lambda *_args: None)
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/api/v1/pools/no/such/summary")
+
+    assert response.status_code == 404
+    assert response.json == {"error": {"code": "not_found", "message": "pool not found"}}
 
 
 def test_classify_all_logs_summary_counts(monkeypatch, caplog):

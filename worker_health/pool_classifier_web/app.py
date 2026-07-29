@@ -183,6 +183,71 @@ def _coverage_label(
     return label, coverage_seconds
 
 
+def _pool_config(pool) -> dict:
+    """Public, stable representation of a configured pool."""
+    return {
+        "id": pool.id,
+        "provisioner": pool.provisioner,
+        "worker_type": pool.worker_type,
+        "os": detect_os(pool),
+        "enabled": pool.enabled,
+        "reason": pool.reason or None,
+        "schedule": pool.schedule,
+        "availability_mode": pool.availability_mode,
+    }
+
+
+def _success_rate(successes: int, errors: int) -> float | None:
+    total = successes + errors
+    return round(successes / total * 100, 1) if total else None
+
+
+def _public_pool_summary(pool, summary: dict | None, now: datetime) -> dict:
+    """Shape storage aggregates into the versioned per-pool API contract."""
+    summary = summary or {}
+    task_latest = summary.get("collection_latest")
+    availability_latest = summary.get("availability_collection_latest")
+    freshness_values = [value for value in (task_latest, availability_latest) if value]
+    collected_at = (
+        max(freshness_values, key=lambda value: _parse_utilization_datetime("collected_at", value))
+        if freshness_values
+        else None
+    )
+    stale = None
+    if collected_at:
+        stale = now - _parse_utilization_datetime("collected_at", collected_at) > COVERAGE_STALE_AFTER
+
+    def _coverage(started: str | None, latest: str | None) -> dict:
+        return {"started_at": started, "through": latest}
+
+    def _window(successes: int, errors: int) -> dict:
+        return {"successes": successes, "errors": errors, "success_rate_pct": _success_rate(successes, errors)}
+
+    successes = summary.get("successes", 0)
+    errors = summary.get("errors", 0)
+    return {
+        "api_version": 1,
+        "pool": _pool_config(pool),
+        "metrics": {
+            "workers": summary.get("workers", 0),
+            "alerting_workers": summary.get("alerting", 0),
+            "task_runs": summary.get("task_runs", 0),
+            "successes": successes,
+            "errors": errors,
+            "success_rate_pct": _success_rate(successes, errors),
+            "windows": {
+                "1h": _window(summary.get("ok_1h", 0), summary.get("err_1h", 0)),
+                "24h": _window(summary.get("ok_24h", 0), summary.get("err_24h", 0)),
+            },
+        },
+        "coverage": {
+            "task_runs": _coverage(summary.get("task_collection_started"), task_latest),
+            "worker_availability": _coverage(summary.get("availability_collection_started"), availability_latest),
+        },
+        "freshness": {"collected_at": collected_at, "stale": stale},
+    }
+
+
 def create_app() -> Flask:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = Flask(__name__)
@@ -307,6 +372,26 @@ def create_app() -> Flask:
     def api_overview():
         return render_template("api.html")
 
+    @app.get("/api/v1")
+    def api_v1_discovery():
+        return jsonify(
+            {
+                "api_version": 1,
+                "endpoints": [
+                    {"path": "/api/v1/pools", "description": "Configured pool discovery."},
+                    {"path": "/api/v1/pools/{provisioner}/{worker_type}/summary", "description": "Pool health summary."},
+                    {"path": "/api/v1/pools/{provisioner}/{worker_type}/utilization", "description": "Duration-weighted utilization."},
+                    {"path": "/api/v1/pools/{provisioner}/{worker_type}/utilization/summary", "description": "Standard utilization windows."},
+                    {"path": "/api/v1/pools/{provisioner}/{worker_type}/observed-start-lag", "description": "Observed task-run start lag."},
+                    {"path": "/api/v1/pools/{provisioner}/{worker_type}/observed-start-lag/visualization", "description": "Chart-ready observed start lag."},
+                ],
+            },
+        )
+
+    @app.get("/api/v1/pools")
+    def pools_api():
+        return jsonify({"api_version": 1, "pools": [_pool_config(pool) for pool in registry.all_pools_including_disabled()]})
+
     @app.get("/about")
     def about():
         commit = os.environ.get("POOL_CLASSIFIER_COMMIT", "unknown")
@@ -364,6 +449,28 @@ def create_app() -> Flask:
         result["api_version"] = 1
         result["availability_mode"] = pc.availability_mode
         return jsonify(result)
+
+    @app.get("/api/v1/pools/<provisioner>/<worker_type>/summary")
+    def pool_summary(provisioner: str, worker_type: str):
+        pool = registry.get_pool(provisioner, worker_type)
+        if pool is None:
+            return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
+        summaries = {}
+        dsn = os.environ.get("DATABASE_URL")
+        if dsn:
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            try:
+                summaries = pool_summaries_global(
+                    dsn,
+                    CONSECUTIVE_FAILURE_ALERT,
+                    (now - timedelta(hours=1)).isoformat(),
+                    (now - timedelta(hours=24)).isoformat(),
+                )
+            except Exception as exc:  # noqa: BLE001 - read-only dashboard endpoint remains available
+                logger.warning("pool summary: aggregate query failed: %s", exc)
+        else:
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+        return jsonify(_public_pool_summary(pool, summaries.get(f"{provisioner}/{worker_type}"), now))
 
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/utilization/summary")
     def pool_utilization_summary(provisioner: str, worker_type: str):

@@ -1018,7 +1018,9 @@ def pool_summaries_global(dsn: str, alert_threshold: int, since_1h: str, since_2
 
     Replaces ~7 per-pool queries (run on a per-pool connection) with two
     GROUP BY pool_id queries on one connection. Returns
-    {pool_id: {workers, alerting, oldest, latest, collection_latest, err_1h, ok_1h, err_24h, ok_24h}}.
+    {pool_id: {workers, alerting, oldest, latest, collection_latest, task_collection_started,
+    availability_collection_started, availability_collection_latest, task_runs, successes,
+    errors, err_1h, ok_1h, err_24h, ok_24h}}.
     Pools with no rows simply won't appear — callers must default them.
     """
     if psycopg is None:
@@ -1029,7 +1031,23 @@ def pool_summaries_global(dsn: str, alert_threshold: int, since_1h: str, since_2
     def _entry(pool_id: str) -> dict:
         return summaries.setdefault(
             pool_id,
-            {"workers": 0, "alerting": 0, "oldest": None, "latest": None, "collection_latest": None, "err_1h": 0, "ok_1h": 0, "err_24h": 0, "ok_24h": 0},
+            {
+                "workers": 0,
+                "alerting": 0,
+                "oldest": None,
+                "latest": None,
+                "collection_latest": None,
+                "task_collection_started": None,
+                "availability_collection_started": None,
+                "availability_collection_latest": None,
+                "task_runs": 0,
+                "successes": 0,
+                "errors": 0,
+                "err_1h": 0,
+                "ok_1h": 0,
+                "err_24h": 0,
+                "ok_24h": 0,
+            },
         )
 
     with psycopg.connect(dsn) as conn:
@@ -1044,30 +1062,64 @@ def pool_summaries_global(dsn: str, alert_threshold: int, since_1h: str, since_2
             for pool_id, workers, alerting in cur.fetchall():
                 e = _entry(pool_id)
                 e["workers"], e["alerting"] = workers, alerting
-        # task_results → data coverage bounds + windowed error/success counts per pool, one scan.
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pool_id, source, MIN(start_at), MAX(end_at)"
+                " FROM collection_coverage_intervals"
+                " WHERE source IN ('task_runs', 'worker_availability')"
+                " GROUP BY pool_id, source"
+            )
+            for pool_id, source, started, latest in cur.fetchall():
+                e = _entry(pool_id)
+                if source == "task_runs":
+                    e["task_collection_started"] = _to_iso(started)
+                    e["collection_latest"] = _to_iso(latest)
+                else:
+                    e["availability_collection_started"] = _to_iso(started)
+                    e["availability_collection_latest"] = _to_iso(latest)
+        # Task results and coverage bounds, one grouped scan per source. Collection
+        # coverage records successful scans even when they find no terminal tasks.
         # Collection coverage records successful scans even when they find no new
         # terminal tasks, which is the correct signal for dashboard freshness.
         with conn.cursor() as cur:
             cur.execute(
                 "WITH task_coverage AS ("
-                " SELECT pool_id, MAX(end_at) AS collection_latest"
+                " SELECT pool_id, MIN(start_at) AS collection_started, MAX(end_at) AS collection_latest"
                 " FROM collection_coverage_intervals WHERE source = 'task_runs' GROUP BY pool_id"
+                "), availability_coverage AS ("
+                " SELECT pool_id, MIN(start_at) AS collection_started, MAX(end_at) AS collection_latest"
+                " FROM collection_coverage_intervals WHERE source = 'worker_availability' GROUP BY pool_id"
                 ") "
                 "SELECT task_results.pool_id, MIN(classified_at) AS oldest, MAX(classified_at) AS latest,"
-                " task_coverage.collection_latest,"
+                " task_coverage.collection_started, task_coverage.collection_latest,"
+                " availability_coverage.collection_started, availability_coverage.collection_latest,"
+                " COUNT(*) AS task_runs,"
+                " COUNT(*) FILTER (WHERE run_state = 'completed') AS successes,"
+                " COUNT(*) FILTER (WHERE run_state IN ('failed','exception')) AS errors,"
                 " COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND COALESCE(run_resolved, classified_at) >= %(s1h)s) AS err_1h,"
                 " COUNT(*) FILTER (WHERE run_state = 'completed'            AND COALESCE(run_resolved, classified_at) >= %(s1h)s) AS ok_1h,"
                 " COUNT(*) FILTER (WHERE run_state IN ('failed','exception') AND COALESCE(run_resolved, classified_at) >= %(s24h)s) AS err_24h,"
                 " COUNT(*) FILTER (WHERE run_state = 'completed'            AND COALESCE(run_resolved, classified_at) >= %(s24h)s) AS ok_24h"
                 " FROM task_results LEFT JOIN task_coverage USING (pool_id)"
-                " GROUP BY task_results.pool_id, task_coverage.collection_latest",
+                " LEFT JOIN availability_coverage USING (pool_id)"
+                " GROUP BY task_results.pool_id, task_coverage.collection_started, task_coverage.collection_latest,"
+                " availability_coverage.collection_started, availability_coverage.collection_latest",
                 {"s1h": since_1h, "s24h": since_24h},
             )
-            for pool_id, oldest, latest, collection_latest, err_1h, ok_1h, err_24h, ok_24h in cur.fetchall():
+            for row in cur.fetchall():
+                (
+                    pool_id, oldest, latest, task_collection_started, collection_latest,
+                    availability_collection_started, availability_collection_latest,
+                    task_runs, successes, errors, err_1h, ok_1h, err_24h, ok_24h,
+                ) = row
                 e = _entry(pool_id)
                 e["oldest"] = _to_iso(oldest)
                 e["latest"] = _to_iso(latest)
                 e["collection_latest"] = _to_iso(collection_latest)
+                e["task_collection_started"] = _to_iso(task_collection_started)
+                e["availability_collection_started"] = _to_iso(availability_collection_started)
+                e["availability_collection_latest"] = _to_iso(availability_collection_latest)
+                e["task_runs"], e["successes"], e["errors"] = task_runs, successes, errors
                 e["err_1h"], e["ok_1h"], e["err_24h"], e["ok_24h"] = err_1h, ok_1h, err_24h, ok_24h
     return summaries
 

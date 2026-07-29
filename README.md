@@ -73,6 +73,7 @@ Useful local URLs:
 - Example pool:
   <http://localhost:8080/pools/proj-autophone/gecko-t-lambda-perf-a55>
 - Health check: <http://localhost:8080/healthz>
+- Public API: see [docs/public-api.md](docs/public-api.md)
 - Utilization API: see [docs/utilization-api.md](docs/utilization-api.md)
 
 The dashboard and pool pages identify pools using `listed` availability. For
