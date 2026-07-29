@@ -47,11 +47,13 @@
     <tr><td class="method">GET</td><td><code>/api/v1/pools/{provisioner}/{worker_type}/utilization</code></td><td>Returns bucketed, duration-weighted utilization for a requested time range.</td></tr>
     <tr><td class="method">GET</td><td><code>/api/v1/pools/{provisioner}/{worker_type}/utilization/summary</code></td><td>Returns the standard trailing 1h, 24h, 7d, and 30d utilization windows.</td></tr>
     <tr><td class="method">GET</td><td><code>/api/v1/pools/{provisioner}/{worker_type}/observed-start-lag</code></td><td>Returns observed scheduled-to-start lag for terminal runs; it excludes runs that never started.</td></tr>
+    <tr><td class="method">GET</td><td><code>/api/v1/pools/{provisioner}/{worker_type}/observed-start-lag/visualization</code></td><td>Returns the same observed-start-lag data shaped for charting, with a configurable <code>min_samples</code>.</td></tr>
   </tbody>
 </table>
 <h2>Usage</h2>
 <p class="intro">The bucketed endpoint requires ISO 8601 <code>start</code> and <code>end</code> parameters plus <code>bucket_seconds</code>. Ranges are limited to 90 days and 2,000 buckets. Responses include coverage and availability-mode metadata.</p>
 <p class="intro">The observed-start-lag endpoint requires ISO 8601 <code>start</code> and <code>end</code>, and accepts <code>slo_seconds</code>. It is not a queue-total or pool-health metric: runs that never started are not visible to this collector.</p>
-<p><a class="doc-link" href="https://github.com/mozilla-platform-ops/pool-classifier/blob/main/docs/utilization-api.md">Read the complete API documentation →</a></p>
+<p><a class="doc-link" href="https://github.com/mozilla-platform-ops/pool-classifier/blob/main/docs/utilization-api.md">Read the utilization API documentation →</a></p>
+<p><a class="doc-link" href="https://github.com/mozilla-platform-ops/pool-classifier/blob/main/docs/observed-start-lag-api.md">Read the observed-start-lag API documentation →</a></p>
 </body>
 </html>
