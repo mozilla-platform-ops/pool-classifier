@@ -243,6 +243,17 @@ def _format_lag(seconds: float | int) -> str:
     return f"{hours}h" if not remaining_minutes else f"{hours}h {remaining_minutes}m"
 
 
+def _lag_color_class(seconds: float | int) -> str:
+    """Return the overview color band for an observed p95 lag value."""
+    if seconds >= 12 * 60 * 60:
+        return "bad"
+    if seconds >= 4 * 60 * 60:
+        return "warn"
+    if seconds >= 2 * 60 * 60:
+        return "lag-yellow"
+    return "ok"
+
+
 def _coverage_label(
     oldest: str | None,
     latest: str | None,
@@ -333,6 +344,7 @@ def create_app() -> Flask:
     app = Flask(__name__)
     app.jinja_env.filters["humanize_cron"] = _humanize_cron
     app.jinja_env.filters["format_lag"] = _format_lag
+    app.jinja_env.filters["lag_color_class"] = _lag_color_class
 
     # Warn at startup if TC credentials are missing, but don't fail.
     try:

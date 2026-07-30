@@ -144,6 +144,7 @@ def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch)
     assert 'p50: 38s' in html
     assert 'p95: 4m 12s' in html
     assert '5 observed starts' in html
+    assert '<span class="ok">4m 12s</span>' in html
 
 
 def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
@@ -164,6 +165,19 @@ def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
 
     assert 'P95 unavailable: 2 observed starts (minimum 5).' in response.text
     assert 'data-sort-value="252.0"' not in response.text
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected_class"),
+    [
+        (2 * 60 * 60 - 1, "ok"),
+        (2 * 60 * 60, "lag-yellow"),
+        (4 * 60 * 60, "warn"),
+        (12 * 60 * 60, "bad"),
+    ],
+)
+def test_overview_lag_color_bands(seconds, expected_class):
+    assert app_module._lag_color_class(seconds) == expected_class
 
 
 def test_pool_summary_api_returns_metrics_coverage_and_freshness(monkeypatch):

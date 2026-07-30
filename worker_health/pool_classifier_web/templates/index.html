@@ -16,6 +16,7 @@
   .ok { color: #4c4; }
   .bad { color: #f44; }
   .warn { color: #f90; }
+  .lag-yellow { color: #dd4; }
   table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
   th { background: #222; color: #aaa; text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #444; cursor: pointer; user-select: none; }
   th:hover { color: #fff; }
@@ -90,7 +91,7 @@
         <span class="utilization-value no-data">—</span>{% if row.pool.availability_mode == 'listed' %}<span class="mode-listed" title="Uses Taskcluster-listed capacity, which does not confirm a live device">[L]</span>{% endif %}
       </td>
       <td{% if row.start_lag and row.start_lag.sample_count >= 5 %} data-sort-value="{{ row.start_lag.p95_seconds }}" title="Observed start lag, last 7d&#10;p50: {{ row.start_lag.p50_seconds | format_lag }}&#10;p95: {{ row.start_lag.p95_seconds | format_lag }}&#10;{{ row.start_lag.sample_count }} observed starts"{% elif row.start_lag %} title="P95 unavailable: {{ row.start_lag.sample_count }} observed starts (minimum 5)."{% endif %}>
-        {% if row.start_lag and row.start_lag.sample_count >= 5 %}{{ row.start_lag.p95_seconds | format_lag }}
+        {% if row.start_lag and row.start_lag.sample_count >= 5 %}<span class="{{ row.start_lag.p95_seconds | lag_color_class }}">{{ row.start_lag.p95_seconds | format_lag }}</span>
         {% else %}<span class="no-data">—</span>{% endif %}
       </td>
       <td>
