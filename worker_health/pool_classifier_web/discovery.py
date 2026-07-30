@@ -26,7 +26,15 @@ def discover(force=False):
     rows = []
     for provisioner, worker_type in sorted(set(found)):
         pool = configured.pop((provisioner, worker_type), None)
-        rows.append({"provisioner": provisioner, "worker_type": worker_type, "status": "covered" if pool and pool.enabled else "excluded" if pool else "uncovered", "reason": pool.reason if pool and not pool.enabled else ""})
+        if pool and pool.enabled:
+            status, reason = "covered", ""
+        elif pool:
+            status, reason = "excluded", pool.reason
+        elif worker_type.lower().endswith("-vms"):
+            status, reason = "ignored", "Globally ignored by the -vms convention"
+        else:
+            status, reason = "uncovered", ""
+        rows.append({"provisioner": provisioner, "worker_type": worker_type, "status": status, "reason": reason})
     for pool in configured.values():
         rows.append({"provisioner": pool.provisioner, "worker_type": pool.worker_type, "status": "configured inactive", "reason": "Not returned by Taskcluster"})
     _cache = {"fetched_at": datetime.now(timezone.utc).isoformat(), "rows": rows}
