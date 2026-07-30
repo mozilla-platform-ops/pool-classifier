@@ -3,6 +3,7 @@
 import argparse
 import logging
 import os
+import signal
 from pathlib import Path
 
 from worker_health.pool_classifier import (
@@ -37,6 +38,21 @@ class ColorFormatter(logging.Formatter):
         msg = super().format(record)
         code = self.LEVEL_COLORS.get(record.levelno)
         return _c(code, msg) if code else msg
+
+
+class StopAfterCurrentBatch:
+    """Turn the first Ctrl-C into a request to stop after durable work."""
+
+    def __init__(self) -> None:
+        self.requested = False
+
+    def handle_signal(self, signum: int, frame: object) -> None:
+        if self.requested:
+            signal.default_int_handler(signum, frame)
+        self.requested = True
+        print(
+            "Ctrl-C received; finishing the current batch before stopping. Press Ctrl-C again to abort.",
+        )
 
 
 if __name__ == "__main__":
@@ -133,7 +149,23 @@ if __name__ == "__main__":
     )
     if args.backfill_start_lag:
         classifier._init_db()
-        print(classifier.backfill_start_lag(args.backfill_batch_size, args.backfill_concurrency, args.backfill_retries, args.backfill_requests_per_second, args.backfill_state_file))
+        stop = StopAfterCurrentBatch()
+        previous_handler = signal.signal(signal.SIGINT, stop.handle_signal)
+        try:
+            result = classifier.backfill_start_lag(
+                args.backfill_batch_size,
+                args.backfill_concurrency,
+                args.backfill_retries,
+                args.backfill_requests_per_second,
+                args.backfill_state_file,
+                should_stop=lambda: stop.requested,
+            )
+            print(result)
+        finally:
+            signal.signal(signal.SIGINT, previous_handler)
+            classifier.storage.close()
+        if stop.requested:
+            raise SystemExit(130)
     elif args.reclassify:
         classifier.reclassify_unclassified(
             target_category=args.reclassify_category,

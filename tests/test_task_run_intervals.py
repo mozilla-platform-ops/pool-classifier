@@ -453,6 +453,31 @@ def test_start_lag_backfill_enriches_existing_runs_once_per_task(tmp_path, monke
     assert classifier.backfill_start_lag(batch_size=10, concurrency=1, retries=0)["selected_runs"] == 0
 
 
+def test_start_lag_backfill_finishes_and_persists_a_stop_requested_batch(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+    storage.record_task_result(
+        "task-1", "worker-1", 0, "completed", None, "completed",
+        "2026-07-14T10:00:00+00:00", "2026-07-14T10:05:00+00:00", "2026-07-14T10:05:00+00:00",
+    )
+    storage.commit()
+    state_file = tmp_path / ".backfill-state.json"
+    monkeypatch.setattr(classifier, "_ensure_tc", lambda: None)
+    monkeypatch.setattr(classifier, "_get_task_status", lambda _task_id: {
+        "status": {"runs": [{"runId": 0, "scheduled": "2026-07-14T09:55:00+00:00"}]},
+    })
+
+    result = classifier.backfill_start_lag(
+        batch_size=1, concurrency=1, retries=0, state_file=state_file, should_stop=lambda: True,
+    )
+
+    assert result["enriched_runs"] == 1
+    assert result["stop_requested"] is True
+    assert storage.db.execute("SELECT run_scheduled FROM task_results").fetchone()[0] == "2026-07-14T09:55:00+00:00"
+    assert state_file.exists()
+
+
 def test_start_lag_backfill_reports_expired_status_without_modifying_run(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)

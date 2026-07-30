@@ -10,4 +10,5 @@ __pycache__/
 
 # Local start-lag backfill state and default SQLite results.
 .backfill-start-lag-state.json
+.backfill-start-lag-state/
 pool_classifier_results/

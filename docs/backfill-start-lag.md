@@ -32,3 +32,23 @@ The state file records Queue 404 task IDs and runs that lack a Queue
 `scheduled` timestamp. Later invocations skip those known-unavailable records
 and page past them to reach older rows. Delete the file (or choose another path
 with `--backfill-state-file`) to retry them.
+
+## Every Postgres pool
+
+To drain the eligible backlog for every pool already stored in Postgres, use
+the repository script. It discovers only pools with at least one run missing
+`run_scheduled`, keeps separate retry state for each pool, and repeats bounded
+batches until each pool is drained.
+
+```bash
+DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier \
+pipenv run -- python scripts/backfill_start_lag_all_pools.py
+```
+
+Use `--batch-size`, `--concurrency`, and `--requests-per-second` to tune the
+Queue request load. The script exits nonzero if a pool has exhausted transient
+Queue retries; rerun it to retry that pool.
+
+Press Ctrl-C once to stop after the current pool batch has finished and its
+database updates and state file are durable. The script exits with status 130;
+press Ctrl-C a second time to abort immediately.

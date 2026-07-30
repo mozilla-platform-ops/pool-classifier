@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import requests
 import taskcluster
@@ -277,7 +277,7 @@ class PoolClassifier:
 
     def backfill_start_lag(
         self, batch_size: int = 500, concurrency: int = 5, retries: int = 2, requests_per_second: float = 5.0,
-        state_file: Optional[Path] = None,
+        state_file: Optional[Path] = None, should_stop: Optional[Callable[[], bool]] = None,
     ) -> dict:
         """Enrich one bounded batch of stored runs with Queue schedule metadata.
 
@@ -327,6 +327,8 @@ class PoolClassifier:
             stats["selected_runs"] = len(rows)
             stats["selected_tasks"] = len(by_task)
             if not by_task:
+                if should_stop is not None:
+                    stats["stop_requested"] = should_stop()
                 return stats
 
             statuses: Dict[str, Optional[dict]] = {}
@@ -367,6 +369,10 @@ class PoolClassifier:
             pool_state["expired_task_ids"] = sorted(expired_task_ids)
             pool_state["unmatched_runs"] = [list(item) for item in sorted(unmatched_runs)]
             self._save_backfill_state(state_file, state)
+            if should_stop is not None:
+                # Check only after the whole batch is durable. Callers use this
+                # to stop between batches without losing Queue results or writes.
+                stats["stop_requested"] = should_stop()
         logger.info("start-lag backfill: %s", stats)
         return stats
 
