@@ -1,6 +1,15 @@
 # bv (beads viewer) local config and caches
 .bv/
 
+# Local Beads SQLite coordination files; issue JSONL remains tracked.
+.beads/beads.db-*
+
+# Editable-install build metadata.
+*.egg-info/
+
+# macOS Finder metadata.
+.DS_Store
+
 # Local Postgres bind-mount data created by pc_db.sh/docker-compose.
 worker_health/pool_classifier_web/pgdata/
 
