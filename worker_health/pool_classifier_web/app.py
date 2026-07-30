@@ -16,6 +16,7 @@ from flask import Flask, Response, abort, jsonify, render_template, request
 
 from worker_health.pool_classifier import CONSECUTIVE_FAILURE_ALERT, PoolClassifier
 from worker_health.pool_classifier_web import registry
+from worker_health.pool_classifier_web import discovery
 from worker_health.pool_classifier_web.auth import require_scheduler_oidc
 from worker_health.pool_classifier_web.registry import detect_os
 from worker_health.pool_classifier_web import patterns_registry
@@ -433,6 +434,14 @@ def create_app() -> Flask:
             hits=hits,
             generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         )
+
+    @app.get("/coverage")
+    def coverage():
+        return render_template("coverage.html", data=discovery.discover())
+
+    @app.post("/coverage/refetch")
+    def coverage_refetch():
+        return render_template("coverage.html", data=discovery.discover(force=True))
 
     @app.get("/api")
     def api_overview():

@@ -1,0 +1,10 @@
+<!doctype html>
+<title>Pool Classifier — Registry coverage</title>
+<style>body{font-family:monospace;background:#111;color:#ccc;padding:1.5rem}a{color:#58a6ff}table{border-collapse:collapse;width:100%}th,td{padding:.5rem;border-bottom:1px solid #333;text-align:left;vertical-align:top}.covered{color:#4c4}.uncovered{color:#f90}.excluded,.configured-inactive{color:#777}code{white-space:pre-wrap}</style>
+<p><a href="/">← Overview</a></p><h1>Registry coverage</h1>
+<p>Taskcluster worker types for proj-autophone and releng-hardware. Last fetched: {{ data.fetched_at }}.</p>
+<form method="post" action="/coverage/refetch"><button>Refetch Taskcluster</button></form>
+<table><tr><th>Pool</th><th>Status</th><th>Next step</th></tr>{% for row in data.rows %}<tr class="{{ row.status|replace(' ', '-') }}"><td>{{ row.provisioner }}/{{ row.worker_type }}</td><td>{{ row.status }}{% if row.reason %}: {{ row.reason }}{% endif %}</td><td>{% if row.status == 'uncovered' %}<code>- id: {{ row.worker_type }}
+  provisioner: {{ row.provisioner }}
+  worker_type: {{ row.worker_type }}
+  schedule: "*/15 * * * *"</code><br>Add this to <code>worker_health/pool_classifier_web/pools.yaml</code>, then commit and deploy.{% endif %}</td></tr>{% endfor %}</table>
