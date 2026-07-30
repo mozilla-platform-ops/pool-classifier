@@ -108,10 +108,8 @@ curl -sG localhost:8080/api/v1/pools/proj-autophone/gecko-t-lambda-perf-a55/util
 # Unit and web tests that do not require local Postgres
 pipenv run pytest tests/ --ignore=tests/test_runner.py -x -q
 
-# Postgres-backed tests
-./pc_db.sh init
-export PC_TEST_DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier  # pragma: allowlist secret
-pipenv run pytest tests/test_postgres_storage.py tests/test_web_app.py -v
+# Full suite, including Postgres-backed tests
+scripts/run_local_postgres_tests.sh
 ```
 
 ## Deploy
