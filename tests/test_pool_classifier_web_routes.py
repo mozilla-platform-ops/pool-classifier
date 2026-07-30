@@ -140,6 +140,7 @@ def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch)
 
     html = response.text
     assert 'Lag p95</th>' in html
+    assert html.index('<th>Hosts</th>') < html.index('Utilization') < html.index('Lag p95')
     assert 'data-sort-value="252.0"' in html
     assert 'p50: 38s' in html
     assert 'p95: 4m 12s' in html
