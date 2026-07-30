@@ -173,7 +173,7 @@ def test_pool_summary_api_returns_404_for_unknown_pool(monkeypatch):
     assert response.json == {"error": {"code": "not_found", "message": "pool not found"}}
 
 
-def test_coverage_page_and_refetch(monkeypatch):
+def test_pool_discovery_page_and_refetch(monkeypatch):
     calls = []
     def fake_discover(force=False):
         calls.append(force)
@@ -183,8 +183,10 @@ def test_coverage_page_and_refetch(monkeypatch):
     monkeypatch.setattr(app_module.discovery, "discover", fake_discover)
     app = create_app(); app.config["TESTING"] = True
     with app.test_client() as client:
-        assert b"new-pool" in client.get("/coverage").data
-        response = client.post("/coverage/refetch")
+        page = client.get("/pool-discovery").data
+        assert b"Pool Discovery" in page
+        assert b"new-pool" in page
+        response = client.post("/pool-discovery/refetch")
     assert response.status_code == 200
     assert calls == [False, True]
 

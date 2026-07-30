@@ -435,12 +435,12 @@ def create_app() -> Flask:
             generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         )
 
-    @app.get("/coverage")
-    def coverage():
+    @app.get("/pool-discovery")
+    def pool_discovery():
         return render_template("coverage.html", data=discovery.discover())
 
-    @app.post("/coverage/refetch")
-    def coverage_refetch():
+    @app.post("/pool-discovery/refetch")
+    def pool_discovery_refetch():
         return render_template("coverage.html", data=discovery.discover(force=True))
 
     @app.get("/api")
