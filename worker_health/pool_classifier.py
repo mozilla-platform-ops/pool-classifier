@@ -68,6 +68,9 @@ TASK_STATUS_THREAD_COUNT = 8
 UNRESOLVED_TASK_RUN_BATCH_SIZE = 1000
 CONSECUTIVE_FAILURE_ALERT = 2
 DEFAULT_WORKER_CONTACT_THRESHOLD_SECONDS = 60 * 60
+# Allow one missed 15-minute scheduler pass plus a routine deploy/restart
+# without fragmenting utilization coverage. Longer outages remain visible.
+DEFAULT_COLLECTION_COVERAGE_MAX_GAP_SECONDS = 60 * 60
 
 
 logger = logging.getLogger(__name__)
@@ -145,7 +148,10 @@ class PoolClassifier:
         self.worker_contact_threshold = timedelta(seconds=worker_contact_threshold_seconds)
         if coverage_max_gap_seconds is None:
             coverage_max_gap_seconds = int(
-                os.environ.get("COLLECTION_COVERAGE_MAX_GAP_SECONDS", str(poll_interval * 2)),
+                os.environ.get(
+                    "COLLECTION_COVERAGE_MAX_GAP_SECONDS",
+                    str(max(poll_interval * 2, DEFAULT_COLLECTION_COVERAGE_MAX_GAP_SECONDS)),
+                ),
             )
         if coverage_max_gap_seconds <= 0:
             raise ValueError("collection coverage max gap must be greater than zero")

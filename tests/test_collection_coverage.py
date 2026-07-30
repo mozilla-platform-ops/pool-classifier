@@ -106,6 +106,24 @@ def test_classifier_keeps_overlap_coverage_through_transient_status_failure(tmp_
     assert storage.list_unresolved_task_runs(10)[0]["task_id"] == "task-1"
 
 
+def test_classifier_default_coverage_grace_tolerates_a_routine_restart(tmp_path, monkeypatch):
+    monkeypatch.delenv("COLLECTION_COVERAGE_MAX_GAP_SECONDS", raising=False)
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path,
+        storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    start = datetime(2026, 7, 21, 10, 0, tzinfo=timezone.utc)
+    classifier._record_collection_coverage("worker_availability", True, start)
+    classifier._record_collection_coverage("worker_availability", True, start + timedelta(minutes=45))
+
+    assert classifier.coverage_max_gap_seconds == 60 * 60
+    assert storage.get_collection_coverage("worker_availability")["intervals"] == [
+        {"start_at": _iso(start, 0), "end_at": _iso(start, 45)},
+    ]
+
+
 def test_classifier_starts_new_coverage_interval_for_unbridged_window(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier(

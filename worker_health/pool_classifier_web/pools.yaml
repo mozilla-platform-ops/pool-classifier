@@ -57,10 +57,6 @@ pools:
     provisioner: releng-hardware
     worker_type: gecko-1-b-osx-arm64
     schedule: "*/15 * * * *"
-  - id: gecko-1-b-osx-arm64-vms
-    provisioner: releng-hardware
-    worker_type: gecko-1-b-osx-arm64-vms
-    schedule: "*/15 * * * *"
   - id: gecko-3-b-osx-1015
     provisioner: releng-hardware
     worker_type: gecko-3-b-osx-1015
