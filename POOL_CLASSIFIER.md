@@ -130,7 +130,7 @@ Match order: patterns are sorted critical → high → low, file order within a 
 | `CLASSIFY_OIDC_SA_EMAIL`  | Expected `email` claim in the OIDC token    | unset (any caller passes)  |
 | `LOG_JSON`                | Set `true` for structured logs              | unset                      |
 | `WORKER_CONTACT_THRESHOLD_SECONDS` | Maximum healthy worker contact age | `3600`             |
-| `COLLECTION_COVERAGE_MAX_GAP_SECONDS` | Maximum gap coalesced as continuous coverage | `3600` (or twice poll interval if longer) |
+| `COLLECTION_COVERAGE_MAX_GAP_SECONDS` | Maximum gap coalesced as continuous coverage | twice poll interval |
 
 ## Utilization API
 

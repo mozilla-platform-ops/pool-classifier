@@ -139,11 +139,9 @@ continuous. `collection_started` is the later of their first successful
 observations.
 
 Successful observations within `COLLECTION_COVERAGE_MAX_GAP_SECONDS` coalesce
-into one interval. The default is one hour (or twice the classifier poll
-interval when that is longer), so a routine restart or deployment that misses
-one 15-minute scheduler pass does not fragment coverage. A failed poll, a
-partial recent-task scan, or a longer process outage starts a coverage gap.
-Startup incompleteness disappears naturally once the requested range is
+into one interval. The default is twice the classifier poll interval. A failed
+poll, a partial recent-task scan, or a longer process outage starts a coverage
+gap. Startup incompleteness disappears naturally once the requested range is
 entirely inside continuous coverage.
 
 ## Utilization versus throughput
