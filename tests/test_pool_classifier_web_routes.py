@@ -186,6 +186,8 @@ def test_pool_discovery_page_and_refetch(monkeypatch):
         page = client.get("/pool-discovery").data
         assert b"Pool Discovery" in page
         assert b"new-pool" in page
+        assert b"Copy YAML" in page
+        assert b"data-worker-type=\"new-pool\"" in page
         response = client.post("/pool-discovery/refetch")
     assert response.status_code == 200
     assert calls == [False, True]
