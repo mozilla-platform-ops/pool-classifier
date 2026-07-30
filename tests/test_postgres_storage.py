@@ -23,6 +23,7 @@ psycopg = pytest.importorskip("psycopg")
 from worker_health.pool_classifier_web.scripts.migrate import apply_migrations  # noqa: E402
 from worker_health.pool_classifier_web.storage import (  # noqa: E402
     PostgresStorage,
+    observed_start_lag_summaries_global,
     SqliteStorage,
     pool_summaries_global,
 )
@@ -532,3 +533,27 @@ def test_pool_summaries_global_absent_for_empty_pool(pg):
     # No seed → pool has no rows → it should simply not appear in the result.
     summaries = pool_summaries_global(DSN, 1, _now_iso(-1), _now_iso(-24))
     assert POOL_ID not in summaries
+
+
+def test_observed_start_lag_summaries_global_uses_nearest_rank_percentiles(pg):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    for index, lag_seconds in enumerate((10, 20, 30, 40, 50)):
+        scheduled = now - timedelta(minutes=index + 1)
+        pg.record_task_result(
+            f"lag-{index}", "w1", 0, "completed", None, None,
+            (scheduled + timedelta(seconds=lag_seconds)).isoformat(),
+            now.isoformat(), now.isoformat(),
+            run_scheduled=scheduled.isoformat(),
+        )
+    pg.record_task_result(
+        "invalid-lag", "w1", 0, "completed", None, None,
+        (now - timedelta(minutes=10)).isoformat(), now.isoformat(), now.isoformat(),
+        run_scheduled=(now - timedelta(minutes=5)).isoformat(),
+    )
+    pg.commit()
+
+    result = observed_start_lag_summaries_global(
+        DSN, (now - timedelta(days=7)).isoformat(), now.isoformat(),
+    )
+
+    assert result[POOL_ID] == {"sample_count": 5, "p50_seconds": 30.0, "p95_seconds": 50.0}

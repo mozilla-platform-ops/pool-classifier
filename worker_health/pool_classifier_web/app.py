@@ -24,6 +24,7 @@ from worker_health.pool_classifier_web.storage import (
     ClassifyLockBusy,
     PostgresStorage,
     count_category_hits_global,
+    observed_start_lag_summaries_global,
     pool_summaries_global,
 )
 
@@ -230,6 +231,18 @@ def _format_elapsed(delta: timedelta) -> str:
     return f"{seconds // 60}m"
 
 
+def _format_lag(seconds: float | int) -> str:
+    """Return a compact lag label while retaining useful sub-minute precision."""
+    seconds = max(0, round(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, remaining_seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m" if not remaining_seconds else f"{minutes}m {remaining_seconds}s"
+    hours, remaining_minutes = divmod(minutes, 60)
+    return f"{hours}h" if not remaining_minutes else f"{hours}h {remaining_minutes}m"
+
+
 def _coverage_label(
     oldest: str | None,
     latest: str | None,
@@ -319,6 +332,7 @@ def create_app() -> Flask:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = Flask(__name__)
     app.jinja_env.filters["humanize_cron"] = _humanize_cron
+    app.jinja_env.filters["format_lag"] = _format_lag
 
     # Warn at startup if TC credentials are missing, but don't fail.
     try:
@@ -347,15 +361,22 @@ def create_app() -> Flask:
         now = now_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
         since_1h = (now_dt.replace(microsecond=0) - timedelta(hours=1)).isoformat()
         since_24h = (now_dt.replace(microsecond=0) - timedelta(hours=24)).isoformat()
+        lag_end = now_dt.replace(microsecond=0).isoformat()
+        lag_start = (now_dt.replace(microsecond=0) - timedelta(days=7)).isoformat()
         # One pair of GROUP BY pool_id queries for every pool, on one connection
         # (vs ~7 queries per pool on a per-pool connection). See PC_DB_REFACTOR.md.
         summaries: dict = {}
+        lag_summaries: dict = {}
         dsn = os.environ.get("DATABASE_URL")
         if dsn:
             try:
                 summaries = pool_summaries_global(dsn, CONSECUTIVE_FAILURE_ALERT, since_1h, since_24h)
             except Exception as e:
                 logger.warning("index: pool_summaries_global failed: %s", e)
+            try:
+                lag_summaries = observed_start_lag_summaries_global(dsn, lag_start, lag_end)
+            except Exception as e:
+                logger.warning("index: observed_start_lag_summaries_global failed: %s", e)
 
         def _eph(errors, workers):
             return round(errors / workers, 2) if workers else None
@@ -379,6 +400,7 @@ def create_app() -> Flask:
                         "success_rate_1h": None,
                         "errors_per_host_24h": None,
                         "success_rate_24h": None,
+                        "start_lag": None,
                     },
                 )
                 continue
@@ -394,6 +416,7 @@ def create_app() -> Flask:
                 errors_per_host_1h, success_rate_1h = _eph(s["err_1h"], workers), _sr(s["err_1h"], s["ok_1h"])
                 errors_per_host_24h, success_rate_24h = _eph(s["err_24h"], workers), _sr(s["err_24h"], s["ok_24h"])
             coverage, coverage_seconds = _coverage_label(oldest, latest, now_dt, collection_latest)
+            lag = lag_summaries.get(pool.id)
             rows.append(
                 {
                     "pool": pool,
@@ -406,6 +429,7 @@ def create_app() -> Flask:
                     "success_rate_1h": success_rate_1h,
                     "errors_per_host_24h": errors_per_host_24h,
                     "success_rate_24h": success_rate_24h,
+                    "start_lag": lag,
                 },
             )
         return render_template(

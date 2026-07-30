@@ -122,6 +122,50 @@ def test_pools_api_returns_enabled_and_disabled_pool_configuration(monkeypatch):
     }
 
 
+def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch):
+    pool = Pool("proj/worker", "proj", "worker", "*/15 * * * *")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [pool])
+    monkeypatch.setattr(app_module, "pool_summaries_global", lambda *_args: {})
+    monkeypatch.setattr(
+        app_module,
+        "observed_start_lag_summaries_global",
+        lambda *_args: {"proj/worker": {"sample_count": 5, "p50_seconds": 38.0, "p95_seconds": 252.0}},
+    )
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/")
+
+    html = response.text
+    assert 'Lag p95</th>' in html
+    assert 'data-sort-value="252.0"' in html
+    assert 'p50: 38s' in html
+    assert 'p95: 4m 12s' in html
+    assert '5 observed starts' in html
+
+
+def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
+    pool = Pool("proj/worker", "proj", "worker", "*/15 * * * *")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [pool])
+    monkeypatch.setattr(app_module, "pool_summaries_global", lambda *_args: {})
+    monkeypatch.setattr(
+        app_module,
+        "observed_start_lag_summaries_global",
+        lambda *_args: {"proj/worker": {"sample_count": 2, "p50_seconds": 38.0, "p95_seconds": 252.0}},
+    )
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/")
+
+    assert 'P95 unavailable: 2 observed starts (minimum 5).' in response.text
+    assert 'data-sort-value="252.0"' not in response.text
+
+
 def test_pool_summary_api_returns_metrics_coverage_and_freshness(monkeypatch):
     pool = Pool("pool", "proj", "worker", "*/15 * * * *", availability_mode="listed")
     monkeypatch.setenv("DATABASE_URL", "postgresql://example")

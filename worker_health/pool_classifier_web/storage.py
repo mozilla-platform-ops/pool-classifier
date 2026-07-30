@@ -1093,6 +1093,39 @@ def count_category_hits_global(dsn: str, since_iso: str) -> Dict[str, int]:
             return {row[0]: row[1] for row in cur.fetchall()}
 
 
+def observed_start_lag_summaries_global(
+    dsn: str, range_start: str, range_end: str,
+) -> Dict[str, dict]:
+    """Return trailing observed scheduled-to-start lag summaries by pool.
+
+    ``percentile_disc`` has the same nearest-rank behavior as the per-pool
+    observed-start-lag endpoint.  This keeps the overview to one grouped query
+    instead of a request per pool.
+    """
+    if psycopg is None:
+        raise ImportError("psycopg (psycopg[binary]) is required")
+    with psycopg.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pool_id, COUNT(*) AS sample_count,"
+                " percentile_disc(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (run_started - run_scheduled))) AS p50_seconds,"
+                " percentile_disc(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (run_started - run_scheduled))) AS p95_seconds"
+                " FROM task_results"
+                " WHERE run_scheduled >= %s::timestamptz AND run_scheduled < %s::timestamptz"
+                " AND run_started IS NOT NULL AND run_started >= run_scheduled"
+                " GROUP BY pool_id",
+                (range_start, range_end),
+            )
+            return {
+                pool_id: {
+                    "sample_count": sample_count,
+                    "p50_seconds": float(p50_seconds),
+                    "p95_seconds": float(p95_seconds),
+                }
+                for pool_id, sample_count, p50_seconds, p95_seconds in cur.fetchall()
+            }
+
+
 def pool_summaries_global(dsn: str, alert_threshold: int, since_1h: str, since_24h: str) -> Dict[str, dict]:
     """Per-pool dashboard summary for ALL pools in two grouped queries.
 

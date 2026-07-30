@@ -67,6 +67,7 @@
       <th>Pool</th>
       <th>OS</th>
       <th id="utilization-header">Utilization <span class="metric-window" data-metric="utilization"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
+      <th title="Observed scheduled-to-start lag: p95 over the previous 7 days. Only terminal runs that started are included.">Lag p95</th>
       <th>Hosts</th>
       <th>Alerting</th>
       <th id="errors-header">Err/Host <span class="metric-window" data-metric="errors"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
@@ -87,6 +88,10 @@
       <td>{{ row.os }}</td>
       <td class="utilization-cell" data-provisioner="{{ row.pool.provisioner }}" data-worker-type="{{ row.pool.worker_type }}">
         <span class="utilization-value no-data">—</span>{% if row.pool.availability_mode == 'listed' %}<span class="mode-listed" title="Uses Taskcluster-listed capacity, which does not confirm a live device">[L]</span>{% endif %}
+      </td>
+      <td{% if row.start_lag and row.start_lag.sample_count >= 5 %} data-sort-value="{{ row.start_lag.p95_seconds }}" title="Observed start lag, last 7d&#10;p50: {{ row.start_lag.p50_seconds | format_lag }}&#10;p95: {{ row.start_lag.p95_seconds | format_lag }}&#10;{{ row.start_lag.sample_count }} observed starts"{% elif row.start_lag %} title="P95 unavailable: {{ row.start_lag.sample_count }} observed starts (minimum 5)."{% endif %}>
+        {% if row.start_lag and row.start_lag.sample_count >= 5 %}{{ row.start_lag.p95_seconds | format_lag }}
+        {% else %}<span class="no-data">—</span>{% endif %}
       </td>
       <td>
         {% if row.workers is none %}<span class="no-data">—</span>
