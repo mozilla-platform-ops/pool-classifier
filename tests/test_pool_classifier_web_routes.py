@@ -123,7 +123,7 @@ def test_pools_api_returns_enabled_and_disabled_pool_configuration(monkeypatch):
 
 
 def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch):
-    pool = Pool("proj/worker", "proj", "worker", "*/15 * * * *")
+    pool = Pool("display-only-id", "proj", "worker", "*/15 * * * *")
     monkeypatch.setenv("DATABASE_URL", "postgresql://example")
     monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [pool])
     monkeypatch.setattr(app_module, "pool_summaries_global", lambda *_args: {})
@@ -147,7 +147,7 @@ def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch)
 
 
 def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
-    pool = Pool("proj/worker", "proj", "worker", "*/15 * * * *")
+    pool = Pool("display-only-id", "proj", "worker", "*/15 * * * *")
     monkeypatch.setenv("DATABASE_URL", "postgresql://example")
     monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [pool])
     monkeypatch.setattr(app_module, "pool_summaries_global", lambda *_args: {})

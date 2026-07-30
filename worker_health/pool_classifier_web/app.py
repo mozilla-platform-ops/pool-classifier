@@ -416,7 +416,7 @@ def create_app() -> Flask:
                 errors_per_host_1h, success_rate_1h = _eph(s["err_1h"], workers), _sr(s["err_1h"], s["ok_1h"])
                 errors_per_host_24h, success_rate_24h = _eph(s["err_24h"], workers), _sr(s["err_24h"], s["ok_24h"])
             coverage, coverage_seconds = _coverage_label(oldest, latest, now_dt, collection_latest)
-            lag = lag_summaries.get(pool.id)
+            lag = lag_summaries.get(f"{pool.provisioner}/{pool.worker_type}")
             rows.append(
                 {
                     "pool": pool,
