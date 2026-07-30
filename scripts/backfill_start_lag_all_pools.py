@@ -38,7 +38,7 @@ def pool_ids_with_backlog(database_url: str) -> list[str]:
     with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT pool_id FROM task_results "
-            "WHERE run_scheduled IS NULL AND run_id IS NOT NULL "
+            "WHERE run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL "
             "GROUP BY pool_id ORDER BY pool_id",
         )
         return [row[0] for row in cursor.fetchall()]

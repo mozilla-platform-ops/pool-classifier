@@ -279,7 +279,7 @@ class SqliteStorage:
             dict(row)
             for row in self.db.execute(
                 "SELECT task_id, run_id FROM task_results"
-                " WHERE run_scheduled IS NULL AND run_id IS NOT NULL"
+                " WHERE run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL"
                 " ORDER BY COALESCE(run_resolved, classified_at) DESC, task_id, run_id LIMIT ? OFFSET ?",
                 (limit, offset),
             )
@@ -288,7 +288,7 @@ class SqliteStorage:
     def count_task_runs_missing_schedule(self) -> dict:
         row = self.db.execute(
             "SELECT COUNT(*) AS runs, COUNT(DISTINCT task_id) AS tasks FROM task_results"
-            " WHERE run_scheduled IS NULL AND run_id IS NOT NULL",
+            " WHERE run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL",
         ).fetchone()
         return {"runs": row["runs"], "tasks": row["tasks"]}
 
@@ -1320,7 +1320,7 @@ class PostgresStorage:
         with self._cursor() as cur:
             cur.execute(
                 "SELECT task_id, run_id FROM task_results"
-                " WHERE pool_id = %s AND run_scheduled IS NULL AND run_id IS NOT NULL"
+                " WHERE pool_id = %s AND run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL"
                 " ORDER BY COALESCE(run_resolved, classified_at) DESC, task_id, run_id LIMIT %s OFFSET %s",
                 (self.pool_id, limit, offset),
             )
@@ -1330,7 +1330,7 @@ class PostgresStorage:
         with self._cursor() as cur:
             cur.execute(
                 "SELECT COUNT(*) AS runs, COUNT(DISTINCT task_id) AS tasks FROM task_results"
-                " WHERE pool_id = %s AND run_scheduled IS NULL AND run_id IS NOT NULL",
+                " WHERE pool_id = %s AND run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL",
                 (self.pool_id,),
             )
             row = cur.fetchone()
