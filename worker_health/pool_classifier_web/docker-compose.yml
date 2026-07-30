@@ -16,7 +16,7 @@ services:
       retries: 10
 
   migrate:
-    image: python:3.11-slim
+    image: python:3.14-slim
     working_dir: /app
     volumes:
       - ../../:/app

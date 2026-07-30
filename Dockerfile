@@ -1,6 +1,6 @@
 # Pool classifier web service — Cloud Run image.
 # Build context is the repository root.
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 ARG POOL_CLASSIFIER_COMMIT=unknown
 
