@@ -1675,14 +1675,15 @@ class PoolClassifier:
             "  body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }",
             "  h1 { color: #fff; }",
             "  h2 { color: #f90; margin-top: 2rem; }",
-            "  p.gen { color: #666; font-size: .85em; margin-bottom: .5rem; } .header-summary { margin-left:1ch; }",
+            "  p.gen { color: #666; font-size: .85em; margin-bottom: .5rem; }",
+            "  .pool-summary-metrics { display:flex; flex-wrap:wrap; gap:.4rem 1.5rem; margin:.75rem 0 1rem; color:#aaa; font-size:.85em; } .pool-summary-metrics dt, .pool-summary-metrics dd { display:inline; margin:0; } .pool-summary-metrics dt { color:#666; } .pool-summary-metrics dd { color:#ccc; font-weight:bold; }",
             "  .footer { margin: 2rem 0 1rem; color: #555; font-size: .8em; text-align: center; }",
             "  .tz-toggle { display:flex; align-items:center; gap:.25rem; flex-wrap:wrap; margin:1rem 0 .75rem 1ch; font-size:.85em; }",
             "  .tz-toggle .label, .tz-toggle .interval { color:#666; } .tz-toggle .label { margin-right:.1rem; } .tz-toggle .interval { margin-left:.1rem; }",
             "  .tz-toggle button { padding:0; border:0; background:transparent; color:#777; cursor:pointer; font:inherit; }",
             "  .tz-toggle button:hover, .tz-toggle button.active { color:#f90; } .tz-toggle .separator { margin:0 .7rem; color:#444; user-select:none; }",
             "  .page-nav { display: flex; align-items: center; gap: 0; flex-wrap: wrap; width: fit-content; margin: 0 0 1rem 1ch; padding: .3rem .6rem; background: #1a1a1a; border-radius: 4px; font-size: .8em; }",
-            "  .page-nav + h2, .page-nav + .summary-grid > div > h2 { margin-top: 1rem; }",
+            "  .page-nav + h2, .page-nav + .pool-summary > h2, .page-nav + .summary-grid > div > h2 { margin-top: 1rem; }",
             "  .page-nav a { color: #58a6ff; padding: .2rem .6rem; border-radius: 3px; }",
             "  .page-nav a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }",
             "  .page-nav a:visited { color: #58a6ff; }",
@@ -1788,15 +1789,23 @@ class PoolClassifier:
         start_lag_visualization_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/observed-start-lag/visualization"
         guide_url = f"/pools/{self.provisioner}/{self.worker_type}/utilization-api-guide"
 
+        pool_summary = []
         if workers:
             total_tasks = total_failures + total_successes
             sr_pct = f"{100 * total_successes / total_tasks:.1f}%" if total_tasks else "—"
             window_str = f"Last {_humanize(oldest_ts).removesuffix(' ago')}" if oldest_ts else "Observed period"
             worker_os = {"android": "Android", "macos": "macOS", "windows": "Windows", "linux": "Linux"}.get(os_label, os_label)
             worker_label = f"{worker_os} workers" if worker_os else "workers"
-            parts.append(
-                f'<p class="gen header-summary"><strong>{window_str}</strong> · {total_tasks} completed tasks '
-                f'· <strong>{sr_pct} success rate</strong> · {len(workers)} observed {worker_label}</p>',
+            pool_summary.append(
+                '<section class="pool-summary" aria-labelledby="summary-heading">'
+                '<h2 id="summary-heading">Summary</h2>'
+                '<dl class="pool-summary-metrics">'
+                f'<div><dt>Period:</dt> <dd>{window_str}</dd></div>'
+                f'<div><dt>Completed:</dt> <dd>{total_tasks:,}</dd></div>'
+                f'<div><dt>Success rate:</dt> <dd>{sr_pct}</dd></div>'
+                f'<div><dt>Observed workers:</dt> <dd>{len(workers):,} {worker_label}</dd></div>'
+                '</dl>'
+                '</section>',
             )
 
         parts += [
@@ -1811,6 +1820,7 @@ class PoolClassifier:
             '  <span class="interval">60s</span>',
             "</div>",
             '<nav class="page-nav">',
+            '  <a href="#summary-heading">Summary</a><span class="sep">|</span>',
             '  <a href="#s-categories">Failure Categories</a><span class="sep">|</span>',
             '  <a href="#s-attention">Consecutive Failures</a><span class="sep">|</span>',
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
@@ -1821,6 +1831,7 @@ class PoolClassifier:
             '  <a href="#s-all">All Workers</a>',
             "</nav>",
         ]
+        parts += pool_summary
 
         if category_totals or alerting:
             parts.append('<div class="summary-grid">')
