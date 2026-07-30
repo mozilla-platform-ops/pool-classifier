@@ -37,7 +37,7 @@ def _load_pools() -> Tuple[List[Pool], dict]:
     pools_file = Path(os.environ.get("POOLS_FILE", str(_DEFAULT_POOLS_FILE)))
     with open(pools_file) as f:
         data = yaml.safe_load(f)
-    pools = [Pool(**p) for p in data["pools"]]
+    pools = [Pool(id=p.get("id", p["worker_type"]), **{k: v for k, v in p.items() if k != "id"}) for p in data["pools"]]
     by_prov_wt = {(p.provisioner, p.worker_type): p for p in pools}
     return pools, by_prov_wt
 

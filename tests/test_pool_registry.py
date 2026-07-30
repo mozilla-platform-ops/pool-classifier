@@ -10,6 +10,15 @@ def test_availability_mode_defaults_to_recent_contact():
     assert pool.availability_mode == "recent_contact"
 
 
+def test_pool_id_defaults_to_worker_type(monkeypatch, tmp_path):
+    pools_file = tmp_path / "pools.yaml"
+    pools_file.write_text("pools:\n  - provisioner: provisioner\n    worker_type: worker-type\n    schedule: '* * * * *'\n")
+    monkeypatch.setenv("POOLS_FILE", str(pools_file))
+    pools, _ = registry._load_pools()
+
+    assert pools[0].id == "worker-type"
+
+
 def test_invalid_availability_mode_rejected():
     with pytest.raises(ValueError, match="invalid availability_mode"):
         registry.Pool(
