@@ -6,7 +6,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 setuptools.setup(
     # TODO: rename package dir from worker_health to pool_classifier.
     name="worker_health",
-    version="1.0.0",
+    version="1.1.0",
     author="Andrew Erickson",
     author_email="aerickson@mozilla.com",
     description="Taskcluster pool classifier service and dashboard",
