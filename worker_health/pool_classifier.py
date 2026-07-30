@@ -19,7 +19,6 @@ from typing import Callable, Dict, List, Optional, Tuple
 import requests
 import taskcluster
 
-from worker_health import quarantine_graphql
 from worker_health.pool_classifier_web.patterns_registry import all_patterns, categories_by_severity
 from worker_health.pool_classifier_web.registry import AVAILABILITY_MODES
 from worker_health.pool_classifier_web.storage import SqliteStorage
@@ -166,6 +165,7 @@ class PoolClassifier:
             pool_id = f"{provisioner}/{worker_type}"
             self.storage = SqliteStorage(pool_id=pool_id, results_dir=results_dir)
         self.tc_queue = None
+        self.tc_worker_manager = None
         try:
             self._init_tc()
         except Exception as e:
@@ -182,13 +182,12 @@ class PoolClassifier:
             token_file = os.path.expanduser(os.environ.get("TC_TOKEN_FILE", "~/.tc_token"))
             with open(token_file) as f:
                 data = json.load(f)
-        self.tc_queue = taskcluster.Queue(
-            {
-                "rootUrl": TC_ROOT,
-                "credentials": {"clientId": data["clientId"], "accessToken": data["accessToken"]},
-            },
-            session=_TimeoutSession(),
-        )
+        tc_options = {
+            "rootUrl": TC_ROOT,
+            "credentials": {"clientId": data["clientId"], "accessToken": data["accessToken"]},
+        }
+        self.tc_queue = taskcluster.Queue(tc_options, session=_TimeoutSession())
+        self.tc_worker_manager = taskcluster.WorkerManager(tc_options, session=_TimeoutSession())
 
     def _ensure_tc(self):
         """Initialize TC client if not already done; raises if credentials are unavailable."""
@@ -1294,7 +1293,7 @@ class PoolClassifier:
         return quarantined
 
     def _update_quarantine_cache(self, quarantined: Dict[str, Optional[str]]) -> Dict[str, dict]:
-        """Return enriched quarantine data, fetching GraphQL details only for changed/new entries."""
+        """Return enriched quarantine data, fetching details only for changed/new entries."""
         now_iso = datetime.now(timezone.utc).isoformat()
         cache = self.storage.get_quarantine_cache()
 
@@ -1313,13 +1312,8 @@ class PoolClassifier:
             def fetch_one(args):
                 wid, wg, until = args
                 try:
-                    details = quarantine_graphql.view_quarantined_worker_details(
-                        provisionerId=self.provisioner,
-                        workerType=self.worker_type,
-                        workerGroup=wg,
-                        workerId=wid,
-                        workerPoolId=f"{self.provisioner}/{self.worker_type}",
-                    )
+                    resp = self.tc_worker_manager.getWorker(self.provisioner, self.worker_type, wg, wid)
+                    details = resp.get("quarantineDetails", [])
                     if details:
                         latest = details[-1]
                         return wid, {
@@ -1328,6 +1322,9 @@ class PoolClassifier:
                             "set_at": latest.get("updatedAt", ""),
                             "client_id": latest.get("clientId", ""),
                         }
+                except taskcluster.exceptions.TaskclusterRestFailure as e:
+                    if e.status_code != 404:
+                        logger.warning(f"  {wid}: failed to fetch quarantine details: {e}")
                 except Exception as e:
                     logger.warning(f"  {wid}: failed to fetch quarantine details: {e}")
                 return wid, None
