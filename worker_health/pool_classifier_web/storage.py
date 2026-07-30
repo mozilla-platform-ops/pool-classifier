@@ -1043,6 +1043,15 @@ def _postgres_pool(dsn: str):
         return pool
 
 
+def close_postgres_pools() -> None:
+    """Close process-wide Postgres pools during orderly command-line shutdown."""
+    with _PG_POOLS_LOCK:
+        pools = list(_PG_POOLS.values())
+        _PG_POOLS.clear()
+    for pool in pools:
+        pool.close()
+
+
 class _PgLogRef:
     """Returned by PostgresStorage.list_unclassified_logs() in place of a Path.
     Calling .unlink() deletes through the storage transaction so reclassify code works unchanged.
@@ -2152,6 +2161,3 @@ class PostgresStorage:
                 self._tx_conn.rollback()
             finally:
                 self._release_tx()
-        if self._pool is not None:
-            self._pool.close()
-            self._pool = None

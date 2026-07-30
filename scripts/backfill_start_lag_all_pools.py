@@ -14,7 +14,7 @@ from typing import Callable
 import psycopg
 
 from worker_health.pool_classifier import PoolClassifier
-from worker_health.pool_classifier_web.storage import ClassifyLockBusy, PostgresStorage
+from worker_health.pool_classifier_web.storage import ClassifyLockBusy, PostgresStorage, close_postgres_pools
 
 
 class StopAfterCurrentBatch:
@@ -173,6 +173,7 @@ def main() -> int:
         return 0
     finally:
         signal.signal(signal.SIGINT, previous_handler)
+        close_postgres_pools()
 
 
 if __name__ == "__main__":
