@@ -1866,8 +1866,11 @@ class PoolClassifier:
             parts.append("</div>")
 
         if quarantine_details:
+            quarantine_count = len(quarantine_details)
+            quarantine_label = "worker" if quarantine_count == 1 else "workers"
             parts += [
-                f'<h2 id="s-quarantined">&#x1F512; Quarantined Workers ({len(quarantine_details)})</h2>',
+                '<h2 id="s-quarantined">Quarantined Workers</h2>',
+                f'<p class="gen">{quarantine_count} {quarantine_label} currently quarantined.</p>',
                 "<table>",
                 "  <thead><tr>",
                 "    <th>Worker</th><th>Reason</th><th>Set By</th><th>Set</th>"

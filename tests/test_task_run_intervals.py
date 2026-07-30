@@ -598,6 +598,18 @@ def test_all_workers_summary_describes_tracked_workers_and_all_quarantines(tmp_p
     assert "workers available" not in html
 
 
+def test_quarantine_section_uses_a_plain_heading_with_supporting_count(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+
+    html = classifier._write_html({}, quarantine_details={"worker-1": {}, "worker-2": {}})
+
+    assert '<h2 id="s-quarantined">Quarantined Workers</h2>' in html
+    assert "2 workers currently quarantined." in html
+    assert "&#x1F512; Quarantined Workers" not in html
+
+
 def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier(
