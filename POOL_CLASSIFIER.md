@@ -101,7 +101,7 @@ pipenv run pytest tests/test_postgres_storage.py tests/test_web_app.py -v
 
 ### Pools (`pool_classifier_web/pools.yaml`)
 
-Registry of pools the dashboard knows about. Disabled pools stay listed (greyed-out on the index) but are not classified. Enabled worker types ending in `-vms` are also omitted from automatic classification by default, because their short-lived, high-volume workers overwhelm a normal cycle. Set `INCLUDE_VMS_POOLS=1` to override that default. Each pool can override its cron schedule.
+Registry of pools the dashboard knows about. `defaults` apply to every entry, and `provisioner_defaults` override them for one provisioner; individual pool values override both. An omitted `id` defaults to `worker_type`. Disabled pools stay listed (greyed-out on the index) but are not classified. Enabled worker types ending in `-vms` are also omitted from automatic classification by default, because their short-lived, high-volume workers overwhelm a normal cycle. Set `INCLUDE_VMS_POOLS=1` to override that default. Each pool can override its cron schedule.
 
 ### Patterns (`pool_classifier_web/patterns.yaml`)
 

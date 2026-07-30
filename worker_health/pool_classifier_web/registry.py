@@ -12,6 +12,7 @@ import yaml
 _DEFAULT_POOLS_FILE = Path(__file__).parent / "pools.yaml"
 AVAILABILITY_MODES = {"recent_contact", "listed"}
 INCLUDE_VMS_POOLS_ENV = "INCLUDE_VMS_POOLS"
+_POOL_DEFAULT_KEYS = {"schedule", "enabled", "reason", "availability_mode"}
 
 
 @dataclass
@@ -37,7 +38,20 @@ def _load_pools() -> Tuple[List[Pool], dict]:
     pools_file = Path(os.environ.get("POOLS_FILE", str(_DEFAULT_POOLS_FILE)))
     with open(pools_file) as f:
         data = yaml.safe_load(f)
-    pools = [Pool(id=p.get("id", p["worker_type"]), **{k: v for k, v in p.items() if k != "id"}) for p in data["pools"]]
+    defaults = data.get("defaults", {})
+    provisioner_defaults = data.get("provisioner_defaults", {})
+    if not isinstance(defaults, dict) or not isinstance(provisioner_defaults, dict):
+        raise ValueError("pool defaults must be mappings")
+    for label, values in [("defaults", defaults), *provisioner_defaults.items()]:
+        if not isinstance(values, dict):
+            raise ValueError(f"pool defaults for {label} must be a mapping")
+        invalid = set(values) - _POOL_DEFAULT_KEYS
+        if invalid:
+            raise ValueError(f"invalid pool defaults for {label}: {sorted(invalid)}")
+    pools = []
+    for entry in data["pools"]:
+        merged = {**defaults, **provisioner_defaults.get(entry["provisioner"], {}), **entry}
+        pools.append(Pool(id=merged.get("id", merged["worker_type"]), **{k: v for k, v in merged.items() if k != "id"}))
     by_prov_wt = {(p.provisioner, p.worker_type): p for p in pools}
     return pools, by_prov_wt
 

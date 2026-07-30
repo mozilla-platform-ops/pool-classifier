@@ -19,6 +19,15 @@ def test_pool_id_defaults_to_worker_type(monkeypatch, tmp_path):
     assert pools[0].id == "worker-type"
 
 
+def test_pool_defaults_merge_by_provisioner_then_entry(monkeypatch, tmp_path):
+    pools_file = tmp_path / "pools.yaml"
+    pools_file.write_text("""defaults:\n  schedule: '* * * * *'\n  availability_mode: recent_contact\nprovisioner_defaults:\n  p: {availability_mode: listed}\npools:\n  - provisioner: p\n    worker_type: one\n  - provisioner: p\n    worker_type: two\n    schedule: '0 * * * *'\n""")
+    monkeypatch.setenv("POOLS_FILE", str(pools_file))
+    pools, _ = registry._load_pools()
+
+    assert [(p.schedule, p.availability_mode) for p in pools] == [("* * * * *", "listed"), ("0 * * * *", "listed")]
+
+
 def test_invalid_availability_mode_rejected():
     with pytest.raises(ValueError, match="invalid availability_mode"):
         registry.Pool(
