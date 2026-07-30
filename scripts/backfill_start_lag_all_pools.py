@@ -14,7 +14,7 @@ from typing import Callable
 import psycopg
 
 from worker_health.pool_classifier import PoolClassifier
-from worker_health.pool_classifier_web.storage import PostgresStorage
+from worker_health.pool_classifier_web.storage import ClassifyLockBusy, PostgresStorage
 
 
 class StopAfterCurrentBatch:
@@ -65,8 +65,8 @@ def backfill_pool(
     requests_per_second: float,
     state_dir: Path,
     should_stop: Callable[[], bool],
-) -> tuple[bool, bool]:
-    """Drain one pool's eligible backlog; return false after transient failures."""
+) -> tuple[bool, bool, str | None]:
+    """Drain one pool's eligible backlog and report a non-fatal skip reason."""
     provisioner, worker_type = parse_pool_id(pool_id)
     storage = PostgresStorage(pool_id=pool_id, dsn=database_url)
     storage.init_schema()
@@ -79,7 +79,7 @@ def backfill_pool(
     try:
         while True:
             if should_stop():
-                return True, True
+                return True, True, None
             result = classifier.backfill_start_lag(
                 batch_size=batch_size,
                 concurrency=concurrency,
@@ -90,15 +90,21 @@ def backfill_pool(
             )
             print(f"{pool_id}: {result}")
             if result.get("stop_requested"):
-                return True, True
+                return True, True, None
             if result["transient_failures"]:
                 print(
                     f"{pool_id}: stopped after transient Queue failures; rerun this script to retry.",
                     file=sys.stderr,
                 )
-                return False, False
+                return False, False, "transient Queue failures"
             if result["selected_runs"] == 0:
-                return True, False
+                return True, False, None
+    except ClassifyLockBusy:
+        print(
+            f"{pool_id}: skipped because a classifier cycle is already running; rerun to backfill it later.",
+            file=sys.stderr,
+        )
+        return False, False, "classifier lock busy"
     finally:
         storage.close()
 
@@ -140,12 +146,12 @@ def main() -> int:
             return 0
 
         print(f"Backfilling {len(pool_ids)} pool(s).")
-        failures = []
+        skipped = []
         for pool_id in pool_ids:
             if stop.requested:
                 return 130
             print(f"=== {pool_id} ===")
-            succeeded, stopped = backfill_pool(
+            succeeded, stopped, reason = backfill_pool(
                 pool_id,
                 args.database_url,
                 args.batch_size,
@@ -158,10 +164,11 @@ def main() -> int:
             if stopped:
                 return 130
             if not succeeded:
-                failures.append(pool_id)
+                skipped.append((pool_id, reason))
 
-        if failures:
-            print(f"Transient failures in {len(failures)} pool(s): {', '.join(failures)}", file=sys.stderr)
+        if skipped:
+            details = ", ".join(f"{pool_id} ({reason})" for pool_id, reason in skipped)
+            print(f"Incomplete backfill in {len(skipped)} pool(s): {details}", file=sys.stderr)
             return 1
         return 0
     finally:

@@ -47,7 +47,7 @@ pipenv run -- python scripts/backfill_start_lag_all_pools.py
 
 Use `--batch-size`, `--concurrency`, and `--requests-per-second` to tune the
 Queue request load. The script exits nonzero if a pool has exhausted transient
-Queue retries; rerun it to retry that pool.
+Queue retries or has an active classifier cycle; rerun it to retry that pool.
 
 Press Ctrl-C once to stop after the current pool batch has finished and its
 database updates and state file are durable. The script exits with status 130;

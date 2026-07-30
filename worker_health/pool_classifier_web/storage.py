@@ -2152,3 +2152,6 @@ class PostgresStorage:
                 self._tx_conn.rollback()
             finally:
                 self._release_tx()
+        if self._pool is not None:
+            self._pool.close()
+            self._pool = None
