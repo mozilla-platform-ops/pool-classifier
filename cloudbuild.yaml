@@ -1,27 +1,40 @@
 # Build → push → deploy the pool classifier to Cloud Run.
 #
 # Manual build from the repository root (the build context). Pass the git short
-# SHA as the image tag for traceability:
+# SHA as the image tag and source revision:
 #   gcloud builds submit --config cloudbuild.yaml \
-#       --substitutions=_TAG=$(git rev-parse --short HEAD) .
+#       --substitutions=_TAG=$(git rev-parse --short HEAD),COMMIT_SHA=$(git rev-parse HEAD) .
 #
 # _TAG defaults to "latest" if omitted. _REGION defaults to us-west1.
 #
-# (We use a user-defined $_TAG rather than the built-in $COMMIT_SHA because
-# COMMIT_SHA is only populated for repo-triggered builds — a manual
-# `gcloud builds submit` leaves it empty, producing an invalid image tag.)
+# $COMMIT_SHA is populated automatically for repo-triggered builds. Manual
+# submits must pass it as shown above. The first step rejects missing or invalid
+# values so the About page always identifies an immutable Git commit.
 #
 # The Artifact Registry repo (pool-classifier) and the Cloud Run service
 # (pool-classifier) are created by terraform; this only builds and rolls out
 # new revisions.
 steps:
+  - name: "alpine"
+    id: validate-source-revision
+    entrypoint: /bin/sh
+    args:
+      - -ec
+      - |
+        if ! printf '%s' "$$POOL_CLASSIFIER_COMMIT" | grep -Eq '^[0-9a-f]{40}$$'; then
+          echo "COMMIT_SHA must be a 40-character lowercase Git commit SHA" >&2
+          exit 1
+        fi
+    env:
+      - POOL_CLASSIFIER_COMMIT=$COMMIT_SHA
+
   # Build the image (uses the project dir as context, Dockerfile at its root).
   - name: "gcr.io/cloud-builders/docker"
     id: build-image
     args:
       - build
       - --file=Dockerfile
-      - --build-arg=POOL_CLASSIFIER_COMMIT=$_TAG
+      - --build-arg=POOL_CLASSIFIER_COMMIT=$COMMIT_SHA
       - --tag=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:$_TAG
       - --tag=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:latest
       - --cache-from=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:latest

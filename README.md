@@ -120,7 +120,7 @@ Code deploys are built from the repository root:
 
 ```sh
 gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_TAG=$(git rev-parse --short HEAD) \
+  --substitutions=_TAG=$(git rev-parse --short HEAD),COMMIT_SHA=$(git rev-parse HEAD) \
   --project=relops-pool-classifier .
 ```
 

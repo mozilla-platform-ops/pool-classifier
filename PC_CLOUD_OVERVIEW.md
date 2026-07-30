@@ -87,10 +87,12 @@ Dockerfile, pushes to Artifact Registry, `gcloud run deploy`):
 
 ```bash
 gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_TAG=$(git rev-parse --short HEAD) \
+  --substitutions=_TAG=$(git rev-parse --short HEAD),COMMIT_SHA=$(git rev-parse HEAD) \
   --project=relops-pool-classifier .
 ```
-> Uses `_TAG` (not `$COMMIT_SHA`, which is empty for manual submits). Terraform's
+> Uses `_TAG` for the image tag and `COMMIT_SHA` for the immutable source
+> revision. Cloud Build supplies the latter for triggered builds; manual submits
+> pass it explicitly. Terraform's
 > `lifecycle.ignore_changes` keeps `apply` from reverting the deployed image.
 > The Cloud Run image installs Python packages from
 > `worker_health/pool_classifier_web/requirements.txt`; keep it in sync with any
