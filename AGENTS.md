@@ -66,4 +66,38 @@ git push                # Push to remote
 - Use descriptive titles and set appropriate priority/type
 - Always sync before ending session
 
+---
+
+## Release Workflow
+
+A release version has three linked identities: the package version in
+`pyproject.toml`, an annotated Git tag, and the deployed image tag. Keep them
+identical. The image must also embed the immutable Git commit for provenance.
+
+1. Start from a clean, up-to-date `main` and choose `VERSION` (without the `v`
+   prefix).
+2. Change `[project].version` in `pyproject.toml` to `VERSION`, then run
+   `uv lock` to refresh `uv.lock` metadata.
+3. Run the full test suite and review the release diff.
+4. Commit the version and lockfile together, for example:
+   `git commit -m "chore: release v$VERSION"`.
+5. Create an annotated tag only after that commit exists:
+   `git tag -a "v$VERSION" -m "v$VERSION"`.
+6. Push the release commit and tag: `git push origin main --follow-tags`.
+7. Before a manual Cloud Build deploy, verify the clean checkout is exactly the
+   release tag, then build it with matching image-tag and commit provenance:
+
+   ```bash
+   test "$(git rev-parse HEAD)" = "$(git rev-parse "v$VERSION^{commit}")"
+   gcloud builds submit --config cloudbuild.yaml \
+     --substitutions=_TAG="v$VERSION",COMMIT_SHA="$(git rev-parse "v$VERSION^{commit}")" \
+     --project=relops-pool-classifier .
+   ```
+
+8. Confirm Cloud Run serves the new revision/image and inspect recent warning
+   logs before considering the release complete.
+
+Do not tag an unchanged package version: a tag such as `v1.1.2` with
+`pyproject.toml` still at `1.1.1` produces a misleading application version.
+
 <!-- end-br-agent-instructions -->
