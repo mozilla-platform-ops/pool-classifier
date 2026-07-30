@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+{% from "base.html" import navigation %}
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -52,20 +53,7 @@
 </style>
 </head>
 <body>
-<header class="site-header">
-<a href="/" style="text-decoration:none"><pre style="color:#0ff;line-height:1;margin:0;font-size:1rem"> ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀
- ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ </pre></a>
-<span class="site-title">Patterns</span>
-<details class="global-menu">
-  <summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary>
-  <nav class="menu-popover" aria-label="Global navigation">
-    <a href="/">Overview</a>
-    <span class="current" aria-current="page">Patterns</span>
-    <a href="/api">API</a>
-    <a href="/about">About</a>
-  </nav>
-</details>
-</header>
+{{ navigation("Patterns") }}
 <p class="blurb">
   Patterns are sorted by severity (critical → high → low), then file order within a tier.
   Matching is first-match-wins, so a critical pattern always beats a high pattern.

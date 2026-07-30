@@ -1,4 +1,5 @@
 <!doctype html>
+{% from "base.html" import navigation %}
 <title>Pool Classifier — Pool Discovery</title>
 <style>
   body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }
@@ -10,10 +11,7 @@
   .menu-popover { position:absolute;z-index:1;top:calc(100% + .4rem);right:0;min-width:10rem;padding:.35rem;background:#1a1a1a;border:1px solid #333;border-radius:4px; } .menu-popover a,.menu-popover .current{display:block;padding:.45rem .6rem}.menu-popover a{color:#58a6ff}.menu-popover .current{color:#666}
   table { border-collapse: collapse; width: 100%; } th,td { padding:.5rem;border-bottom:1px solid #333;text-align:left;vertical-align:top }.covered{color:#4c4}.uncovered{color:#f90}.excluded,.configured-inactive{color:#777}code{white-space:pre-wrap}
 </style>
-<header class="site-header">
-<a href="/"><pre style="color:#0ff;line-height:1;margin:0;font-size:1rem"> ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀
- ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ </pre></a>
-<span class="site-title">Pool Discovery</span><details class="global-menu"><summary aria-label="Open navigation"><span class="menu-icon"></span></summary><nav class="menu-popover"><a href="/">Overview</a><a href="/patterns">Patterns</a><span class="current">Pool Discovery</span><a href="/api">API</a><a href="/about">About</a></nav></details></header>
+{{ navigation("Pool Discovery") }}
 <p>Discovers Taskcluster worker types for proj-autophone and releng-hardware, then compares them with the configured pool registry. Last fetched: {{ data.fetched_at }}.</p>
 <form method="post" action="/pool-discovery/refetch"><button>Refetch Taskcluster</button></form>
 <table><tr><th>Pool</th><th>Status</th><th>Next step</th></tr>{% for row in data.rows %}<tr class="{{ row.status|replace(' ', '-') }}"><td>{{ row.provisioner }}/{{ row.worker_type }}</td><td>{{ row.status }}{% if row.reason %}: {{ row.reason }}{% endif %}</td><td>{% if row.status == 'uncovered' %}<code>- provisioner: {{ row.provisioner }}

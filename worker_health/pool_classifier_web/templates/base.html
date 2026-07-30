@@ -1,0 +1,9 @@
+{% macro navigation(current) -%}
+<header class="site-header">
+<a href="/" style="text-decoration:none"><pre style="color:#0ff;line-height:1;margin:0;font-size:1rem"> ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀
+ ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ </pre></a>
+<span class="site-title">{{ current }}</span>
+<details class="global-menu"><summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary><nav class="menu-popover" aria-label="Global navigation">
+{% for label, url in [('Overview', '/'), ('Patterns', '/patterns'), ('Pool Discovery', '/pool-discovery'), ('API', '/api'), ('About', '/about')] %}{% if label == current %}<span class="current" aria-current="page">{{ label }}</span>{% else %}<a href="{{ url }}">{{ label }}</a>{% endif %}{% endfor %}
+</nav></details></header>
+{%- endmacro %}

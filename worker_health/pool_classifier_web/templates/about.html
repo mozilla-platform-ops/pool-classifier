@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+{% from "base.html" import navigation %}
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -28,15 +29,7 @@
 </style>
 </head>
 <body>
-<header class="site-header">
-<a href="/" style="text-decoration:none"><pre style="color:#0ff;line-height:1;margin:0;font-size:1rem"> ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀
- ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ </pre></a>
-<span class="site-title">About</span>
-<details class="global-menu">
-  <summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary>
-  <nav class="menu-popover" aria-label="Global navigation"><a href="/">Overview</a><a href="/patterns">Patterns</a><a href="/api">API</a><span class="current" aria-current="page">About</span></nav>
-</details>
-</header>
+{{ navigation("About") }}
 <p class="intro">Pool Classifier monitors Taskcluster worker pools, classifies task failures, and surfaces pool health and capacity signals.</p>
 <h2>Build information</h2>
 <dl>
