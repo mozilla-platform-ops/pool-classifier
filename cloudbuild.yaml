@@ -57,7 +57,7 @@ steps:
       - run
       - deploy
       - pool-classifier
-      - --image=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:$_TAG
+      - --image=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:latest
       - --region=$_REGION
       - --quiet
 
