@@ -94,9 +94,8 @@ gcloud builds submit --config cloudbuild.yaml \
 > revision. Cloud Build supplies the latter for triggered builds; manual submits
 > pass it explicitly. Terraform's
 > `lifecycle.ignore_changes` keeps `apply` from reverting the deployed image.
-> The Cloud Run image installs Python packages from
-> `worker_health/pool_classifier_web/requirements.txt`; keep it in sync with any
-> runtime dependency added to `Pipfile`.
+> The Cloud Run image installs the locked production dependency set from
+> `pyproject.toml` and `uv.lock`.
 
 After deploy, verify the active revision/image and recent app health:
 

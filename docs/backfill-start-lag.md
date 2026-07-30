@@ -42,7 +42,7 @@ batches until each pool is drained.
 
 ```bash
 DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier \
-pipenv run -- python scripts/backfill_start_lag_all_pools.py
+uv run --frozen python scripts/backfill_start_lag_all_pools.py
 ```
 
 Use `--batch-size`, `--concurrency`, and `--requests-per-second` to tune the

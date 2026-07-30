@@ -114,7 +114,7 @@ Add `PostgresStorage` implementing the same interface as `SqliteStorage`, and a 
 - **`worker_health/pool_classifier_web/scripts/migrate.py`** — migration runner (`apply_migrations(dsn)` + `__main__` entrypoint)
 - **`worker_health/pool_classifier_web/docker-compose.yml`** — postgres:16, port 5433
 - **`tests/test_postgres_storage.py`** — parity tests (skip when `PC_TEST_DATABASE_URL` unset)
-- **`Pipfile`** — added `psycopg = {extras = ["binary"], version = "*"}`
+- **`pyproject.toml` / `uv.lock`** — includes `psycopg[binary]`.
 
 **Note:** `save_unclassified_log` / `list_unclassified_logs` use the `unclassified_logs` DB table (not filesystem). `list_unclassified_logs` yields a `_PgLogRef` as the third element; its `.unlink()` deletes the DB row. All existing tests pass unchanged.
 
@@ -122,7 +122,7 @@ Add `PostgresStorage` implementing the same interface as `SqliteStorage`, and a 
 
 ```sh
 # 1. Existing tests (no Docker needed)
-pipenv run pytest tests/ --ignore=tests/test_runner.py -x -q
+uv run --frozen --group dev pytest tests/ --ignore=tests/test_runner.py -x -q
 
 # 2. Start Postgres and apply migrations
 docker compose -f worker_health/pool_classifier_web/docker-compose.yml up -d postgres
@@ -130,7 +130,7 @@ docker compose -f worker_health/pool_classifier_web/docker-compose.yml run --rm 
 
 # 3. Run parity tests
 export PC_TEST_DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier  # pragma: allowlist secret
-pipenv run pytest tests/test_postgres_storage.py -v
+uv run --frozen --group dev pytest tests/test_postgres_storage.py -v
 ```
 
 ---
@@ -163,7 +163,7 @@ Add the Flask app with multi-pool index and per-pool routes.
   - `POST /classify/<pool_id>` — Cloud Scheduler hits this; calls `pc.classify_cycle()`, returns JSON summary
   - `GET /pools/<pool_id>/unclassified/<task_id>.log` — streams from `unclassified_logs` table
 - **`worker_health/pool_classifier_web/templates/index.html`** — multi-pool summary page (dark theme, matching per-pool style)
-- **`worker_health/pool_classifier_web/requirements.txt`** — pinned prod subset: `flask`, `gunicorn`, `requests`, `taskcluster`, `pyyaml`, `psycopg[binary]`, `sentry-sdk`
+- **`pyproject.toml` / `uv.lock`** — locked production dependencies for the web service.
 
 **Changes made:**
 
@@ -171,10 +171,10 @@ Add the Flask app with multi-pool index and per-pool routes.
 - **`worker_health/pool_classifier_web/registry.py`** — `Pool` dataclass (`enabled`, `reason` optional fields), `all_pools()` (enabled only), `all_pools_including_disabled()`, `get_pool()`, `detect_os()` (provisioner-first heuristic: autophone→android, then name-based macOS/Windows/Linux); cached at import from `POOLS_FILE` env or package-relative `pools.yaml`
 - **`worker_health/pool_classifier_web/app.py`** — Flask app factory `create_app()` with all 6 routes; module-level `_classifiers` cache; startup warning if TC creds absent; index passes per-pool OS, errors-per-host and success-rate for 1h and 24h windows; disabled pools shown greyed-out with reason page
 - **`worker_health/pool_classifier_web/templates/index.html`** — dark-theme Jinja template: banner, per-pool table with OS, alerting count, errors/host (1h/24h), success rate (1h/24h), oldest data timestamp; all columns sortable
-- **`worker_health/pool_classifier_web/requirements.txt`** — prod subset for Docker image
+- **`pyproject.toml` / `uv.lock`** — production dependency source for the Docker image
 - **`worker_health/pool_classifier_web/storage.py`** — `ClassifyLockBusy` exception; `classify_lock()` context manager on both `SqliteStorage` (no-op) and `PostgresStorage` (`pg_try_advisory_lock` on a separate connection, released on context exit)
 - **`worker_health/pool_classifier.py`** — TC init made lazy: `_init_tc()` wrapped in try/except at `__init__`, `_ensure_tc()` added, `_list_workers()` calls it; `classify_cycle()` body wrapped with `with self.storage.classify_lock():`; `ClassifyLockBusy` imported; `render_html(os_label="")` passes OS badge to `_write_html()` for display in page header
-- **`Pipfile`** — added `flask`, `gunicorn`
+- **`pyproject.toml` / `uv.lock`** — includes `flask`, `gunicorn`
 - **`tests/test_web_app.py`** — Flask test client tests (skip without `PC_TEST_DATABASE_URL`): healthz, index, pool HTML, 404, lock conflict → 409, unclassified log found/missing
 
 **All 19 existing tests pass unchanged.**
@@ -185,7 +185,7 @@ docker compose -f worker_health/pool_classifier_web/docker-compose.yml up -d pos
 docker compose -f worker_health/pool_classifier_web/docker-compose.yml run --rm migrate
 export TC_TOKEN_FILE=~/.tc_token
 export DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier  # pragma: allowlist secret
-pipenv run flask --app worker_health.pool_classifier_web.app:create_app run -p 8080
+uv run --frozen flask --app worker_health.pool_classifier_web.app:create_app run -p 8080
 curl -sf localhost:8080/healthz
 curl -sf -X POST localhost:8080/classify/proj-autophone/gecko-t-lambda-perf-a55 | jq .
 open http://localhost:8080/pools/proj-autophone/gecko-t-lambda-perf-a55
@@ -250,15 +250,15 @@ The `/classify/*` URL path bypasses IAP at the LB so Cloud Scheduler can reach i
 
 - **`worker_health/pool_classifier_web/auth.py`** — new. `require_scheduler_oidc` decorator: reads `Authorization: Bearer <jwt>`, calls `google.oauth2.id_token.verify_oauth2_token` with `aud = CLASSIFY_OIDC_AUDIENCE`, then optionally checks `email == CLASSIFY_OIDC_SA_EMAIL`. No-op when `CLASSIFY_OIDC_AUDIENCE` is unset (local dev).
 - **`worker_health/pool_classifier_web/app.py`** — `/classify/<provisioner>/<worker_type>` wrapped with `@require_scheduler_oidc`.
-- **`worker_health/pool_classifier_web/requirements.txt`** + **`Pipfile`** — added `google-auth`.
+- **`pyproject.toml` / `uv.lock`** — includes `google-auth`.
 - **`worker_health/pool_classifier_web/terraform/run.tf`** — env vars `CLASSIFY_OIDC_AUDIENCE = "https://${var.domain}/"` and `CLASSIFY_OIDC_SA_EMAIL = google_service_account.pc_scheduler.email`. Audience matches the `oidc_token.audience` in `scheduler.tf`.
 - **`tests/test_web_app.py`** — added `test_classify_missing_oidc_returns_401` and `test_classify_invalid_oidc_returns_401`. All 9 web tests pass.
 
 **Done so far — container image + build pipeline:**
 
-- **`Dockerfile`** — `python:3.14-slim`; installs `requirements.txt` then `pip install --no-deps -e .` (editable install keeps `pools.yaml`/`patterns.yaml`/`migrations/*.sql`/`templates/` on disk); non-root `app` user (uid 10001); `HEALTHCHECK` hits `/healthz`; `CMD` runs `docker-entrypoint.sh`. Build context is the repository root (`/app`), matching `POOLS_FILE=/app/worker_health/pool_classifier_web/pools.yaml` in `run.tf`.
+- **`Dockerfile`** — `python:3.14-slim` with a pinned `uv` binary; syncs the frozen production dependency set, then installs the project non-editably; non-root `app` user (uid 10001); `HEALTHCHECK` hits `/healthz`; `CMD` runs `docker-entrypoint.sh`. Build context is the repository root (`/app`), matching `POOLS_FILE=/app/worker_health/pool_classifier_web/pools.yaml` in `run.tf`.
 - **`docker-entrypoint.sh`** — new. Applies migrations (idempotent; toggle with `RUN_MIGRATIONS`, default `true`), then `exec gunicorn` on `$PORT` (default 8080) with `--timeout 1800` to match the Cloud Run request timeout, `--workers 2 --threads 8` for the I/O-bound classify work. Serves app factory `worker_health.pool_classifier_web.app:create_app()`.
-- **`.dockerignore`** — keeps the context lean: excludes `pgdata/`, `pool_classifier_results/`, `ur_*`/`sr_*` run dirs, caches, tests, docs (re-includes `README.md`, which `setup.py` reads at install time).
+- **`.dockerignore`** — keeps the context lean: excludes `pgdata/`, `pool_classifier_results/`, `ur_*`/`sr_*` run dirs, caches, tests, docs (re-includes `README.md`, which packaging metadata reads at build time).
 - **`cloudbuild.yaml`** — build → push to Artifact Registry (`$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app`, tags `$_TAG` + `latest`, `--cache-from latest`) → `gcloud run deploy` from `:latest`. `_REGION` default `us-west1` (matches terraform). The built-in `$COMMIT_SHA` records the immutable source revision in the application; manual submits pass it explicitly alongside `_TAG`, and a validation step rejects missing or invalid values.
 
 Locally verified: image builds; gunicorn boots and `/healthz` returns `ok` with no DB; the entrypoint migration step connects to the compose Postgres and applies/skips migrations.

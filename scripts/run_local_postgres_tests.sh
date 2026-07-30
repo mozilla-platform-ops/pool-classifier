@@ -11,4 +11,4 @@ cd "${repo_root}"
 
 export PC_TEST_DATABASE_URL="${PC_TEST_DATABASE_URL:-postgresql://pc:pc@127.0.0.1:5433/pool_classifier}"  # pragma: allowlist secret
 
-exec pipenv run pytest tests/ -x -q "$@"
+exec uv run --frozen --group dev pytest tests/ -x -q "$@"

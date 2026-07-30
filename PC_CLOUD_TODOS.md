@@ -4,10 +4,6 @@ Follow-ups noticed while deploying and operating the Cloud Run pool classifier.
 
 ## Next
 
-- [ ] Unify or enforce runtime dependency sources.
-  - Cloud Run installs from `worker_health/pool_classifier_web/requirements.txt`.
-  - Local development uses `Pipfile` / `Pipfile.lock`.
-  - We already missed `psycopg-pool` in the image once because these are separate.
 - [ ] Add a readiness/debug health endpoint.
   - Keep `/healthz` cheap for liveness.
   - Add `/readyz` or `/debug/health` for DB pool checkout, migration availability,

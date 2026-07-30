@@ -34,7 +34,7 @@ pc_fetch_data.sh                      # convenience: POST /classify/* for all po
 ### One-time setup
 
 ```sh
-pipenv install --dev
+uv sync --group dev
 ```
 
 Make sure you have a Taskcluster token at `~/.tc_token` (JSON with `clientId` and `accessToken`).
@@ -90,11 +90,11 @@ OIDC validation is off locally (decorator no-ops when `CLASSIFY_OIDC_AUDIENCE` i
 
 ```sh
 # Unit tests (no Postgres needed)
-pipenv run pytest tests/ --ignore=tests/test_runner.py -x -q
+uv run --frozen --group dev pytest tests/ --ignore=tests/test_runner.py -x -q
 
 # Postgres + web tests (need the docker-compose stack up)
 export PC_TEST_DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier  # pragma: allowlist secret
-pipenv run pytest tests/test_postgres_storage.py tests/test_web_app.py -v
+uv run --frozen --group dev pytest tests/test_postgres_storage.py tests/test_web_app.py -v
 ```
 
 ## Configuration

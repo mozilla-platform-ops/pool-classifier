@@ -1,0 +1,8 @@
+# Local Postgres migration runner. Keep uv pinned to the same version used by
+# the production image while retaining a Python runtime for `uv run`.
+FROM ghcr.io/astral-sh/uv:0.11.7 AS uv
+FROM python:3.14-slim
+
+COPY --from=uv /uv /uvx /bin/
+WORKDIR /app
+ENTRYPOINT ["uv"]

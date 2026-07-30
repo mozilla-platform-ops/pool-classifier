@@ -12,4 +12,4 @@ PORT="${PC_PORT:-8080}"
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
-exec pipenv run flask --app worker_health.pool_classifier_web.app:create_app run -p "$PORT" "$@"
+exec uv run --frozen flask --app worker_health.pool_classifier_web.app:create_app run -p "$PORT" "$@"

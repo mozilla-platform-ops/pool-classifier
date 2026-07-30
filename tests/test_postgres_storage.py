@@ -7,8 +7,8 @@ Requires:
 
 To run locally:
   docker compose -f worker_health/pool_classifier_web/docker-compose.yml up -d
-  DATABASE_URL=$PC_TEST_DATABASE_URL pipenv run python -m worker_health.pool_classifier_web.scripts.migrate
-  PC_TEST_DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier pipenv run pytest tests/test_postgres_storage.py -v
+  DATABASE_URL=$PC_TEST_DATABASE_URL uv run --frozen python -m worker_health.pool_classifier_web.scripts.migrate
+  PC_TEST_DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier uv run --frozen --group dev pytest tests/test_postgres_storage.py -v
 """
 
 from __future__ import annotations

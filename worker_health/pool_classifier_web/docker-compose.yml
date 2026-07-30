@@ -16,15 +16,15 @@ services:
       retries: 10
 
   migrate:
-    image: python:3.14-slim
+    build:
+      context: ../../
+      dockerfile: worker_health/pool_classifier_web/Dockerfile.migrate
     working_dir: /app
     volumes:
       - ../../:/app
     environment:
       DATABASE_URL: postgresql://pc:pc@postgres/pool_classifier  # pragma: allowlist secret
-    command: >
-      sh -c "pip install -q 'psycopg[binary]' &&
-             PYTHONPATH=/app python -m worker_health.pool_classifier_web.scripts.migrate"
+    command: run --frozen --no-dev python -m worker_health.pool_classifier_web.scripts.migrate
     depends_on:
       postgres:
         condition: service_healthy

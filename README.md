@@ -42,7 +42,7 @@ and can be cleaned up once the standalone service has stabilized. Renaming it to
 Install dependencies:
 
 ```sh
-pipenv install --dev
+uv sync --group dev
 ```
 
 Make sure a Taskcluster token exists at `~/.tc_token`:
@@ -106,7 +106,7 @@ curl -sG localhost:8080/api/v1/pools/proj-autophone/gecko-t-lambda-perf-a55/util
 
 ```sh
 # Unit and web tests that do not require local Postgres
-pipenv run pytest tests/ --ignore=tests/test_runner.py -x -q
+uv run --frozen --group dev pytest tests/ --ignore=tests/test_runner.py -x -q
 
 # Full suite, including Postgres-backed tests
 scripts/run_local_postgres_tests.sh

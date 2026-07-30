@@ -4,7 +4,7 @@ Requires a live Postgres instance. Skip unless PC_TEST_DATABASE_URL is set.
 
   docker compose -f worker_health/pool_classifier_web/docker-compose.yml up -d postgres
   PC_TEST_DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier \\
-    pipenv run pytest tests/test_web_app.py -v
+    uv run --frozen --group dev pytest tests/test_web_app.py -v
 """
 
 from __future__ import annotations
