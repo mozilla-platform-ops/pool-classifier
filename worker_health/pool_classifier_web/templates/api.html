@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-{% from "base.html" import navigation %}
+{% from "base.html" import navigation, navigation_styles %}
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -28,6 +28,7 @@
   td { padding: .55rem .7rem; border-bottom: 1px solid #2a2a2a; vertical-align: top; }
   code { color: #ddd; background: #1a1a1a; padding: .1rem .3rem; border-radius: 3px; white-space: nowrap; }
   .method { color: #4c4; } .doc-link { color: #58a6ff; }
+  {{ navigation_styles() }}
 </style>
 </head>
 <body>

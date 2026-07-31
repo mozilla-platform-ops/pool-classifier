@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-{% from "base.html" import navigation %}
+{% from "base.html" import navigation, navigation_styles %}
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -26,6 +26,7 @@
   dl { display: grid; grid-template-columns: max-content 1fr; gap: .65rem 1.5rem; max-width: 48rem; }
   dt { color: #777; } dd { margin: 0; color: #ddd; } dd a { color: #58a6ff; }
   code { background: #1a1a1a; padding: .1rem .3rem; border-radius: 3px; }
+  {{ navigation_styles() }}
 </style>
 </head>
 <body>

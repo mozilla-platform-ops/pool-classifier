@@ -114,6 +114,12 @@ def test_pool_html(client):
     r = client.get(POOL_URL_PREFIX)
     assert r.status_code == 200
     assert b"Pool Classifier" in r.data
+    assert r.data.count(b'<a href="/">Overview</a>') == 1
+    assert r.data.count(b'<a href="/patterns">Patterns</a>') == 1
+    assert r.data.count(b'<a href="/pool-discovery">Pool Discovery</a>') == 1
+    assert r.data.count(b'<a href="/api">API</a>') == 1
+    assert r.data.count(b'<a href="/about">About</a>') == 1
+    assert b'!menu.contains(event.target)' in r.data
     assert b"Availability mode: listed" in r.data
     assert b"listing does not confirm that the device is live" in r.data
     assert r.data.index(b'id="s-utilization"') < r.data.index(b"Availability mode: listed")

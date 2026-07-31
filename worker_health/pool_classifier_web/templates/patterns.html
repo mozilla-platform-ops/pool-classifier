@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-{% from "base.html" import navigation %}
+{% from "base.html" import navigation, navigation_styles %}
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -50,6 +50,7 @@
   .hits-zero { color: #444; }
   .anchor { color: #555; font-size: .8em; margin-left: .5em; }
   tr:hover .anchor { color: #58a6ff; }
+  {{ navigation_styles() }}
 </style>
 </head>
 <body>

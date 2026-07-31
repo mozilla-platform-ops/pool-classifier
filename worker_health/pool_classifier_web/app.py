@@ -699,7 +699,15 @@ def create_app() -> Flask:
         if pc is None:
             abort(404)
         os_label = detect_os(pool)
-        return Response(pc.render_html(os_label=os_label), content_type="text/html; charset=utf-8")
+        base_template = app.jinja_env.get_template("base.html")
+        return Response(
+            pc.render_html(
+                os_label=os_label,
+                navigation_html=str(base_template.module.navigation(f"{provisioner}/{worker_type}")),
+                navigation_styles=str(base_template.module.navigation_styles()),
+            ),
+            content_type="text/html; charset=utf-8",
+        )
 
     @app.get("/pools/<provisioner>/<worker_type>/overview.md")
     def pool_md(provisioner: str, worker_type: str):

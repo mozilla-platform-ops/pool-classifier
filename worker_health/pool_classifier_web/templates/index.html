@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-{% from "base.html" import navigation %}
+{% from "base.html" import navigation, navigation_styles %}
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -55,6 +55,7 @@
   .os-filters .chip:hover { color: #fff; border-color: #444; }
   .os-filters .chip.active { color: #f90; border-color: #f90; }
   .footer { margin: 2rem 0 1rem; color: #555; font-size: .8em; text-align: center; }
+  {{ navigation_styles() }}
 </style>
 </head>
 <body>

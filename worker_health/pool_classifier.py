@@ -1373,8 +1373,18 @@ class PoolClassifier:
             return
         self.storage.backfill_worker_groups(live_workers)
 
-    def render_html(self, os_label: str = "") -> str:
-        """Return the HTML dashboard string for this pool (does not write to disk)."""
+    def render_html(
+        self,
+        os_label: str = "",
+        navigation_html: Optional[str] = None,
+        navigation_styles: str = "",
+    ) -> str:
+        """Return the HTML dashboard string for this pool (does not write to disk).
+
+        The standalone report keeps its own fallback header. Web callers can
+        provide the shared Jinja navigation so every interactive page has the
+        same menu markup and CSS.
+        """
         now = datetime.now(timezone.utc)
         since_1d = (now - timedelta(days=1)).isoformat()
         since_12h = (now - timedelta(hours=12)).isoformat()
@@ -1394,6 +1404,8 @@ class PoolClassifier:
             heatmap,
             quarantine_details,
             os_label=os_label,
+            navigation_html=navigation_html,
+            navigation_styles=navigation_styles,
         )
 
     def render_md(self) -> str:
@@ -1555,6 +1567,8 @@ class PoolClassifier:
         heatmap: Dict[str, Dict[int, dict]] = None,
         quarantine_details: Dict[str, dict] = None,
         os_label: str = "",
+        navigation_html: Optional[str] = None,
+        navigation_styles: str = "",
     ):
         now = datetime.now(timezone.utc)
         total_failures = sum(w.get("failures", 0) for w in workers.values())
@@ -1662,6 +1676,20 @@ class PoolClassifier:
             sr = self._sr_pct(w)
             return f"{sr:.0%}" if sr is not None else "—"
 
+        detail_navigation = [navigation_html] if navigation_html else [
+            '<header class="site-header">',
+            '<a href="/" style="text-decoration:none"><pre style="color:#0ff;line-height:1;margin:0;font-size:1rem">',
+            " ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀",
+            " ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ ",
+            "</pre></a>",
+            f'<span class="site-title"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a></span>',
+            '<details class="global-menu">',
+            '  <summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary>',
+            '  <nav class="menu-popover" aria-label="Global navigation"><a href="/">Overview</a><a href="/patterns">Patterns</a><a href="/pool-discovery">Pool Discovery</a><a href="/api">API</a><a href="/about">About</a></nav>',
+            "</details>",
+            "</header>",
+        ]
+
         parts = [
             "<!DOCTYPE html>",
             '<html lang="en">',
@@ -1768,20 +1796,11 @@ class PoolClassifier:
             "  .lag-legend { display:flex; gap:1rem; flex-wrap:wrap; margin:.45rem 0; color:#888; font-size:.8em; } .lag-line { display:inline-block; width:1.5rem; border-top:2px solid; vertical-align:middle; margin-right:.3rem; }",
             "  .lag-heatmap-wrap { overflow-x:auto; max-width:80rem; } .lag-heatmap { display:grid; grid-template-columns:1.75rem repeat(24, minmax(1.35rem, 1fr)); gap:3px; min-width:42rem; margin-top:.6rem; }",
             "  .lag-hm-label { color:#777; font-size:.72em; text-align:center; } .lag-hm-day { text-align:left; padding-right:.2rem; align-self:center; } .lag-hm-cell { height:1rem; border:0; border-radius:2px; cursor:default; outline:1px solid #111; } .lag-hm-cell.insufficient { background:repeating-linear-gradient(135deg,#333 0,#333 4px,#222 4px,#222 8px) !important; } .lag-hm-cell:hover { filter:brightness(1.25); outline-color:#aaa; } .lag-hm-cell.lag-linked-hover { box-shadow:inset 0 0 0 2px #fff; filter:brightness(1.35); position:relative; z-index:1; }",
+            navigation_styles,
             "</style>",
             "</head>",
             "<body>",
-            '<header class="site-header">',
-            '<a href="/" style="text-decoration:none"><pre style="color:#0ff;line-height:1;margin:0;font-size:1rem">',
-            " ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀",
-            " ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ ",
-            "</pre></a>",
-            f'<span class="site-title"><a href="https://firefox-ci-tc.services.mozilla.com/provisioners/{self.provisioner}/worker-types/{self.worker_type}?sortBy=Last%20Active&sortDirection=desc" target="_blank">{self.provisioner}/{self.worker_type}</a></span>',
-            '<details class="global-menu">',
-            '  <summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary>',
-            '  <nav class="menu-popover" aria-label="Global navigation"><a href="/">Overview</a><a href="/patterns">Patterns</a><a href="/api">API</a><a href="/about">About</a></nav>',
-            "</details>",
-            "</header>",
+            *detail_navigation,
         ]
 
         summary_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization/summary"
