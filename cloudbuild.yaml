@@ -1,4 +1,6 @@
-# Build → push → deploy the pool classifier to Cloud Run.
+# Build and push the pool classifier image. Deployment is a documented manual
+# gate: run the migration job first, then deploy a no-traffic revision and
+# explicitly promote it only after verification.
 #
 # Manual build from the repository root (the build context). Pass the git short
 # SHA as the image tag and source revision:
@@ -11,9 +13,7 @@
 # submits must pass it as shown above. The first step rejects missing or invalid
 # values so the About page always identifies an immutable Git commit.
 #
-# The Artifact Registry repo (pool-classifier) and the Cloud Run service
-# (pool-classifier) are created by terraform; this only builds and rolls out
-# new revisions.
+# The Artifact Registry repo and Cloud Run resources are created by Terraform.
 steps:
   - name: "alpine"
     id: validate-source-revision
@@ -47,19 +47,6 @@ steps:
       - push
       - --all-tags
       - $_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app
-
-  # Roll out the new revision.
-  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
-    id: deploy
-    waitFor: ["push-image"]
-    entrypoint: gcloud
-    args:
-      - run
-      - deploy
-      - pool-classifier
-      - --image=$_REGION-docker.pkg.dev/$PROJECT_ID/pool-classifier/app:latest
-      - --region=$_REGION
-      - --quiet
 
 substitutions:
   _REGION: us-west1

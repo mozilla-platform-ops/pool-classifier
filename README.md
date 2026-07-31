@@ -25,8 +25,8 @@ worker_health/
     terraform/                        # Cloud Run, LB, SQL, Scheduler infra
 tests/                                # pytest suite
 Dockerfile                            # Cloud Run image
-cloudbuild.yaml                       # build, push, deploy
-docker-entrypoint.sh                  # migrations + gunicorn startup
+cloudbuild.yaml                       # build and push release images
+docker-entrypoint.sh                  # gunicorn startup
 pc_db.sh                              # local Postgres helper
 pc_start.sh                           # local Flask helper
 pc_fetch_data.sh                      # trigger classify for all enabled pools
@@ -112,14 +112,37 @@ uv run --frozen --group dev pytest tests/ --ignore=tests/test_runner.py -x -q
 scripts/run_local_postgres_tests.sh
 ```
 
-## Deploy
+## Build and deploy
 
-Code deploys are built from the repository root:
+Build the release image from the repository root. This command does not change
+production traffic:
 
 ```sh
 gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_TAG=$(git rev-parse --short HEAD),COMMIT_SHA=$(git rev-parse HEAD) \
+  --substitutions=_TAG=vVERSION,COMMIT_SHA=$(git rev-parse "vVERSION^{commit}") \
   --project=relops-pool-classifier .
+```
+
+After Terraform has created the two jobs, run the manual production gate with
+the same immutable release image. A failed command stops here; do not deploy or
+promote traffic after a failure.
+
+```sh
+IMAGE=us-west1-docker.pkg.dev/relops-pool-classifier/pool-classifier/app:vVERSION
+
+# Schema migrations run before any candidate web revision exists.
+gcloud run jobs update pool-classifier-migrate \
+  --image="$IMAGE" --region=us-west1 --project=relops-pool-classifier
+gcloud run jobs execute pool-classifier-migrate \
+  --wait --region=us-west1 --project=relops-pool-classifier
+
+# Start a candidate only after the migration job succeeds; retain current traffic.
+gcloud run deploy pool-classifier --image="$IMAGE" --no-traffic \
+  --region=us-west1 --project=relops-pool-classifier
+
+# Promote only after the candidate reports Ready=True and log inspection passes.
+gcloud run services update-traffic pool-classifier --to-latest \
+  --region=us-west1 --project=relops-pool-classifier
 ```
 
 ## Production database maintenance
@@ -130,9 +153,10 @@ separately triggered maintenance path. In particular, migration 007 adds its
 timestamp columns without backfilling historical rows; the observation-timestamp
 backfill is a separate operational task.
 
-Before the recovery release, create the maintenance-job infrastructure with
-Terraform. After the corrected service revision is healthy and migration 007 is
-recorded, point the job at the release image and execute it manually:
+Use the maintenance job only for explicitly reviewed index work and operational
+backfills; it is not the migration job. For example, after the migration job
+has recorded migration 007, point the maintenance job at the release image and
+execute it manually:
 
 ```sh
 IMAGE=us-west1-docker.pkg.dev/relops-pool-classifier/pool-classifier/app:vVERSION

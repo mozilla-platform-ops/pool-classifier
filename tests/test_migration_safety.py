@@ -6,7 +6,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from worker_health.pool_classifier_web import storage as storage_module
 from worker_health.pool_classifier_web.scripts import create_unresolved_task_run_index, migrate
+from worker_health.pool_classifier_web.storage import PostgresStorage
 
 
 class _Cursor:
@@ -89,3 +91,25 @@ def test_concurrent_index_command_uses_autocommit_and_verifies_index(monkeypatch
     )
     assert ("SELECT pg_advisory_lock(%s)", (migrate.MIGRATION_LOCK_ID,)) in cursor.executed
     assert ("SELECT pg_advisory_unlock(%s)", (migrate.MIGRATION_LOCK_ID,)) in cursor.executed
+
+
+def test_postgres_storage_initialization_does_not_apply_migrations(monkeypatch):
+    pool = object()
+    monkeypatch.setattr(storage_module, "_postgres_pool", lambda _dsn: pool)
+
+    storage = PostgresStorage("test-pool", "postgresql://example")
+    storage.init_schema()
+
+    assert storage._pool is pool
+
+
+def test_web_entrypoint_does_not_run_migrations():
+    entrypoint = (Path(__file__).parents[1] / "docker-entrypoint.sh").read_text()
+
+    assert "scripts.migrate" not in entrypoint
+
+
+def test_cloud_build_does_not_deploy_the_web_service():
+    cloudbuild = (Path(__file__).parents[1] / "cloudbuild.yaml").read_text()
+
+    assert "gcloud run deploy" not in cloudbuild

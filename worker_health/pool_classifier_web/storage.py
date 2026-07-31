@@ -1252,9 +1252,7 @@ class PostgresStorage:
         self._tx_conn = None
 
     def init_schema(self) -> None:
-        from worker_health.pool_classifier_web.scripts.migrate import apply_migrations
-
-        apply_migrations(self._dsn)
+        """Initialize the application connection pool after pre-deploy migration."""
         self._pool = _postgres_pool(self._dsn)
 
     def _ensure_pool(self):

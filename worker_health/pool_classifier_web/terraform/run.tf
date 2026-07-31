@@ -112,11 +112,10 @@ resource "google_cloud_run_v2_service" "pc" {
     }
   }
 
-  # The image is owned by the Cloud Build pipeline (cloudbuild.yaml does
-  # `gcloud run deploy --image=...`), not terraform. var.cloud_run_image only
-  # seeds the very first revision. Ignore image (and the client metadata +
-  # scaling block that `gcloud run deploy` re-stamps) so `terraform apply`
-  # doesn't churn on deploy-driven drift.
+  # The image is owned by the manual release procedure, not Terraform.
+  # var.cloud_run_image only seeds the first revision. Ignore image (and the
+  # client metadata + scaling block that `gcloud run deploy` re-stamps) so
+  # `terraform apply` does not churn on release-driven drift.
   lifecycle {
     ignore_changes = [
       template[0].containers[0].image,
@@ -124,6 +123,54 @@ resource "google_cloud_run_v2_service" "pc" {
       client,
       client_version,
     ]
+  }
+
+  depends_on = [
+    google_secret_manager_secret_version.db_url,
+    google_vpc_access_connector.pc,
+    google_project_service.apis,
+  ]
+}
+
+# This job runs bounded schema migrations before a release is deployed. It is
+# intentionally distinct from database-maintenance jobs so the release gate
+# never needs to mutate a job command outside Terraform.
+resource "google_cloud_run_v2_job" "migrate" {
+  name     = "pool-classifier-migrate"
+  location = var.region
+
+  template {
+    template {
+      service_account = google_service_account.pc_run.email
+      timeout         = "1800s"
+      max_retries     = 0
+
+      vpc_access {
+        connector = google_vpc_access_connector.pc.id
+        egress    = "PRIVATE_RANGES_ONLY"
+      }
+
+      containers {
+        image   = local.image
+        command = ["python"]
+        args    = ["-m", "worker_health.pool_classifier_web.scripts.migrate"]
+
+        env {
+          name = "DATABASE_URL"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.pc["pc-db-url"].secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  # Each release stamps its immutable image through `gcloud run jobs update`.
+  lifecycle {
+    ignore_changes = [template[0].template[0].containers[0].image]
   }
 
   depends_on = [

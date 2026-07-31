@@ -1,14 +1,10 @@
 #!/bin/sh
 # Container entrypoint for the pool classifier Cloud Run service.
 #
-# Applies pending DB migrations (idempotent — skips already-applied versions),
-# then starts gunicorn. Cloud Run sets $PORT; default 8080 for local `docker run`.
+# Starts gunicorn. Production schema migrations run through the dedicated
+# pre-deploy Cloud Run job, never while a web-service instance starts. Cloud
+# Run sets $PORT; default 8080 for local `docker run`.
 set -e
-
-if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
-    echo "entrypoint: applying database migrations"
-    python -m worker_health.pool_classifier_web.scripts.migrate
-fi
 
 # classify_cycle() can run for minutes, so the worker timeout must match the
 # Cloud Run request timeout (1800s in run.tf). Work is I/O-bound (Taskcluster
