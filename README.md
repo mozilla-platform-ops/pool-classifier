@@ -102,6 +102,21 @@ curl -sG localhost:8080/api/v1/pools/proj-autophone/gecko-t-lambda-perf-a55/util
   --data-urlencode 'bucket_seconds=3600' | jq .
 ```
 
+### Local page benchmarks
+
+With the local service running, capture a reusable baseline for the overview
+and a representative detail page. The first run reflects the current cache
+state; later runs capture warm behavior. Save the JSON before a change and
+compare its per-request `median_ms` and `p95_ms` summaries afterward.
+
+```sh
+uv run --frozen scripts/benchmark_web_pages.py --runs 3 \
+  --output /private/tmp/pool-classifier-before.json
+```
+
+Use `--base-url` and `--pool provisioner/worker-type` to target a different
+local listener or representative pool.
+
 ## Tests
 
 ```sh
