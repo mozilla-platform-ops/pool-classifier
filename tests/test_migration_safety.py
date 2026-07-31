@@ -59,8 +59,8 @@ def test_apply_migrations_sets_transaction_local_timeouts(monkeypatch, tmp_path:
     migrate.apply_migrations("postgresql://example")
 
     assert cursor.executed[:3] == [
-        ("SET LOCAL lock_timeout = %s", ("5s",)),
-        ("SET LOCAL statement_timeout = %s", ("30s",)),
+        ("SELECT set_config('lock_timeout', %s, true)", ("5s",)),
+        ("SELECT set_config('statement_timeout', %s, true)", ("30s",)),
         ("SELECT pg_advisory_xact_lock(%s)", (migrate.MIGRATION_LOCK_ID,)),
     ]
     assert connection.committed is True

@@ -42,8 +42,8 @@ def create_unresolved_task_run_index(dsn: str) -> None:
     # transaction block. Do not replace this with a transaction context.
     with psycopg.connect(dsn, autocommit=True) as conn:
         with conn.cursor() as cur:
-            cur.execute("SET lock_timeout = %s", (LOCK_TIMEOUT,))
-            cur.execute("SET statement_timeout = %s", (STATEMENT_TIMEOUT,))
+            cur.execute("SELECT set_config('lock_timeout', %s, false)", (LOCK_TIMEOUT,))
+            cur.execute("SELECT set_config('statement_timeout', %s, false)", (STATEMENT_TIMEOUT,))
             # A session lock survives autocommit statements, unlike the
             # transaction-scoped lock used by the startup migration runner.
             # It prevents a second maintenance job or pending migration from

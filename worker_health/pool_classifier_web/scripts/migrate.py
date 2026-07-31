@@ -29,8 +29,8 @@ def apply_migrations(dsn: str) -> None:
             # These are deliberately local to the migration transaction: a
             # blocked schema change must fail the rollout instead of holding
             # application traffic indefinitely.
-            cur.execute("SET LOCAL lock_timeout = %s", (MIGRATION_LOCK_TIMEOUT,))
-            cur.execute("SET LOCAL statement_timeout = %s", (MIGRATION_STATEMENT_TIMEOUT,))
+            cur.execute("SELECT set_config('lock_timeout', %s, true)", (MIGRATION_LOCK_TIMEOUT,))
+            cur.execute("SELECT set_config('statement_timeout', %s, true)", (MIGRATION_STATEMENT_TIMEOUT,))
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATION_LOCK_ID,))
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS schema_migrations (
