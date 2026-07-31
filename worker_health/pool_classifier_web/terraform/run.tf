@@ -133,6 +133,54 @@ resource "google_cloud_run_v2_service" "pc" {
   ]
 }
 
+# This job performs heavyweight, explicitly triggered database maintenance.
+# It shares the production service account, DATABASE_URL secret, and VPC path
+# so it can reach Cloud SQL, but it is never invoked by a web-service startup.
+resource "google_cloud_run_v2_job" "db_maintenance" {
+  name     = "pool-classifier-db-maintenance"
+  location = var.region
+
+  template {
+    template {
+      service_account = google_service_account.pc_run.email
+      timeout         = "1800s"
+      max_retries     = 0
+
+      vpc_access {
+        connector = google_vpc_access_connector.pc.id
+        egress    = "PRIVATE_RANGES_ONLY"
+      }
+
+      containers {
+        image   = local.image
+        command = ["python"]
+        args    = ["-m", "worker_health.pool_classifier_web.scripts.create_unresolved_task_run_index"]
+
+        env {
+          name = "DATABASE_URL"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.pc["pc-db-url"].secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  # Cloud Build stamps the release image through `gcloud run jobs update`.
+  lifecycle {
+    ignore_changes = [template[0].template[0].containers[0].image]
+  }
+
+  depends_on = [
+    google_secret_manager_secret_version.db_url,
+    google_vpc_access_connector.pc,
+    google_project_service.apis,
+  ]
+}
+
 # IAP in front of Cloud Run requires the IAP service agent to (a) be provisioned
 # and (b) hold run.invoker on the service — IAP invokes Cloud Run on behalf of
 # authenticated users. Without this you get "The IAP service account is not

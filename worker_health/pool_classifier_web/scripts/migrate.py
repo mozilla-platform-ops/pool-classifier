@@ -14,6 +14,8 @@ from pathlib import Path
 
 MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
 MIGRATION_LOCK_ID = 6_061_283
+MIGRATION_LOCK_TIMEOUT = "5s"
+MIGRATION_STATEMENT_TIMEOUT = "30s"
 
 
 def apply_migrations(dsn: str) -> None:
@@ -24,6 +26,11 @@ def apply_migrations(dsn: str) -> None:
             # Cloud Run can start more than one instance for a new revision.
             # Keep the lock and every migration in one transaction so only one
             # instance can inspect, apply, and record a migration at a time.
+            # These are deliberately local to the migration transaction: a
+            # blocked schema change must fail the rollout instead of holding
+            # application traffic indefinitely.
+            cur.execute("SET LOCAL lock_timeout = %s", (MIGRATION_LOCK_TIMEOUT,))
+            cur.execute("SET LOCAL statement_timeout = %s", (MIGRATION_STATEMENT_TIMEOUT,))
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATION_LOCK_ID,))
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS schema_migrations (

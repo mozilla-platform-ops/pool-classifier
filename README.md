@@ -122,6 +122,32 @@ gcloud builds submit --config cloudbuild.yaml \
   --project=relops-pool-classifier .
 ```
 
+## Production database maintenance
+
+Startup migrations are restricted to fast, bounded schema changes. Historical
+data updates and heavyweight index work must use an explicitly reviewed,
+separately triggered maintenance path. In particular, migration 007 adds its
+timestamp columns without backfilling historical rows; the observation-timestamp
+backfill is a separate operational task.
+
+Before the recovery release, create the maintenance-job infrastructure with
+Terraform. After the corrected service revision is healthy and migration 007 is
+recorded, point the job at the release image and execute it manually:
+
+```sh
+IMAGE=us-west1-docker.pkg.dev/relops-pool-classifier/pool-classifier/app:vVERSION
+gcloud run jobs update pool-classifier-db-maintenance \
+  --image="$IMAGE" --region=us-west1 --project=relops-pool-classifier
+gcloud run jobs execute pool-classifier-db-maintenance \
+  --wait --region=us-west1 --project=relops-pool-classifier
+```
+
+The job runs `CREATE INDEX CONCURRENTLY` for
+`idx_task_results_unresolved` outside a transaction and fails if migration 007
+is absent or the resulting index is invalid. Inspect its Cloud Logging output
+before treating the release as complete. This remains a manual release step
+until the dedicated migration-deployment work is implemented.
+
 Infrastructure changes live under
 `worker_health/pool_classifier_web/terraform/`:
 

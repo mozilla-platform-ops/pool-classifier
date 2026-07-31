@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -145,6 +146,33 @@ def test_record_task_result_preserves_retries_and_resolved_time(sqlite, pg):
     assert [row[0] for row in sqlite_rows] == [row[0] for row in pg_rows]
     assert sqlite_rows[0]["run_resolved"] == pg_rows[0][1].isoformat()
     assert sqlite_rows[2]["run_resolved"] is pg_rows[2][1] is None
+
+
+def test_migration_007_leaves_a_populated_legacy_table_untouched():
+    """Timestamp history is backfilled separately, never during startup DDL."""
+    migration_sql = (
+        Path(__file__).parents[1]
+        / "worker_health/pool_classifier_web/migrations/007_observed_task_runs.sql"
+    ).read_text()
+
+    with psycopg.connect(DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE task_results ("
+                " pool_id TEXT NOT NULL, task_id TEXT NOT NULL, worker_id TEXT NOT NULL,"
+                " run_id INT, run_state TEXT NOT NULL, classified_at TIMESTAMPTZ NOT NULL)"
+            )
+            cur.execute(
+                "INSERT INTO task_results (pool_id, task_id, worker_id, run_id, run_state, classified_at)"
+                " SELECT 'legacy', 'task-' || n, 'worker', 0, 'completed', now()"
+                " FROM generate_series(1, 1000) AS n"
+            )
+            cur.execute(migration_sql)
+            cur.execute(
+                "SELECT COUNT(*) FROM task_results"
+                " WHERE observed_at IS NULL AND last_checked_at IS NULL"
+            )
+            assert cur.fetchone()[0] == 1000
 
 
 def test_observed_run_upsert_transitions_parity(sqlite, pg):
