@@ -47,7 +47,7 @@ DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES = 5
 COVERAGE_STALE_AFTER = timedelta(hours=1)
 REPOSITORY_URL = "https://github.com/mozilla-platform-ops/pool-classifier"
 DEFAULT_OVERVIEW_CACHE_TTL_SECONDS = 30
-MAX_OVERVIEW_UTILIZATION_QUERIES = 4
+DEFAULT_OVERVIEW_UTILIZATION_CONCURRENCY = 4
 
 # Dashboard aggregates are intentionally process-local: metric definitions are
 # still evolving, so a short TTL is safer and simpler than persisted rollups.
@@ -62,6 +62,15 @@ def _overview_cache_ttl_seconds() -> float:
     except ValueError:
         logger.warning("OVERVIEW_CACHE_TTL_SECONDS must be numeric; disabling overview cache")
         return 0
+
+
+def _overview_utilization_concurrency() -> int:
+    """Return the bounded worker count for a cold overview utilization batch."""
+    try:
+        return max(1, int(os.environ.get("OVERVIEW_UTILIZATION_CONCURRENCY", DEFAULT_OVERVIEW_UTILIZATION_CONCURRENCY)))
+    except ValueError:
+        logger.warning("OVERVIEW_UTILIZATION_CONCURRENCY must be an integer; using %d", DEFAULT_OVERVIEW_UTILIZATION_CONCURRENCY)
+        return DEFAULT_OVERVIEW_UTILIZATION_CONCURRENCY
 
 
 def _cached_overview_result(key: tuple, calculate):
@@ -444,7 +453,7 @@ def _overview_utilization_summaries(windows: dict[str, int]) -> dict:
             return {}
         # Cold summaries are independent per pool. Match the previous browser
         # ceiling while keeping the whole operation behind one HTTP request.
-        with ThreadPoolExecutor(max_workers=min(MAX_OVERVIEW_UTILIZATION_QUERIES, len(classifiers))) as executor:
+        with ThreadPoolExecutor(max_workers=min(_overview_utilization_concurrency(), len(classifiers))) as executor:
             return dict(executor.map(summarize, classifiers))
 
     return _cached_overview_result(

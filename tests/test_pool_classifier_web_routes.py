@@ -294,7 +294,7 @@ def test_overview_utilization_batch_caps_cold_database_workers(monkeypatch):
         def get_utilization_summary(self, windows):
             return {"windows": {name: {"status": "ok"} for name in windows}}
 
-    pools = [Pool(f"pool-{index}", "proj", f"worker-{index}", "*/15 * * * *") for index in range(5)]
+    pools = [Pool(f"pool-{index}", "proj", f"worker-{index}", "*/15 * * * *") for index in range(7)]
     classifiers = {
         (pool.provisioner, pool.worker_type): SimpleNamespace(storage=Storage(), availability_mode="recent_contact")
         for pool in pools
@@ -302,6 +302,7 @@ def test_overview_utilization_batch_caps_cold_database_workers(monkeypatch):
     monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: pools)
     monkeypatch.setattr(app_module, "_get_classifier", lambda provisioner, worker_type: classifiers[(provisioner, worker_type)])
     monkeypatch.setattr(app_module, "ThreadPoolExecutor", RecordingExecutor)
+    monkeypatch.setenv("OVERVIEW_UTILIZATION_CONCURRENCY", "6")
     app = create_app()
     app.config["TESTING"] = True
 
@@ -309,7 +310,7 @@ def test_overview_utilization_batch_caps_cold_database_workers(monkeypatch):
         response = client.get("/api/v1/overview/utilization?windows=1h,24h")
 
     assert response.status_code == 200
-    assert worker_limits == [4]
+    assert worker_limits == [6]
 
 
 @pytest.mark.parametrize(

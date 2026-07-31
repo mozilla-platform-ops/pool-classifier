@@ -89,13 +89,24 @@ resource "google_cloud_run_v2_service" "pc" {
         value = "true"
       }
 
-      # One gunicorn worker keeps per-instance DB pressure predictable. The app
-      # uses a process-local psycopg_pool shared by cached pool classifiers
-      # (PC_DB_POOL_MAX defaults to 5). Threads (set in docker-entrypoint.sh)
-      # still give per-instance concurrency.
+      # One Gunicorn worker keeps per-instance DB pressure predictable. Threads
+      # and the shared per-DSN psycopg pool are tuned for concurrent dashboard
+      # reads without unbounded per-instance fan-out.
       env {
         name  = "GUNICORN_WORKERS"
         value = "1"
+      }
+      env {
+        name  = "GUNICORN_THREADS"
+        value = "12"
+      }
+      env {
+        name  = "PC_DB_POOL_MAX"
+        value = "8"
+      }
+      env {
+        name  = "OVERVIEW_UTILIZATION_CONCURRENCY"
+        value = "6"
       }
 
       # OIDC validation for /classify/* — Cloud Scheduler signs each request
