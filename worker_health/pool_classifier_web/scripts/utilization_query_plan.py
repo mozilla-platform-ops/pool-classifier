@@ -6,6 +6,8 @@ import argparse
 import json
 from datetime import datetime
 
+from worker_health.pool_classifier_web.postgres import connect as postgres_connect
+
 
 DEFAULT_STATEMENT_TIMEOUT_SECONDS = 30
 MAX_WINDOW_SECONDS = 7 * 24 * 60 * 60
@@ -50,8 +52,6 @@ def capture_utilization_task_run_plan(
     modes use a range cap and a session statement timeout, so production plan
     collection cannot silently become an unbounded maintenance operation.
     """
-    import psycopg
-
     if not pool_id:
         raise ValueError("pool_id must not be empty")
     _validate_window(start, end)
@@ -60,7 +60,7 @@ def capture_utilization_task_run_plan(
 
     options = "ANALYZE, BUFFERS, FORMAT JSON" if analyze else "FORMAT JSON"
     explain_sql = f"EXPLAIN ({options}) {UTILIZATION_TASK_RUNS_SQL}"
-    with psycopg.connect(dsn, autocommit=True) as conn:
+    with postgres_connect(dsn, "maintenance", autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT set_config('default_transaction_read_only', 'on', false)")
             cur.execute(

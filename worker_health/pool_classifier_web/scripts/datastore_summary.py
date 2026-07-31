@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import json
 
+from worker_health.pool_classifier_web.postgres import connect as postgres_connect
+
 
 LOCK_TIMEOUT = "2s"
 STATEMENT_TIMEOUT = "10s"
@@ -66,9 +68,7 @@ def _rows(cur, sql: str, params: tuple[object, ...] = ()) -> list[dict[str, obje
 
 def collect_datastore_summary(dsn: str) -> dict[str, object]:
     """Collect a bounded diagnostic summary without modifying application data."""
-    import psycopg
-
-    with psycopg.connect(dsn, autocommit=True) as conn:
+    with postgres_connect(dsn, "maintenance", autocommit=True) as conn:
         with conn.cursor() as cur:
             # Session settings apply to each autocommit statement below.  The
             # operation has no DML/DDL and read-only mode makes that contract

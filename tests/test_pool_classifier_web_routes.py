@@ -88,6 +88,77 @@ def test_favicon_serves_svg_icon():
     assert b"<svg" in response.data
 
 
+def test_pool_html_serves_complete_snapshot_without_constructing_a_classifier(monkeypatch):
+    pool = Pool("display", "provisioner", "worker-type", "*/15 * * * *")
+    monkeypatch.setattr(app_module.registry, "get_pool", lambda *_args: pool)
+    monkeypatch.setattr(
+        app_module,
+        "_read_dashboard_snapshot",
+        lambda *_args: {
+            "source_at": "2026-07-31T12:00:00+00:00",
+            "generated_at": "2026-07-31T12:01:00+00:00",
+            "payload": {"detail_html": "<html><body>saved detail</body></html>"},
+        },
+    )
+    monkeypatch.setattr(app_module, "_get_classifier", lambda *_args: pytest.fail("must use snapshot"))
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/pools/provisioner/worker-type")
+
+    assert b"saved detail" in response.data
+    assert b"Snapshot source: 2026-07-31T12:00:00+00:00" in response.data
+    assert response.headers["X-Pool-Classifier-Snapshot-Source"] == "2026-07-31T12:00:00+00:00"
+
+
+def test_standard_utilization_summary_uses_snapshot(monkeypatch, tmp_path):
+    storage = _api_storage(tmp_path)
+    monkeypatch.setattr(
+        app_module,
+        "_read_dashboard_snapshot",
+        lambda *_args: {
+            "source_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "payload": {
+                "utilization_summary": {
+                    "api_version": 1,
+                    "data_through": API_START.isoformat(),
+                    "windows": {"1h": {"status": "ok"}, "24h": {"status": "ok"}},
+                },
+            },
+        },
+    )
+    client = _api_client(monkeypatch, storage)
+
+    response = client.get(f"{SUMMARY_PATH}?windows=1h")
+
+    assert response.status_code == 200
+    assert response.json["windows"] == {"1h": {"status": "ok"}}
+    assert response.json["snapshot"]["stale"] is False
+
+
+def test_default_lag_visualization_uses_snapshot(monkeypatch, tmp_path):
+    storage = _api_storage(tmp_path)
+    payload = {"api_version": 1, "buckets": [], "heatmap": [], "min_samples": 5}
+    monkeypatch.setattr(
+        app_module,
+        "_read_dashboard_snapshot",
+        lambda *_args: {
+            "source_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "payload": {"observed_start_lag_visualization_7d": payload},
+        },
+    )
+    client = _api_client(monkeypatch, storage)
+
+    response = client.get("/api/v1/pools/provisioner/worker-type/observed-start-lag/visualization")
+
+    assert response.status_code == 200
+    assert response.json["buckets"] == []
+    assert response.json["snapshot"]["stale"] is False
+
+
 def test_api_v1_discovery_lists_versioned_endpoints():
     app = create_app()
     app.config["TESTING"] = True
@@ -158,6 +229,36 @@ def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch)
     assert "async function loadOverviewUtilizationSummaries()" in html
     assert "void loadOverviewUtilizationSummaries();" in html
     assert "UTILIZATION_REQUEST_CONCURRENCY" not in html
+
+
+def test_index_uses_overview_snapshot_without_global_aggregates(monkeypatch):
+    pool = Pool("display-only-id", "proj", "worker", "*/15 * * * *")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [pool])
+    monkeypatch.setattr(
+        app_module,
+        "_read_dashboard_snapshot",
+        lambda *_args: {
+            "source_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "payload": {
+                "pool_summaries": {"proj/worker": {"workers": 7, "alerting": 0, "task_collection_started": None,
+                                                    "oldest": None, "latest": None, "collection_latest": None,
+                                                    "err_1h": 0, "ok_1h": 0, "err_24h": 0, "ok_24h": 0}},
+                "lag_summaries": {},
+            },
+        },
+    )
+    monkeypatch.setattr(app_module, "pool_summaries_global", lambda *_args: pytest.fail("must use snapshot"))
+    monkeypatch.setattr(app_module, "observed_start_lag_summaries_global", lambda *_args: pytest.fail("must use snapshot"))
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert b"Snapshot source:" in response.data
 
 
 def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
@@ -506,7 +607,7 @@ def test_classify_all_logs_summary_counts(monkeypatch, caplog):
         def classify_cycle(self):
             return {"scanned": 1}
 
-    def fake_get_classifier(provisioner, worker_type):
+    def fake_get_classifier(provisioner, worker_type, role="web"):
         if worker_type == "ok":
             return OkClassifier()
         raise app_module.ClassifyLockBusy("busy")
@@ -539,7 +640,7 @@ def test_classify_all_warns_on_partial_failure(monkeypatch, caplog):
         def classify_cycle(self):
             raise RuntimeError("db unavailable")
 
-    def fake_get_classifier(provisioner, worker_type):
+    def fake_get_classifier(provisioner, worker_type, role="web"):
         return OkClassifier() if worker_type == "ok" else ErrorClassifier()
 
     monkeypatch.delenv("CLASSIFY_OIDC_AUDIENCE", raising=False)

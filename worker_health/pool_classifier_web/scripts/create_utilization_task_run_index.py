@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from worker_health.pool_classifier_web.scripts.migrate import MIGRATION_LOCK_ID
+from worker_health.pool_classifier_web.postgres import connect as postgres_connect
 
 
 INDEX_NAME = "idx_task_results_utilization_resolved"
@@ -28,9 +29,7 @@ def _index_validity(cur):
 
 def create_utilization_task_run_index(dsn: str) -> None:
     """Create the partial covering index selected from production plan evidence."""
-    import psycopg
-
-    with psycopg.connect(dsn, autocommit=True) as conn:
+    with postgres_connect(dsn, "maintenance", autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT set_config('lock_timeout', %s, false)", (LOCK_TIMEOUT,))
             cur.execute("SELECT set_config('statement_timeout', %s, false)", (STATEMENT_TIMEOUT,))

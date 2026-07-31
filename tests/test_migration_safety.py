@@ -64,7 +64,7 @@ def test_apply_migrations_sets_transaction_local_timeouts(monkeypatch, tmp_path:
     cursor = _Cursor(fetchone_results=(None,))
     connection = _Connection(cursor)
     monkeypatch.setattr(migrate, "MIGRATIONS_DIR", tmp_path)
-    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=lambda _dsn: connection))
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=lambda _dsn, **_kwargs: connection))
 
     migrate.apply_migrations("postgresql://example")
 
@@ -92,7 +92,9 @@ def test_concurrent_index_command_uses_autocommit_and_verifies_index(monkeypatch
 
     create_unresolved_task_run_index.create_unresolved_task_run_index("postgresql://example")
 
-    assert connect_calls == [(("postgresql://example",), {"autocommit": True})]
+    assert connect_calls[0][0] == ("postgresql://example",)
+    assert connect_calls[0][1]["autocommit"] is True
+    assert ":maintenance:" in connect_calls[0][1]["application_name"]
     assert any(
         "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_task_results_unresolved" in sql
         for sql, _params in cursor.executed
@@ -117,7 +119,9 @@ def test_utilization_index_command_uses_autocommit_and_verifies_index(monkeypatc
 
     create_utilization_task_run_index.create_utilization_task_run_index("postgresql://example")
 
-    assert connect_calls == [(("postgresql://example",), {"autocommit": True})]
+    assert connect_calls[0][0] == ("postgresql://example",)
+    assert connect_calls[0][1]["autocommit"] is True
+    assert ":maintenance:" in connect_calls[0][1]["application_name"]
     assert any(
         "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_task_results_utilization_resolved" in sql
         for sql, _params in cursor.executed
@@ -239,7 +243,9 @@ def test_datastore_summary_is_read_only_and_structured(monkeypatch):
 
     summary = datastore_summary.collect_datastore_summary("postgresql://example")
 
-    assert connect_calls == [(("postgresql://example",), {"autocommit": True})]
+    assert connect_calls[0][0] == ("postgresql://example",)
+    assert connect_calls[0][1]["autocommit"] is True
+    assert ":maintenance:" in connect_calls[0][1]["application_name"]
     assert summary["server_version"] == "16.9"
     assert summary["tables"] == [{"relname": "task_results", "n_live_tup": 12, "n_dead_tup": 3,
                                    "pg_total_relation_size": 4096, "last_vacuum": None,
@@ -279,7 +285,9 @@ def test_utilization_plan_is_bounded_read_only_and_parameterized(monkeypatch):
         analyze=True,
     )
 
-    assert calls == [(("postgresql://example",), {"autocommit": True})]
+    assert calls[0][0] == ("postgresql://example",)
+    assert calls[0][1]["autocommit"] is True
+    assert ":maintenance:" in calls[0][1]["application_name"]
     assert result["plan"] == [{"Plan": {"Node Type": "Index Scan"}}]
     explain_sql, explain_params = cursor.executed[-1]
     assert "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)" in explain_sql
@@ -305,7 +313,7 @@ def test_utilization_plan_rejects_unbounded_or_invalid_windows():
 
 def test_postgres_storage_initialization_does_not_apply_migrations(monkeypatch):
     pool = object()
-    monkeypatch.setattr(storage_module, "_postgres_pool", lambda _dsn: pool)
+    monkeypatch.setattr(storage_module, "_postgres_pool", lambda _dsn, _role: pool)
 
     storage = PostgresStorage("test-pool", "postgresql://example")
     storage.init_schema()

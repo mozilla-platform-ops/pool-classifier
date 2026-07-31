@@ -12,6 +12,8 @@ import os
 import sys
 from pathlib import Path
 
+from worker_health.pool_classifier_web.postgres import connect as postgres_connect
+
 MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
 MIGRATION_LOCK_ID = 6_061_283
 MIGRATION_LOCK_TIMEOUT = "5s"
@@ -19,9 +21,7 @@ MIGRATION_STATEMENT_TIMEOUT = "30s"
 
 
 def apply_migrations(dsn: str) -> None:
-    import psycopg
-
-    with psycopg.connect(dsn) as conn:
+    with postgres_connect(dsn, "migration") as conn:
         with conn.cursor() as cur:
             # Cloud Run can start more than one instance for a new revision.
             # Keep the lock and every migration in one transaction so only one

@@ -11,10 +11,9 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-import psycopg
-
 from worker_health.pool_classifier import PoolClassifier
 from worker_health.pool_classifier_web.storage import ClassifyLockBusy, PostgresStorage, close_postgres_pools
+from worker_health.pool_classifier_web.postgres import connect as postgres_connect
 
 
 class StopAfterCurrentBatch:
@@ -35,7 +34,7 @@ class StopAfterCurrentBatch:
 
 def pool_ids_with_backlog(database_url: str) -> list[str]:
     """Return stored pools that still have runs eligible for enrichment."""
-    with psycopg.connect(database_url) as connection, connection.cursor() as cursor:
+    with postgres_connect(database_url, "maintenance") as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT pool_id FROM task_results "
             "WHERE run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL "

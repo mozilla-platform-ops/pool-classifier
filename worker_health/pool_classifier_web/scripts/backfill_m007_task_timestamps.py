@@ -14,6 +14,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from worker_health.pool_classifier_web.scripts.migrate import MIGRATION_LOCK_ID
+from worker_health.pool_classifier_web.postgres import connect as postgres_connect
 
 MIGRATION_VERSION = "007_observed_task_runs"
 DEFAULT_BATCH_SIZE = 1_000
@@ -107,8 +108,6 @@ def backfill_task_timestamps(
     dry_run: bool = False,
 ) -> BackfillStats:
     """Run the NULL-driven backfill, or report its scope without changing data."""
-    import psycopg
-
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
     if batch_delay_seconds < 0:
@@ -123,7 +122,7 @@ def backfill_task_timestamps(
     # Autocommit keeps schema checks and final counts short.  Each actual
     # update below enters its own explicit transaction and commits before the
     # next paced batch begins.
-    with psycopg.connect(dsn, autocommit=True) as conn:
+    with postgres_connect(dsn, "maintenance", autocommit=True) as conn:
         with conn.cursor() as cur:
             _validate_schema(cur)
             initial_remaining = _count_missing(cur)

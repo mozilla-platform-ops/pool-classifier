@@ -11,6 +11,7 @@ import os
 import sys
 
 from worker_health.pool_classifier_web.scripts.migrate import MIGRATION_LOCK_ID
+from worker_health.pool_classifier_web.postgres import connect as postgres_connect
 
 
 MIGRATION_VERSION = "007_observed_task_runs"
@@ -36,11 +37,9 @@ def _index_validity(cur):
 
 def create_unresolved_task_run_index(dsn: str) -> None:
     """Create the partial index concurrently after migration 007 is applied."""
-    import psycopg
-
     # autocommit is mandatory: CREATE INDEX CONCURRENTLY is rejected inside a
     # transaction block. Do not replace this with a transaction context.
-    with psycopg.connect(dsn, autocommit=True) as conn:
+    with postgres_connect(dsn, "maintenance", autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT set_config('lock_timeout', %s, false)", (LOCK_TIMEOUT,))
             cur.execute("SELECT set_config('statement_timeout', %s, false)", (STATEMENT_TIMEOUT,))

@@ -201,6 +201,15 @@ gcloud sql connect pool-classifier-db --user=pc --project=relops-pool-classifier
 #   SELECT pool_id, count(*), max(classified_at) FROM task_results GROUP BY 1 ORDER BY 3 DESC;
 #   SHOW max_connections;
 #   SELECT count(*) FROM pg_stat_activity;   -- connection pressure
+# Identify pool-classifier work by Cloud Run revision, instance, and role:
+#   SELECT pid, application_name, state, wait_event_type, wait_event,
+#          now() - query_start AS query_age, query
+#   FROM pg_stat_activity
+#   WHERE application_name LIKE 'pool-classifier:%'
+#   ORDER BY query_start;
+# Roles are web, classifier, migration, advisory-lock, and maintenance. For a
+# blocked classifier, find its advisory-lock backend above, then inspect the
+# same PID in pg_locks to identify the held or waited-on lock.
 ```
 
 ### IAP / SSL / DNS

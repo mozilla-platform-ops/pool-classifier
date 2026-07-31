@@ -117,6 +117,23 @@ uv run --frozen scripts/benchmark_web_pages.py --runs 3 \
 Use `--base-url` and `--pool provisioner/worker-type` to target a different
 local listener or representative pool.
 
+### Dashboard snapshots
+
+Migration 008 adds `dashboard_snapshots`: one JSON payload per pool detail
+view and one aggregate overview payload. A classifier builds a pool snapshot
+only after its scan succeeds; `classify-all` replaces the overview snapshot
+only when every enabled pool scan succeeds. Each replacement is a single
+upsert, so a failed build leaves the last complete snapshot visible.
+
+Snapshots contain only fixed UI views (detail HTML, standard utilization,
+24-hour timeline, and seven-day lag visualization). Arbitrary API ranges stay
+live and bounded. `schema_version` in the row is checked against the
+application's snapshot schema version, so an incompatible deploy ignores old
+payloads and safely falls back to live reads until its first successful scan.
+Responses expose snapshot source/generated timestamps and stale status; detail
+pages refresh every five minutes, matching scan-oriented freshness rather than
+re-running dashboard reads every minute.
+
 ## Tests
 
 ```sh

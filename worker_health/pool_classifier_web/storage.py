@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
+from worker_health.pool_classifier_web.postgres import application_name, connect as postgres_connect
+
 
 COLLECTION_SOURCES = {"task_runs", "worker_availability"}
 AVAILABILITY_MODES = {"recent_contact", "listed"}
@@ -1075,12 +1077,13 @@ _PG_POOLS = {}
 _PG_POOLS_LOCK = threading.Lock()
 
 
-def _postgres_pool(dsn: str):
+def _postgres_pool(dsn: str, role: str):
     if psycopg_pool is None:
         raise ImportError("psycopg-pool is required for PostgresStorage")
 
     with _PG_POOLS_LOCK:
-        pool = _PG_POOLS.get(dsn)
+        key = (dsn, role)
+        pool = _PG_POOLS.get(key)
         if pool is None:
             min_size = int(os.environ.get("PC_DB_POOL_MIN", "1"))
             max_size = int(os.environ.get("PC_DB_POOL_MAX", "5"))
@@ -1088,11 +1091,11 @@ def _postgres_pool(dsn: str):
                 conninfo=dsn,
                 min_size=min_size,
                 max_size=max_size,
-                kwargs={"row_factory": _dict_row},
+                kwargs={"row_factory": _dict_row, "application_name": application_name(role)},
                 check=psycopg_pool.ConnectionPool.check_connection,
                 open=True,
             )
-            _PG_POOLS[dsn] = pool
+            _PG_POOLS[key] = pool
         return pool
 
 
@@ -1135,7 +1138,7 @@ def count_category_hits_global(dsn: str, since_iso: str) -> Dict[str, int]:
     """Return {category: count} across all pools for task_results.classified_at > since_iso."""
     if psycopg is None:
         raise ImportError("psycopg (psycopg[binary]) is required")
-    with psycopg.connect(dsn) as conn:
+    with postgres_connect(dsn, "web") as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT category, COUNT(*) FROM task_results"
@@ -1157,7 +1160,7 @@ def observed_start_lag_summaries_global(
     """
     if psycopg is None:
         raise ImportError("psycopg (psycopg[binary]) is required")
-    with psycopg.connect(dsn) as conn:
+    with postgres_connect(dsn, "web") as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT pool_id, COUNT(*) AS sample_count,"
@@ -1268,7 +1271,7 @@ def pool_summaries_global(
             },
         )
 
-    with psycopg.connect(dsn) as conn:
+    with postgres_connect(dsn, "web") as conn:
         # workers table → worker count + alerting count per pool
         with conn.cursor() as cur:
             cur.execute(
@@ -1319,20 +1322,21 @@ def pool_summaries_global(
 class PostgresStorage:
     """Postgres-backed storage for a single pool. Intended for Cloud Run / Cloud SQL."""
 
-    def __init__(self, pool_id: str, dsn: str) -> None:
+    def __init__(self, pool_id: str, dsn: str, role: str = "classifier") -> None:
         if psycopg is None:
             raise ImportError("psycopg (psycopg[binary]) is required for PostgresStorage")
         if psycopg_pool is None:
             raise ImportError("psycopg-pool is required for PostgresStorage")
         self.pool_id = pool_id
         self._dsn = dsn
+        self._role = role
         self._pool = None
         self._tx_cm = None
         self._tx_conn = None
 
     def init_schema(self) -> None:
         """Initialize the application connection pool after pre-deploy migration."""
-        self._pool = _postgres_pool(self._dsn)
+        self._pool = _postgres_pool(self._dsn, self._role)
 
     def _ensure_pool(self):
         assert self._pool is not None, "init_schema() not called"
@@ -2309,7 +2313,7 @@ class PostgresStorage:
     @contextmanager
     def classify_lock(self):
         """Postgres advisory lock scoped to this pool. Raises ClassifyLockBusy if already held."""
-        lock_conn = psycopg.connect(self._dsn)
+        lock_conn = postgres_connect(self._dsn, "advisory-lock")
         try:
             with lock_conn.cursor() as cur:
                 cur.execute(

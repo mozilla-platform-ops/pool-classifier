@@ -24,6 +24,12 @@ from worker_health.pool_classifier_web import discovery
 from worker_health.pool_classifier_web.auth import require_scheduler_oidc
 from worker_health.pool_classifier_web.registry import detect_os
 from worker_health.pool_classifier_web import patterns_registry
+from worker_health.pool_classifier_web.snapshots import (
+    OVERVIEW_SCOPE,
+    POOL_SCOPE,
+    read_snapshot,
+    write_snapshot,
+)
 from worker_health.pool_classifier_web.storage import (
     ClassifyLockBusy,
     PostgresStorage,
@@ -34,8 +40,8 @@ from worker_health.pool_classifier_web.storage import (
 
 logger = logging.getLogger(__name__)
 
-# Keyed by (provisioner, worker_type).
-_classifiers: dict[tuple[str, str], PoolClassifier] = {}
+# Keyed by (provisioner, worker_type, database workload role).
+_classifiers: dict[tuple[str, str, str], PoolClassifier] = {}
 MAX_UTILIZATION_RANGE_SECONDS = 90 * 24 * 60 * 60
 MAX_UTILIZATION_BUCKETS = 2000
 DEFAULT_WORKERS_WINDOW_SECONDS = 24 * 60 * 60
@@ -252,8 +258,8 @@ def _workers_cursor(alerting: bool, worker_id: str) -> str:
     return base64.urlsafe_b64encode(value.encode()).decode().rstrip("=")
 
 
-def _get_classifier(provisioner: str, worker_type: str) -> PoolClassifier | None:
-    key = (provisioner, worker_type)
+def _get_classifier(provisioner: str, worker_type: str, role: str = "web") -> PoolClassifier | None:
+    key = (provisioner, worker_type, role)
     if key not in _classifiers:
         pool = registry.get_pool(provisioner, worker_type)
         if pool is None:
@@ -264,6 +270,7 @@ def _get_classifier(provisioner: str, worker_type: str) -> PoolClassifier | None
         storage = PostgresStorage(
             pool_id=f"{provisioner}/{worker_type}",
             dsn=dsn,
+            role=role,
         )
         pc = PoolClassifier(
             provisioner=provisioner,
@@ -464,12 +471,91 @@ def _overview_utilization_summaries(windows: dict[str, int]) -> dict:
     )
 
 
+def _snapshot_metadata(snapshot: dict) -> dict:
+    """Expose the freshness boundary without leaking snapshot storage details."""
+    return {
+        "source_at": snapshot["source_at"],
+        "generated_at": snapshot["generated_at"],
+        "stale": datetime.now(timezone.utc) - _parse_utilization_datetime("source_at", snapshot["source_at"])
+        > COVERAGE_STALE_AFTER,
+    }
+
+
+def _read_dashboard_snapshot(dsn: str | None, scope: str, pool_id: str = "") -> dict | None:
+    if not dsn:
+        return None
+    try:
+        return read_snapshot(dsn, scope, pool_id)
+    except Exception as exc:  # noqa: BLE001 - snapshot absence must not hide the dashboard
+        logger.warning("dashboard snapshot read failed for %s/%s: %s", scope, pool_id, exc)
+        return None
+
+
 def create_app() -> Flask:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = Flask(__name__)
     app.jinja_env.filters["humanize_cron"] = _humanize_cron
     app.jinja_env.filters["format_lag"] = _format_lag
     app.jinja_env.filters["lag_color_class"] = _lag_color_class
+
+    def publish_pool_snapshot(pc: PoolClassifier, pool) -> None:
+        """Build every fixed detail artifact before atomically publishing it."""
+        dsn = os.environ.get("DATABASE_URL")
+        if not dsn:
+            return
+        generated_at = datetime.now(timezone.utc).replace(microsecond=0)
+        summary = pc.storage.get_utilization_summary(UTILIZATION_WINDOWS)
+        summary.update({"api_version": 1, "availability_mode": pc.availability_mode})
+        timeline = None
+        if data_through := summary.get("data_through"):
+            end = _parse_utilization_datetime("data_through", data_through)
+            timeline = pc.storage.get_utilization(
+                (end - timedelta(hours=24)).isoformat(), end.isoformat(), 3600,
+            )
+            timeline.update({"api_version": 1, "availability_mode": pc.availability_mode})
+        lag_end = generated_at
+        lag = pc.storage.get_observed_start_lag_visualization(
+            (lag_end - timedelta(days=7)).isoformat(), lag_end.isoformat(),
+            DEFAULT_OBSERVED_START_LAG_SLO_SECONDS, DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES,
+        )
+        lag["api_version"] = 1
+        base_template = app.jinja_env.get_template("base.html")
+        detail_html = pc.render_html(
+            os_label=detect_os(pool),
+            navigation_html=str(base_template.module.navigation(f"{pool.provisioner}/{pool.worker_type}")),
+            navigation_styles=str(base_template.module.navigation_styles()),
+        )
+        write_snapshot(
+            dsn,
+            POOL_SCOPE,
+            {
+                "detail_html": detail_html,
+                "utilization_summary": summary,
+                "utilization_timeline_24h": timeline,
+                "observed_start_lag_visualization_7d": lag,
+            },
+            pool_id=f"{pool.provisioner}/{pool.worker_type}",
+            source_at=generated_at,
+        )
+
+    def publish_overview_snapshot() -> None:
+        """Publish the fixed overview only after a complete aggregate scan."""
+        dsn = os.environ.get("DATABASE_URL")
+        if not dsn:
+            return
+        pool_ids = tuple(
+            f"{pool.provisioner}/{pool.worker_type}"
+            for pool in registry.all_pools_including_disabled()
+            if pool.enabled
+        )
+        generated_at = datetime.now(timezone.utc).replace(microsecond=0)
+        _reset_overview_cache()
+        payload = {
+            "pool_summaries": _global_pool_summaries(dsn, pool_ids),
+            "lag_summaries": _global_observed_start_lag_summaries(dsn),
+            "utilization_summaries": _overview_utilization_summaries({"1h": 3600, "24h": 86400}),
+        }
+        write_snapshot(dsn, OVERVIEW_SCOPE, payload, source_at=generated_at)
 
     # Warn at startup if TC credentials are missing, but don't fail.
     try:
@@ -502,25 +588,37 @@ def create_app() -> Flask:
         lag_summaries: dict = {}
         dsn = os.environ.get("DATABASE_URL")
         if dsn:
-            overview_pool_ids = tuple(
-                f"{pool.provisioner}/{pool.worker_type}"
-                for pool in registry.all_pools_including_disabled()
-                if pool.enabled
-            )
-            try:
-                summaries = _cached_overview_result(
-                    ("pool-summaries", dsn, overview_pool_ids, ("1h", "24h")),
-                    lambda: _global_pool_summaries(dsn, overview_pool_ids),
+            snapshot = _read_dashboard_snapshot(dsn, OVERVIEW_SCOPE)
+            if snapshot:
+                payload = snapshot["payload"]
+                summaries = payload.get("pool_summaries", {})
+                lag_summaries = payload.get("lag_summaries", {})
+                metadata = _snapshot_metadata(snapshot)
+                stale = " — stale" if metadata["stale"] else ""
+                now = (
+                    f"Snapshot source: {metadata['source_at']}; generated: {metadata['generated_at']}"
+                    f"{stale}"
                 )
-            except Exception as e:
-                logger.warning("index: current pool summaries failed: %s", e)
-            try:
-                lag_summaries = _cached_overview_result(
-                    ("observed-start-lag", dsn, "7d"),
-                    lambda: _global_observed_start_lag_summaries(dsn),
+            else:
+                overview_pool_ids = tuple(
+                    f"{pool.provisioner}/{pool.worker_type}"
+                    for pool in registry.all_pools_including_disabled()
+                    if pool.enabled
                 )
-            except Exception as e:
-                logger.warning("index: observed_start_lag_summaries_global failed: %s", e)
+                try:
+                    summaries = _cached_overview_result(
+                        ("pool-summaries", dsn, overview_pool_ids, ("1h", "24h")),
+                        lambda: _global_pool_summaries(dsn, overview_pool_ids),
+                    )
+                except Exception as e:
+                    logger.warning("index: current pool summaries failed: %s", e)
+                try:
+                    lag_summaries = _cached_overview_result(
+                        ("observed-start-lag", dsn, "7d"),
+                        lambda: _global_observed_start_lag_summaries(dsn),
+                    )
+                except Exception as e:
+                    logger.warning("index: observed_start_lag_summaries_global failed: %s", e)
 
         def _eph(errors, workers):
             return round(errors / workers, 2) if workers else None
@@ -695,6 +793,22 @@ def create_app() -> Flask:
                 f"</body></html>",
                 content_type="text/html; charset=utf-8",
             )
+        snapshot = _read_dashboard_snapshot(
+            os.environ.get("DATABASE_URL"), POOL_SCOPE, f"{provisioner}/{worker_type}",
+        )
+        if snapshot and (detail_html := snapshot["payload"].get("detail_html")):
+            metadata = _snapshot_metadata(snapshot)
+            stale = " <strong>stale</strong>" if metadata["stale"] else ""
+            freshness = (
+                '<p class="gen">Snapshot source: '
+                f'{metadata["source_at"]}; generated: {metadata["generated_at"]}.{stale}</p>'
+            )
+            response = Response(
+                detail_html.replace("<body>", f"<body>{freshness}", 1),
+                content_type="text/html; charset=utf-8",
+            )
+            response.headers["X-Pool-Classifier-Snapshot-Source"] = snapshot["source_at"]
+            return response
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:
             abort(404)
@@ -722,6 +836,15 @@ def create_app() -> Flask:
             start, end, bucket_seconds = _utilization_parameters()
         except ValueError as exc:
             return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
+        snapshot = _read_dashboard_snapshot(
+            os.environ.get("DATABASE_URL"), POOL_SCOPE, f"{provisioner}/{worker_type}",
+        )
+        if snapshot:
+            timeline = snapshot["payload"].get("utilization_timeline_24h")
+            if timeline and (timeline["start_at"], timeline["end_at"], timeline["bucket_seconds"]) == (start, end, bucket_seconds):
+                result = dict(timeline)
+                result["snapshot"] = _snapshot_metadata(snapshot)
+                return jsonify(result)
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:
             return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
@@ -807,6 +930,14 @@ def create_app() -> Flask:
             windows = _utilization_summary_windows()
         except ValueError as exc:
             return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
+        snapshot = _read_dashboard_snapshot(
+            os.environ.get("DATABASE_URL"), POOL_SCOPE, f"{provisioner}/{worker_type}",
+        )
+        if snapshot and (stored := snapshot["payload"].get("utilization_summary")):
+            result = dict(stored)
+            result["windows"] = {name: stored.get("windows", {}).get(name) for name in windows}
+            result["snapshot"] = _snapshot_metadata(snapshot)
+            return jsonify(result)
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:
             return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
@@ -823,13 +954,26 @@ def create_app() -> Flask:
             windows = _utilization_summary_windows()
         except ValueError as exc:
             return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
-        return jsonify(
-            {
+        snapshot = _read_dashboard_snapshot(os.environ.get("DATABASE_URL"), OVERVIEW_SCOPE)
+        if (
+            snapshot
+            and set(windows) <= {"1h", "24h"}
+            and (stored := snapshot["payload"].get("utilization_summaries"))
+        ):
+            pools = {
+                pool_id: {
+                    **summary,
+                    "windows": {name: summary.get("windows", {}).get(name) for name in windows},
+                }
+                for pool_id, summary in stored.items()
+            }
+            return jsonify({
                 "api_version": 1,
                 "windows": list(windows),
-                "pools": _overview_utilization_summaries(windows),
-            },
-        )
+                "pools": pools,
+                "snapshot": _snapshot_metadata(snapshot),
+            })
+        return jsonify({"api_version": 1, "windows": list(windows), "pools": _overview_utilization_summaries(windows)})
 
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/observed-start-lag")
     def pool_observed_start_lag(provisioner: str, worker_type: str):
@@ -846,6 +990,14 @@ def create_app() -> Flask:
 
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/observed-start-lag/visualization")
     def pool_observed_start_lag_visualization(provisioner: str, worker_type: str):
+        if request.args.get("start") is None and request.args.get("end") is None:
+            snapshot = _read_dashboard_snapshot(
+                os.environ.get("DATABASE_URL"), POOL_SCOPE, f"{provisioner}/{worker_type}",
+            )
+            if snapshot and (stored := snapshot["payload"].get("observed_start_lag_visualization_7d")):
+                result = dict(stored)
+                result["snapshot"] = _snapshot_metadata(snapshot)
+                return jsonify(result)
         try:
             start, end, slo_seconds = _observed_start_lag_parameters()
             min_samples = _observed_start_lag_min_samples()
@@ -868,11 +1020,17 @@ def create_app() -> Flask:
     @app.post("/classify/<provisioner>/<worker_type>")
     @require_scheduler_oidc
     def classify(provisioner: str, worker_type: str):
-        pc = _get_classifier(provisioner, worker_type)
+        pc = _get_classifier(provisioner, worker_type, role="classifier")
         if pc is None:
             abort(404)
         try:
             summary = pc.classify_cycle()
+            pool = registry.get_pool(provisioner, worker_type)
+            if pool is not None:
+                try:
+                    publish_pool_snapshot(pc, pool)
+                except Exception:  # noqa: BLE001 - a snapshot failure must retain the prior view
+                    logger.exception("classify: snapshot build failed for %s/%s", provisioner, worker_type)
         except ClassifyLockBusy:
             return jsonify({"error": "classify cycle already running for this pool"}), 409
         return jsonify(summary)
@@ -894,11 +1052,15 @@ def create_app() -> Flask:
         for pool in pools:
             label = f"{pool.provisioner}/{pool.worker_type}"
             try:
-                pc = _get_classifier(pool.provisioner, pool.worker_type)
+                pc = _get_classifier(pool.provisioner, pool.worker_type, role="classifier")
                 if pc is None:
                     results.append({"pool": label, "status": "not_found"})
                     continue
                 summary = pc.classify_cycle()
+                try:
+                    publish_pool_snapshot(pc, pool)
+                except Exception:  # noqa: BLE001 - do not turn a successful scan into a retry
+                    logger.exception("classify-all: snapshot build failed for %s", label)
                 results.append({"pool": label, "status": "ok", "summary": summary})
             except ClassifyLockBusy:
                 results.append({"pool": label, "status": "busy"})
@@ -920,6 +1082,11 @@ def create_app() -> Flask:
             logger.warning(log_msg, *log_args)
         else:
             logger.info(log_msg, *log_args)
+        if counts["ok"] == len(pools):
+            try:
+                publish_overview_snapshot()
+            except Exception:  # noqa: BLE001 - retain the previous aggregate snapshot
+                logger.exception("classify-all: overview snapshot build failed")
         # Surface a systemic failure (e.g. DB down) as a failed run; partial
         # failures still return 200 so the scheduler isn't spammed with retries.
         status_code = 200 if (ok > 0 or not results) else 500
