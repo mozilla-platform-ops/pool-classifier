@@ -64,6 +64,4 @@ pools:
   - provisioner: releng-hardware
     worker_type: win11-64-24h2-hw
   - provisioner: releng-hardware
-    worker_type: win11-64-24h2-hw-perf-sheriff
-  - provisioner: releng-hardware
     worker_type: win11-64-24h2-hw-ref
