@@ -30,8 +30,6 @@ pools:
   - provisioner: releng-hardware
     worker_type: gecko-1-b-osx-1015
   - provisioner: releng-hardware
-    worker_type: gecko-1-b-osx-1015-staging
-  - provisioner: releng-hardware
     worker_type: gecko-1-b-osx-arm64
   - provisioner: releng-hardware
     worker_type: gecko-3-b-osx-1015
@@ -48,17 +46,11 @@ pools:
   - provisioner: releng-hardware
     worker_type: gecko-t-osx-1015-r8
   - provisioner: releng-hardware
-    worker_type: gecko-t-osx-1015-r8-staging
-  - provisioner: releng-hardware
     worker_type: gecko-t-osx-1400-r8
-  - provisioner: releng-hardware
-    worker_type: gecko-t-osx-1400-r8-staging
   - provisioner: releng-hardware
     worker_type: gecko-t-osx-1500-m4
   - provisioner: releng-hardware
     worker_type: gecko-t-osx-1500-m4-ipv6
-  - provisioner: releng-hardware
-    worker_type: gecko-t-osx-1500-m4-staging
   - provisioner: releng-hardware
     worker_type: gecko-t-win7-32-hw
   - provisioner: releng-hardware
@@ -72,12 +64,6 @@ pools:
   - provisioner: releng-hardware
     worker_type: win11-64-24h2-hw
   - provisioner: releng-hardware
-    worker_type: win11-64-24h2-hw-alpha
-  - provisioner: releng-hardware
     worker_type: win11-64-24h2-hw-perf-sheriff
   - provisioner: releng-hardware
     worker_type: win11-64-24h2-hw-ref
-  - provisioner: releng-hardware
-    worker_type: win11-64-24h2-hw-ref-alpha
-  - provisioner: releng-hardware
-    worker_type: win11-64-24h2-hw-relops1213
