@@ -177,6 +177,37 @@ executing it without `--args` fails visibly. Inspect its structured Cloud
 Logging output before treating the release as complete. This remains a manual
 release step until the dedicated migration-deployment work is implemented.
 
+### Migration 007 timestamp backfill
+
+After migration 007 is recorded, use the same maintenance job to backfill
+legacy `task_results` rows. This operation has no state file or retained
+cursor: each short transaction reselects rows whose `observed_at` or
+`last_checked_at` is still NULL, updates only those NULL values from
+`classified_at`, and commits before continuing. It is therefore safe to stop
+and rerun.
+
+First inspect the exact remaining count:
+
+```sh
+gcloud run jobs execute pool-classifier-db-maintenance \
+  --args="-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,backfill-m007-task-timestamps,--count-only" \
+  --wait --region=us-west1 --project=relops-pool-classifier
+```
+
+Then run paced batches. The job logs JSON start, progress, retry, and completion
+events; the final completion event reports the verified remaining count. A
+failed or timed-out execution can be rerun with the same command.
+
+```sh
+gcloud run jobs execute pool-classifier-db-maintenance \
+  --args="-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,backfill-m007-task-timestamps,--batch-size,1000,--batch-delay-seconds,0.2,--retries,3" \
+  --wait --region=us-west1 --project=relops-pool-classifier
+```
+
+Use `--dry-run` to report the first batch's size without updating rows, or
+`--max-batches=N` for a deliberately bounded maintenance execution. Finish by
+rerunning `--count-only` and confirming it reports zero rows remaining.
+
 Infrastructure changes live under
 `worker_health/pool_classifier_web/terraform/`:
 

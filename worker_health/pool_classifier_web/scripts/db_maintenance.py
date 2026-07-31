@@ -14,18 +14,26 @@ import os
 import sys
 from collections.abc import Callable
 
+from worker_health.pool_classifier_web.scripts import backfill_m007_task_timestamps
 from worker_health.pool_classifier_web.scripts.create_unresolved_task_run_index import (
     create_unresolved_task_run_index,
 )
 
-Operation = Callable[[str], None]
+Operation = Callable[[str, list[str]], None]
+
+
+def _create_unresolved_task_run_index(dsn: str, argv: list[str]) -> None:
+    if argv:
+        raise ValueError("create-unresolved-task-run-index does not accept operation arguments")
+    create_unresolved_task_run_index(dsn)
 
 OPERATIONS: dict[str, Operation] = {
-    "create-unresolved-task-run-index": create_unresolved_task_run_index,
+    "backfill-m007-task-timestamps": backfill_m007_task_timestamps.run,
+    "create-unresolved-task-run-index": _create_unresolved_task_run_index,
 }
 
 
-def run_operation(operation: str, dsn: str) -> None:
+def run_operation(operation: str, dsn: str, argv: list[str] | None = None) -> None:
     """Run one allowlisted operation and record its identity in job logs."""
     try:
         handler = OPERATIONS[operation]
@@ -35,9 +43,19 @@ def run_operation(operation: str, dsn: str) -> None:
 
     print(json.dumps({"event": "db_maintenance_started", "operation": operation}, sort_keys=True))
     try:
-        handler(dsn)
-    except Exception:
-        print(json.dumps({"event": "db_maintenance_failed", "operation": operation}, sort_keys=True), file=sys.stderr)
+        handler(dsn, argv or [])
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "error_type": type(exc).__name__,
+                    "event": "db_maintenance_failed",
+                    "operation": operation,
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
         raise
     print(json.dumps({"event": "db_maintenance_completed", "operation": operation}, sort_keys=True))
 
@@ -45,13 +63,13 @@ def run_operation(operation: str, dsn: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--operation", required=True, choices=sorted(OPERATIONS))
-    args = parser.parse_args(argv)
+    args, operation_args = parser.parse_known_args(argv)
 
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         print("DATABASE_URL not set", file=sys.stderr)
         return 1
-    run_operation(args.operation, dsn)
+    run_operation(args.operation, dsn, operation_args)
     return 0
 
 

@@ -102,12 +102,12 @@ def test_db_maintenance_dispatches_only_allowlisted_operation(monkeypatch, capsy
     monkeypatch.setitem(
         db_maintenance.OPERATIONS,
         "create-unresolved-task-run-index",
-        lambda dsn: calls.append(dsn),
+        lambda dsn, argv: calls.append((dsn, argv)),
     )
 
     db_maintenance.run_operation("create-unresolved-task-run-index", "postgresql://example")
 
-    assert calls == ["postgresql://example"]
+    assert calls == [("postgresql://example", [])]
     output = capsys.readouterr().out
     assert '"event": "db_maintenance_started"' in output
     assert '"event": "db_maintenance_completed"' in output
@@ -120,6 +120,22 @@ def test_db_maintenance_rejects_unknown_operation():
         assert "unknown maintenance operation" in str(exc)
     else:
         raise AssertionError("unknown operation was accepted")
+
+
+def test_db_maintenance_forwards_operation_arguments(monkeypatch):
+    calls = []
+    monkeypatch.setitem(
+        db_maintenance.OPERATIONS,
+        "backfill-m007-task-timestamps",
+        lambda dsn, argv: calls.append((dsn, argv)),
+    )
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+
+    assert db_maintenance.main(
+        ["--operation", "backfill-m007-task-timestamps", "--batch-size", "200"],
+    ) == 0
+
+    assert calls == [("postgresql://example", ["--batch-size", "200"])]
 
 
 def test_db_maintenance_main_requires_database_url(monkeypatch, capsys):
