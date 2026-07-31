@@ -91,6 +91,26 @@ def _utilization_parameters() -> tuple[str, str, int]:
     return start.isoformat(), end.isoformat(), bucket_seconds
 
 
+def _utilization_summary_windows() -> dict[str, int]:
+    """Return the requested named utilization windows in canonical order.
+
+    Omitting ``windows`` preserves the detail-page and public API default of
+    returning every standard window.  Callers that need only a compact summary
+    can request a comma-separated subset, for example ``windows=1h,24h``.
+    """
+    requested = request.args.get("windows")
+    if requested is None:
+        return UTILIZATION_WINDOWS
+
+    names = {name.strip() for name in requested.split(",") if name.strip()}
+    if not names:
+        raise ValueError("windows must include at least one supported window")
+    unknown = names - UTILIZATION_WINDOWS.keys()
+    if unknown:
+        raise ValueError(f"windows contains unsupported value: {sorted(unknown)[0]}")
+    return {name: seconds for name, seconds in UTILIZATION_WINDOWS.items() if name in names}
+
+
 def _observed_start_lag_parameters() -> tuple[str, str, int]:
     start = _parse_utilization_datetime("start", request.args.get("start"))
     end = _parse_utilization_datetime("end", request.args.get("end"))
@@ -657,10 +677,14 @@ def create_app() -> Flask:
 
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/utilization/summary")
     def pool_utilization_summary(provisioner: str, worker_type: str):
+        try:
+            windows = _utilization_summary_windows()
+        except ValueError as exc:
+            return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:
             return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
-        result = pc.storage.get_utilization_summary(UTILIZATION_WINDOWS)
+        result = pc.storage.get_utilization_summary(windows)
         result.update({"api_version": 1, "availability_mode": pc.availability_mode})
         return jsonify(result)
 

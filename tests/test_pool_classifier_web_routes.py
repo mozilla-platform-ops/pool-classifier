@@ -146,6 +146,7 @@ def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch)
     assert 'p95: 4m 12s' in html
     assert '5 observed starts' in html
     assert '<span class="ok">4m 12s</span>' in html
+    assert "/utilization/summary?windows=1h,24h" in html
 
 
 def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
@@ -554,6 +555,32 @@ def test_utilization_summary_uses_one_common_freshness_boundary(monkeypatch, tmp
     assert response.json["windows"]["1h"]["status"] == "ok"
     assert response.json["windows"]["1h"]["utilization"]["complete"] is True
     assert response.json["windows"]["24h"]["utilization"]["complete"] is False
+
+
+def test_utilization_summary_accepts_a_bounded_window_subset(monkeypatch, tmp_path):
+    client = _api_client(monkeypatch, _api_storage(tmp_path, coverage_minutes=60))
+
+    response = client.get(SUMMARY_PATH, query_string={"windows": "24h,1h"})
+
+    assert response.status_code == 200
+    # The response keeps the stable canonical order rather than echoing input.
+    assert list(response.json["windows"]) == ["1h", "24h"]
+
+
+@pytest.mark.parametrize(
+    ("windows", "message"),
+    [
+        ("", "windows must include at least one supported window"),
+        ("1h,2h", "windows contains unsupported value: 2h"),
+    ],
+)
+def test_utilization_summary_rejects_invalid_window_subset(monkeypatch, tmp_path, windows, message):
+    client = _api_client(monkeypatch, _api_storage(tmp_path))
+
+    response = client.get(SUMMARY_PATH, query_string={"windows": windows})
+
+    assert response.status_code == 400
+    assert response.json == {"error": {"code": "invalid_parameter", "message": message}}
 
 
 def test_utilization_summary_collects_before_any_common_coverage(monkeypatch, tmp_path):

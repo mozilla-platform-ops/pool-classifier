@@ -29,8 +29,10 @@ Unknown pools return `404`. Invalid parameters return `400`:
 ## Pool detail summary
 
 Pool detail pages load `GET /api/v1/pools/{provisioner}/{worker_type}/utilization/summary`
-asynchronously. It calculates the exact trailing `1h`, `24h`, `7d`, and `30d`
-windows in one storage read. `data_through` is the end of the latest common task
+asynchronously. By default it calculates the exact trailing `1h`, `24h`, `7d`,
+and `30d` windows in one storage read. A caller can request a comma-separated
+subset with `windows`, such as `?windows=1h,24h`; unsupported or empty selections
+return `400`. `data_through` is the end of the latest common task
 and availability coverage interval; all four windows are anchored to it rather
 than to browser time. Each entry in `windows` has `status: "ok"` and one
 utilization bucket, or an explicit `status: "error"` without hiding other

@@ -192,7 +192,7 @@
     try { localStorage.setItem(UTILIZATION_WINDOW_KEY, window); } catch(_) {}
   }
   document.querySelectorAll('.utilization-cell').forEach(cell => {
-    const path = `/api/v1/pools/${encodeURIComponent(cell.dataset.provisioner)}/${encodeURIComponent(cell.dataset.workerType)}/utilization/summary`;
+    const path = `/api/v1/pools/${encodeURIComponent(cell.dataset.provisioner)}/${encodeURIComponent(cell.dataset.workerType)}/utilization/summary?windows=1h,24h`;
     fetch(path)
       .then(response => response.ok ? response.json() : Promise.reject())
       .then(summary => {
