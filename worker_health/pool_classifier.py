@@ -2028,7 +2028,7 @@ class PoolClassifier:
                     cells = "".join(hm_cell(heatmap[wid].get(h), h) for h in range(12))
                     rows += f'<tr data-wid="{wid}"><td class="hm-worker">{copy_btn(wid)}{q_icon}</td>{cells}</tr>'
                 return (
-                    f'<div class="hm-block"><table class="hm-grid">'
+                    f'<div class="hm-block"><table class="hm-grid not-sortable">'
                     f'<thead><tr><th class="hm-worker-hdr">Worker</th>{hm_header}</tr></thead>'
                     f"<tbody>{rows}</tbody></table></div>"
                 )
@@ -2243,7 +2243,7 @@ class PoolClassifier:
             "    });",
             "    rows.forEach(r => tbody.appendChild(r));",
             "  }",
-            "  document.querySelectorAll('th').forEach(th => th.addEventListener('click', () => sortTable(th)));",
+            "  document.querySelectorAll('table:not(.not-sortable) th').forEach(th => th.addEventListener('click', () => sortTable(th)));",
             "</script>",
             f'<p class="footer">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
             "</body>",

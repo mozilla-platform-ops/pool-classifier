@@ -579,6 +579,13 @@ def test_start_lag_dashboard_links_trend_and_heatmap_hover(tmp_path):
     assert "Observed scheduled-to-start time for terminal task runs." in html
     assert '<a href="#s-start-lag">Start Lag</a>' in html
     assert '<a href="#s-heatmap">Worker Activity</a>' in html
+    assert "table:not(.not-sortable) th" in html
+
+    heatmap_html = classifier._write_html(
+        {},
+        heatmap={"worker-1": {0: {"s": 1, "critical": 0, "high": 0, "low": 0}}},
+    )
+    assert '<table class="hm-grid not-sortable">' in heatmap_html
 
     offenders_html = classifier._write_html({"worker-1": {"failures_by_category": {"test": 1}}}, quarantined=set())
     assert '<h2 id="s-offenders">Top Offenders</h2>' in offenders_html
