@@ -1,3 +1,7 @@
+#
+# production version stored in 1p at https://start.1password.com/open/i?a=NBK7D7DZW5BBBFYVCOK55GXMOE&v=ioli2lam7ekxzqw27oejuds6cu&i=i3xlfqp65a7k7dnits63v4jljy&h=mozilla.1password.com
+#
+
 project_id = "relops-pool-classifier"
 region     = "us-west1"
 domain     = "pool-classifier.relops.mozilla.com"
