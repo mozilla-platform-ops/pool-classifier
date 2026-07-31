@@ -141,6 +141,11 @@ gcloud run deploy pool-classifier --image="$IMAGE" --no-traffic \
   --region=us-west1 --project=relops-pool-classifier
 
 # Promote only after the candidate reports Ready=True and log inspection passes.
+# With --no-traffic, Cloud Run can label the candidate revision "Retired" and
+# keep latestReadyRevisionName pointing at the traffic-serving revision. This
+# is expected while the candidate has 0% traffic: inspect that candidate's own
+# Ready condition and image digest, rather than treating "Retired" alone as a
+# failed deployment. It becomes active when traffic is promoted.
 gcloud run services update-traffic pool-classifier --to-latest \
   --region=us-west1 --project=relops-pool-classifier
 ```
