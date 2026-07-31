@@ -13,21 +13,24 @@ import sys
 from pathlib import Path
 
 MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
+MIGRATION_LOCK_ID = 6_061_283
 
 
 def apply_migrations(dsn: str) -> None:
     import psycopg
 
-    with psycopg.connect(dsn, autocommit=True) as conn:
+    with psycopg.connect(dsn) as conn:
         with conn.cursor() as cur:
+            # Cloud Run can start more than one instance for a new revision.
+            # Keep the lock and every migration in one transaction so only one
+            # instance can inspect, apply, and record a migration at a time.
+            cur.execute("SELECT pg_advisory_xact_lock(%s)", (MIGRATION_LOCK_ID,))
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS schema_migrations (
                     version TEXT PRIMARY KEY,
                     applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
             """)
-
-    with psycopg.connect(dsn) as conn:
         for sql_file in sorted(MIGRATIONS_DIR.glob("*.sql")):
             version = sql_file.stem
             with conn.cursor() as cur:
@@ -38,8 +41,8 @@ def apply_migrations(dsn: str) -> None:
             with conn.cursor() as cur:
                 cur.execute(sql_file.read_text())
                 cur.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
-            conn.commit()
             print(f"  {version}: applied")
+        conn.commit()
 
 
 if __name__ == "__main__":
