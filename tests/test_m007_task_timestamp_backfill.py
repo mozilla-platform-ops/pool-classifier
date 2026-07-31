@@ -76,7 +76,9 @@ def test_backfill_updates_a_bounded_null_driven_batch(monkeypatch, capsys):
         "postgresql://example", batch_size=10, batch_delay_seconds=0,
     )
 
-    assert connect_calls == [(('postgresql://example',), {'autocommit': True})]
+    assert connect_calls[0][0] == ("postgresql://example",)
+    assert connect_calls[0][1]["autocommit"] is True
+    assert ":maintenance:" in connect_calls[0][1]["application_name"]
     assert stats.updated == 2
     assert stats.remaining == 0
     update_sql, update_params = next(
