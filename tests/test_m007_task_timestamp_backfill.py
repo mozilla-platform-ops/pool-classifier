@@ -57,8 +57,12 @@ class _Connection:
 
 def test_backfill_updates_a_bounded_null_driven_batch(monkeypatch, capsys):
     cursor = _Cursor(
-        fetchone_results=((1,), (5,), (True,), (0,)),
-        fetchall_results=([("observed_at",), ("last_checked_at",)], [(1,), (1,)]),
+        fetchone_results=((1,), (5,), (True,), (True,), (0,)),
+        fetchall_results=(
+            [("observed_at",), ("last_checked_at",)],
+            [(2, "pool", "task", "worker")],
+            [],
+        ),
     )
     connection = _Connection(cursor)
     connect_calls = []
@@ -80,7 +84,8 @@ def test_backfill_updates_a_bounded_null_driven_batch(monkeypatch, capsys):
     )
     assert "FOR UPDATE SKIP LOCKED" in update_sql
     assert "result.observed_at IS NULL OR result.last_checked_at IS NULL" in update_sql
-    assert update_params == (10,)
+    assert update_params == (None, None, None, 10)
+    assert "(pool_id, task_id, worker_id) >" in update_sql
     assert '"event": "m007_task_timestamp_backfill_completed"' in capsys.readouterr().out
 
 
@@ -107,11 +112,13 @@ def test_backfill_retries_a_failed_batch(monkeypatch):
     monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=lambda *_args, **_kwargs: connection))
     attempts = []
 
-    def update_once_then_succeed(_conn, _batch_size):
+    def update_once_then_succeed(_conn, _batch_size, _cursor):
         attempts.append(None)
         if len(attempts) == 1:
             raise RuntimeError("transient lock failure")
-        return 1
+        if len(attempts) == 2:
+            return 1, ("pool", "task", "worker")
+        return 0, None
 
     monkeypatch.setattr(backfill, "_update_batch", update_once_then_succeed)
     monkeypatch.setattr(backfill.time, "sleep", lambda _seconds: None)

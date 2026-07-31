@@ -1,8 +1,9 @@
 """Backfill migration-007 task observation timestamps in committed batches.
 
-The selection is intentionally driven entirely by the remaining NULL values;
-there is no checkpoint file or durable cursor.  A stopped execution can simply
-be run again, and it will update only rows still needing either timestamp.
+There is no checkpoint file or durable cursor.  Within one execution, an
+in-memory primary-key cursor avoids rescanning earlier batches; a stopped
+execution starts over safely and updates only rows still needing either
+timestamp.
 """
 
 from __future__ import annotations
@@ -28,10 +29,12 @@ WITH batch AS (
     SELECT pool_id, task_id, worker_id
     FROM task_results
     WHERE observed_at IS NULL OR last_checked_at IS NULL
+      AND (%s::text IS NULL OR (pool_id, task_id, worker_id) > (%s::text, %s::text, %s::text))
     ORDER BY pool_id, task_id, worker_id
     LIMIT %s
     FOR UPDATE SKIP LOCKED
-)
+),
+updated AS (
 UPDATE task_results AS result
 SET observed_at = COALESCE(result.observed_at, result.classified_at),
     last_checked_at = COALESCE(result.last_checked_at, result.classified_at)
@@ -40,6 +43,10 @@ WHERE (result.pool_id, result.task_id, result.worker_id) =
       (batch.pool_id, batch.task_id, batch.worker_id)
   AND (result.observed_at IS NULL OR result.last_checked_at IS NULL)
 RETURNING 1
+)
+SELECT (SELECT COUNT(*) FROM updated), pool_id, task_id, worker_id
+FROM batch
+ORDER BY pool_id, task_id, worker_id
 """
 
 
@@ -74,15 +81,19 @@ def _count_missing(cur) -> int:
     return cur.fetchone()[0]
 
 
-def _update_batch(conn, batch_size: int) -> int:
-    """Update one short transaction, returning its actual number of rows."""
+def _update_batch(conn, batch_size: int, cursor: tuple[str, str, str] | None) -> tuple[int, tuple[str, str, str] | None]:
+    """Update one short transaction and return its count and next cursor."""
     with conn.transaction():
         with conn.cursor() as cur:
             cur.execute("SELECT pg_try_advisory_xact_lock(%s)", (MIGRATION_LOCK_ID,))
             if not cur.fetchone()[0]:
                 raise RuntimeError("another migration or database-maintenance batch holds the operation lock")
-            cur.execute(UPDATE_BATCH_SQL, (batch_size,))
-            return len(cur.fetchall())
+            cursor_values = cursor or (None, None, None)
+            cur.execute(UPDATE_BATCH_SQL, (*cursor_values, batch_size))
+            rows = cur.fetchall()
+            if not rows:
+                return 0, None
+            return rows[0][0], tuple(rows[-1][1:])
 
 
 def backfill_task_timestamps(
@@ -136,10 +147,11 @@ def backfill_task_timestamps(
             )
             return stats
 
+        cursor: tuple[str, str, str] | None = None
         while stats.remaining and (max_batches is None or stats.batches < max_batches):
             for attempt in range(retries + 1):
                 try:
-                    updated = _update_batch(conn, batch_size)
+                    updated, next_cursor = _update_batch(conn, batch_size, cursor)
                     break
                 except Exception as exc:
                     if attempt == retries:
@@ -156,6 +168,9 @@ def backfill_task_timestamps(
             else:  # pragma: no cover - the loop either breaks or raises.
                 raise AssertionError("unreachable retry state")
 
+            if next_cursor is None:
+                break
+
             stats.batches += 1
             stats.updated += updated
             # No cursor is retained: reaching a short/empty batch means this
@@ -169,8 +184,7 @@ def backfill_task_timestamps(
                 updated_total=stats.updated,
                 remaining_estimate=stats.remaining,
             )
-            if updated < batch_size:
-                break
+            cursor = next_cursor
             if batch_delay_seconds:
                 time.sleep(batch_delay_seconds)
 

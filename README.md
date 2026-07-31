@@ -185,11 +185,12 @@ release step until the dedicated migration-deployment work is implemented.
 ### Migration 007 timestamp backfill
 
 After migration 007 is recorded, use the same maintenance job to backfill
-legacy `task_results` rows. This operation has no state file or retained
-cursor: each short transaction reselects rows whose `observed_at` or
-`last_checked_at` is still NULL, updates only those NULL values from
-`classified_at`, and commits before continuing. It is therefore safe to stop
-and rerun.
+legacy `task_results` rows. This operation has no state file or durable cursor:
+within one execution it advances an in-memory primary-key cursor, while every
+selected batch still requires `observed_at` or `last_checked_at` to be NULL.
+It updates only those NULL values from `classified_at` and commits before
+continuing. A stopped execution starts from the beginning, skips rows already
+filled by previous executions, and is therefore safe to rerun.
 
 First inspect the exact remaining count:
 
