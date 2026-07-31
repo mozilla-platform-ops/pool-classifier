@@ -84,7 +84,7 @@ def test_backfill_updates_a_bounded_null_driven_batch(monkeypatch, capsys):
     )
     assert "FOR UPDATE SKIP LOCKED" in update_sql
     assert "result.observed_at IS NULL OR result.last_checked_at IS NULL" in update_sql
-    assert update_params == (None, None, None, 10)
+    assert update_params == (None, None, None, None, 10)
     assert "(pool_id, task_id, worker_id) >" in update_sql
     assert '"event": "m007_task_timestamp_backfill_completed"' in capsys.readouterr().out
 

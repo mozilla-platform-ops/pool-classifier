@@ -89,7 +89,7 @@ def _update_batch(conn, batch_size: int, cursor: tuple[str, str, str] | None) ->
             if not cur.fetchone()[0]:
                 raise RuntimeError("another migration or database-maintenance batch holds the operation lock")
             cursor_values = cursor or (None, None, None)
-            cur.execute(UPDATE_BATCH_SQL, (*cursor_values, batch_size))
+            cur.execute(UPDATE_BATCH_SQL, (cursor_values[0], *cursor_values, batch_size))
             rows = cur.fetchall()
             if not rows:
                 return 0, None
