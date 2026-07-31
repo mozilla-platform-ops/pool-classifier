@@ -100,6 +100,7 @@ def test_api_v1_discovery_lists_versioned_endpoints():
     assert {endpoint["path"] for endpoint in response.json["endpoints"]} >= {
         "/api/v1/pools",
         "/api/v1/pools/{provisioner}/{worker_type}/summary",
+        "/api/v1/overview/utilization",
     }
 
 
@@ -153,10 +154,10 @@ def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch)
     assert 'p95: 4m 12s' in html
     assert '5 observed starts' in html
     assert '<span class="ok">4m 12s</span>' in html
-    assert "/utilization/summary?windows=1h,24h" in html
-    assert "const UTILIZATION_REQUEST_CONCURRENCY = 4;" in html
-    assert "async function loadUtilizationSummaries()" in html
-    assert "void loadUtilizationSummaries();" in html
+    assert "/api/v1/overview/utilization?windows=1h,24h" in html
+    assert "async function loadOverviewUtilizationSummaries()" in html
+    assert "void loadOverviewUtilizationSummaries();" in html
+    assert "UTILIZATION_REQUEST_CONCURRENCY" not in html
 
 
 def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
@@ -232,6 +233,45 @@ def test_utilization_summary_cache_scopes_entries_by_pool_and_window_set(monkeyp
         assert client.get("/api/v1/pools/provisioner/other-worker/utilization/summary?windows=1h").status_code == 200
 
     assert calls == [{"1h": 3600}, {"24h": 86400}, {"1h": 3600}]
+
+
+def test_overview_utilization_batch_returns_enabled_pools_and_caches_result(monkeypatch):
+    calls = []
+
+    class Storage:
+        def get_utilization_summary(self, windows):
+            calls.append(windows)
+            return {
+                "windows": {
+                    name: {"utilization": {"utilization_pct": 25.0 if name == "1h" else 50.0}}
+                    for name in windows
+                },
+            }
+
+    enabled = Pool("enabled", "proj", "worker", "*/15 * * * *")
+    other_enabled = Pool("other-enabled", "proj", "other-worker", "*/15 * * * *", availability_mode="listed")
+    disabled = Pool("disabled", "proj", "disabled-worker", "*/15 * * * *", enabled=False)
+    classifiers = {
+        ("proj", "worker"): SimpleNamespace(storage=Storage(), availability_mode="recent_contact"),
+        ("proj", "other-worker"): SimpleNamespace(storage=Storage(), availability_mode="listed"),
+    }
+    monkeypatch.setenv("OVERVIEW_CACHE_TTL_SECONDS", "30")
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [enabled, other_enabled, disabled])
+    monkeypatch.setattr(app_module, "_get_classifier", lambda provisioner, worker_type: classifiers.get((provisioner, worker_type)))
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        first = client.get("/api/v1/overview/utilization?windows=1h,24h")
+        second = client.get("/api/v1/overview/utilization?windows=1h,24h")
+
+    assert first.status_code == 200
+    assert first.json["api_version"] == 1
+    assert first.json["windows"] == ["1h", "24h"]
+    assert set(first.json["pools"]) == {"proj/worker", "proj/other-worker"}
+    assert first.json["pools"]["proj/other-worker"]["availability_mode"] == "listed"
+    assert second.json == first.json
+    assert calls == [{"1h": 3600, "24h": 86400}, {"1h": 3600, "24h": 86400}]
 
 
 @pytest.mark.parametrize(

@@ -417,6 +417,31 @@ def _global_observed_start_lag_summaries(dsn: str) -> dict:
     return observed_start_lag_summaries_global(dsn, (end - timedelta(days=7)).isoformat(), end.isoformat())
 
 
+def _overview_utilization_summaries(windows: dict[str, int]) -> dict:
+    """Return cached utilization summaries for every enabled overview pool."""
+    pools = [pool for pool in registry.all_pools_including_disabled() if pool.enabled]
+    pool_keys = tuple((pool.provisioner, pool.worker_type) for pool in pools)
+
+    def calculate() -> dict:
+        summaries = {}
+        for pool in pools:
+            pc = _get_classifier(pool.provisioner, pool.worker_type)
+            if pc is None:
+                continue
+            result = _cached_overview_result(
+                ("utilization-summary", pool.provisioner, pool.worker_type, tuple(windows.items()), id(pc.storage)),
+                lambda: pc.storage.get_utilization_summary(windows),
+            )
+            result.update({"availability_mode": pc.availability_mode})
+            summaries[f"{pool.provisioner}/{pool.worker_type}"] = result
+        return summaries
+
+    return _cached_overview_result(
+        ("overview-utilization-summaries", pool_keys, tuple(windows.items())),
+        calculate,
+    )
+
+
 def create_app() -> Flask:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = Flask(__name__)
@@ -581,6 +606,7 @@ def create_app() -> Flask:
                     {"path": "/api/v1/patterns", "description": "Classification-pattern registry."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/utilization", "description": "Duration-weighted utilization."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/utilization/summary", "description": "Standard utilization windows."},
+                    {"path": "/api/v1/overview/utilization", "description": "Batched overview utilization summaries."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/observed-start-lag", "description": "Observed task-run start lag."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/observed-start-lag/visualization", "description": "Chart-ready observed start lag."},
                 ],
@@ -753,6 +779,20 @@ def create_app() -> Flask:
         )
         result.update({"api_version": 1, "availability_mode": pc.availability_mode})
         return jsonify(result)
+
+    @app.get("/api/v1/overview/utilization")
+    def overview_utilization_summaries():
+        try:
+            windows = _utilization_summary_windows()
+        except ValueError as exc:
+            return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
+        return jsonify(
+            {
+                "api_version": 1,
+                "windows": list(windows),
+                "pools": _overview_utilization_summaries(windows),
+            },
+        )
 
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/observed-start-lag")
     def pool_observed_start_lag(provisioner: str, worker_type: str):
