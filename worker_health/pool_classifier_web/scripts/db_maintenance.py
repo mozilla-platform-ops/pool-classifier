@@ -16,6 +16,7 @@ from collections.abc import Callable
 
 from worker_health.pool_classifier_web.scripts import backfill_m007_task_timestamps
 from worker_health.pool_classifier_web.scripts import datastore_summary
+from worker_health.pool_classifier_web.scripts import utilization_query_plan
 from worker_health.pool_classifier_web.scripts.create_unresolved_task_run_index import (
     create_unresolved_task_run_index,
 )
@@ -32,6 +33,7 @@ OPERATIONS: dict[str, Operation] = {
     "backfill-m007-task-timestamps": backfill_m007_task_timestamps.run,
     "create-unresolved-task-run-index": _create_unresolved_task_run_index,
     "datastore-summary": datastore_summary.run,
+    "utilization-task-run-query-plan": utilization_query_plan.run,
 }
 
 

@@ -255,6 +255,26 @@ gcloud run jobs execute pool-classifier-db-maintenance \
   --wait --region=us-west1 --project=relops-pool-classifier
 ```
 
+### Utilization task-run query plan
+
+Use the `utilization-task-run-query-plan` operation to inspect the exact
+`task_results` overlap query used by utilization endpoints before choosing an
+index. It accepts only a timezone-qualified window of seven days or less. By
+default it asks PostgreSQL for a non-executing JSON plan. Pass `--analyze` only
+when collecting measured read/buffer evidence; that executes the read-only
+query under a 30-second statement timeout (configurable up to 120 seconds).
+
+```sh
+DATABASE_URL=postgresql://pc:pc@localhost:5433/pool_classifier \
+  uv run -m worker_health.pool_classifier_web.scripts.db_maintenance \
+  --operation utilization-task-run-query-plan --pool-id releng-hardware/gecko-t-osx-1500-m4 \
+  --start 2026-07-31T00:00:00Z --end 2026-07-31T01:00:00Z --analyze
+```
+
+On production, point the maintenance job to the release image, then run the
+same operation with an observed 1h or 24h window. Preserve the JSON output
+from both environments when selecting or rejecting an index.
+
 Infrastructure changes live under
 `worker_health/pool_classifier_web/terraform/`:
 

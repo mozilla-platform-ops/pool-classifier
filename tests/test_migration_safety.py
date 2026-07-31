@@ -13,6 +13,7 @@ from worker_health.pool_classifier_web.scripts import (
     datastore_summary,
     db_maintenance,
     migrate,
+    utilization_query_plan,
 )
 from worker_health.pool_classifier_web.storage import PostgresStorage
 
@@ -231,6 +232,49 @@ def test_datastore_summary_emits_one_json_record(monkeypatch, capsys):
     datastore_summary.run("postgresql://example", [])
 
     assert json.loads(capsys.readouterr().out) == {"event": "datastore_summary", "summary": {"tables": []}}
+
+
+def test_utilization_plan_is_bounded_read_only_and_parameterized(monkeypatch):
+    cursor = _Cursor(fetchone_results=([[{"Plan": {"Node Type": "Index Scan"}}]],))
+    connection = _Connection(cursor)
+    calls = []
+
+    def connect(*args, **kwargs):
+        calls.append((args, kwargs))
+        return connection
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=connect))
+
+    result = utilization_query_plan.capture_utilization_task_run_plan(
+        "postgresql://example",
+        pool_id="releng-hardware/gecko-t-osx-1500-m4",
+        start="2026-07-31T00:00:00Z",
+        end="2026-07-31T01:00:00Z",
+        analyze=True,
+    )
+
+    assert calls == [(("postgresql://example",), {"autocommit": True})]
+    assert result["plan"] == [{"Plan": {"Node Type": "Index Scan"}}]
+    explain_sql, explain_params = cursor.executed[-1]
+    assert "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)" in explain_sql
+    assert explain_params == ("releng-hardware/gecko-t-osx-1500-m4", "2026-07-31T01:00:00Z", "2026-07-31T00:00:00Z")
+    assert "default_transaction_read_only" in "\n".join(sql for sql, _params in cursor.executed)
+
+
+def test_utilization_plan_rejects_unbounded_or_invalid_windows():
+    for start, end in [
+        ("2026-07-31T01:00:00Z", "2026-07-31T00:00:00Z"),
+        ("2026-07-01T00:00:00Z", "2026-07-09T00:00:00Z"),
+        ("2026-07-31T00:00:00", "2026-07-31T01:00:00Z"),
+    ]:
+        try:
+            utilization_query_plan.capture_utilization_task_run_plan(
+                "postgresql://example", pool_id="pool", start=start, end=end,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid plan window was accepted")
 
 
 def test_postgres_storage_initialization_does_not_apply_migrations(monkeypatch):
