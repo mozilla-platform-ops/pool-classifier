@@ -520,6 +520,15 @@ def test_top_offenders(sqlite, pg):
     assert st == pt
 
 
+def test_top_offenders_by_category(sqlite, pg):
+    _seed(sqlite)
+    _seed(pg)
+
+    expected = {"bad_device": [("w1", 1), ("w2", 1)]}
+    assert sqlite.top_offenders_by_category(_now_iso(-24)) == expected
+    assert pg.top_offenders_by_category(_now_iso(-24)) == expected
+
+
 # --- query_windowed_sr ---
 
 

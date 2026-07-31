@@ -1253,6 +1253,9 @@ class PoolClassifier:
     def _top_offenders(self, category: str, n: int = 5, since: Optional[str] = None) -> List[Tuple[str, int]]:
         return self.storage.top_offenders(category, n=n, since=since)
 
+    def _top_offenders_by_category(self, since: str, n: int = 5) -> Dict[str, List[Tuple[str, int]]]:
+        return self.storage.top_offenders_by_category(since, n=n)
+
     def _sr_pct(self, worker_state: dict) -> Optional[float]:
         s = worker_state.get("successes", 0)
         f = worker_state.get("failures", 0)
@@ -1452,6 +1455,7 @@ class PoolClassifier:
         for w in workers.values():
             for cat, count in w.get("failures_by_category", {}).items():
                 category_totals[cat] = category_totals.get(cat, 0) + count
+        top_offenders = self._top_offenders_by_category(since_1d) if category_totals else {}
 
         alerting = {
             wid: w for wid, w in workers.items() if w.get("consecutive_failures", 0) >= CONSECUTIVE_FAILURE_ALERT
@@ -1539,7 +1543,7 @@ class PoolClassifier:
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
                 lines.append(f"### {cat} ({count} total all-time)")
                 lines.append("")
-                for wid, n in self._top_offenders(cat, since=since_1d):
+                for wid, n in top_offenders.get(cat, []):
                     q_flag = ""
                     if quarantined and wid in quarantined:
                         dur = self._quarantine_duration(quarantined[wid])
@@ -1581,6 +1585,7 @@ class PoolClassifier:
         for w in workers.values():
             for cat, count in w.get("failures_by_category", {}).items():
                 category_totals[cat] = category_totals.get(cat, 0) + count
+        top_offenders = self._top_offenders_by_category(since_1d) if category_totals else {}
 
         alerting = {
             wid: w for wid, w in workers.items() if w.get("consecutive_failures", 0) >= CONSECUTIVE_FAILURE_ALERT
@@ -2034,7 +2039,7 @@ class PoolClassifier:
                 '<div class="offenders-grid">',
             ]
             for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                offenders = self._top_offenders(cat, since=since_1d)
+                offenders = top_offenders.get(cat, [])
                 offender_items = ""
                 for wid, n in offenders:
                     q_badge = ""

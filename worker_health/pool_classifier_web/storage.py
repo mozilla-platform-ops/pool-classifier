@@ -858,19 +858,16 @@ class SqliteStorage:
         )
 
     def query_workers(self) -> Dict[str, dict]:
-        workers = {}
-        for row in self.db.execute("SELECT * FROM workers ORDER BY worker_id"):
-            w = dict(row)
-            cats = {}
-            for cat_row in self.db.execute(
-                "SELECT category, COUNT(*) as cnt FROM task_results"
-                " WHERE worker_id = ? AND run_state != 'completed' AND category IS NOT NULL"
-                " GROUP BY category ORDER BY cnt DESC",
-                (w["worker_id"],),
-            ):
-                cats[cat_row["category"]] = cat_row["cnt"]
-            w["failures_by_category"] = cats
-            workers[w["worker_id"]] = w
+        workers = {row["worker_id"]: dict(row) for row in self.db.execute("SELECT * FROM workers ORDER BY worker_id")}
+        categories = {worker_id: {} for worker_id in workers}
+        for row in self.db.execute(
+            "SELECT worker_id, category, COUNT(*) AS cnt FROM task_results"
+            " WHERE run_state != 'completed' AND category IS NOT NULL"
+            " GROUP BY worker_id, category ORDER BY worker_id, cnt DESC",
+        ):
+            categories.setdefault(row["worker_id"], {})[row["category"]] = row["cnt"]
+        for worker_id, worker in workers.items():
+            worker["failures_by_category"] = categories[worker_id]
         return workers
 
     def query_windowed_sr(self) -> Dict[str, dict]:
@@ -890,6 +887,7 @@ class SqliteStorage:
                 SUM(CASE WHEN run_state = 'completed' AND run_started >= :c7d THEN 1 ELSE 0 END) AS succ_7d,
                 SUM(CASE WHEN run_state != 'completed' AND run_started >= :c7d THEN 1 ELSE 0 END) AS fail_7d
             FROM task_results
+            WHERE run_started >= :c7d
             GROUP BY worker_id
             """,
             {"c1d": c1d, "c3d": c3d, "c7d": c7d},
@@ -955,6 +953,22 @@ class SqliteStorage:
                 (category, n),
             )
         return [(row["worker_id"], row["cnt"]) for row in rows]
+
+    def top_offenders_by_category(self, since: str, n: int = 5) -> Dict[str, List[Tuple[str, int]]]:
+        """Return the top recent failing workers per category in one grouped read."""
+        result: Dict[str, List[Tuple[str, int]]] = {}
+        rows = self.db.execute(
+            "SELECT category, worker_id, COUNT(*) AS cnt FROM task_results"
+            " WHERE category IS NOT NULL AND run_state != 'completed' AND run_started >= ?"
+            " GROUP BY category, worker_id ORDER BY category, cnt DESC, worker_id ASC",
+            (since,),
+        )
+        for row in rows:
+            category = row["category"]
+            offenders = result.setdefault(category, [])
+            if len(offenders) < n:
+                offenders.append((row["worker_id"], row["cnt"]))
+        return result
 
     def oldest_classified_at(self) -> Optional[str]:
         row = self.db.execute("SELECT MIN(classified_at) FROM task_results").fetchone()
@@ -1912,23 +1926,22 @@ class PostgresStorage:
                 (self.pool_id,),
             )
             rows = cur.fetchall()
+            cur.execute(
+                "SELECT worker_id, category, COUNT(*) AS cnt FROM task_results"
+                " WHERE pool_id = %s AND run_state != 'completed' AND category IS NOT NULL"
+                " GROUP BY worker_id, category ORDER BY worker_id, cnt DESC",
+                (self.pool_id,),
+            )
+            category_rows = cur.fetchall()
+        categories: Dict[str, Dict[str, int]] = {}
+        for row in category_rows:
+            categories.setdefault(row["worker_id"], {})[row["category"]] = row["cnt"]
         for w in rows:
             d = dict(w)
             d["last_active"] = _to_iso(d["last_active"])
             d["last_success"] = _to_iso(d["last_success"])
             d["last_failure"] = _to_iso(d["last_failure"])
-            cats: Dict[str, int] = {}
-            with self._cursor() as cur:
-                cur.execute(
-                    "SELECT category, COUNT(*) AS cnt FROM task_results"
-                    " WHERE pool_id = %s AND worker_id = %s"
-                    "   AND run_state != 'completed' AND category IS NOT NULL"
-                    " GROUP BY category ORDER BY cnt DESC",
-                    (self.pool_id, d["worker_id"]),
-                )
-                for cat_row in cur.fetchall():
-                    cats[cat_row["category"]] = cat_row["cnt"]
-            d["failures_by_category"] = cats
+            d["failures_by_category"] = categories.get(d["worker_id"], {})
             workers[d["worker_id"]] = d
         return workers
 
@@ -1949,7 +1962,7 @@ class PostgresStorage:
                     SUM(CASE WHEN run_state = 'completed' AND run_started >= %(c7d)s::timestamptz THEN 1 ELSE 0 END) AS succ_7d,
                     SUM(CASE WHEN run_state != 'completed' AND run_started >= %(c7d)s::timestamptz THEN 1 ELSE 0 END) AS fail_7d
                 FROM task_results
-                WHERE pool_id = %(pool_id)s
+                WHERE pool_id = %(pool_id)s AND run_started >= %(c7d)s::timestamptz
                 GROUP BY worker_id
                 """,
                 {"c1d": c1d, "c3d": c3d, "c7d": c7d, "pool_id": self.pool_id},
@@ -2017,6 +2030,25 @@ class PostgresStorage:
                     (self.pool_id, category, n),
                 )
             return [(row["worker_id"], row["cnt"]) for row in cur.fetchall()]
+
+    def top_offenders_by_category(self, since: str, n: int = 5) -> Dict[str, List[Tuple[str, int]]]:
+        """Return the top recent failing workers per category in one grouped read."""
+        result: Dict[str, List[Tuple[str, int]]] = {}
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT category, worker_id, COUNT(*) AS cnt FROM task_results"
+                " WHERE pool_id = %s AND category IS NOT NULL AND run_state != 'completed'"
+                "   AND run_started >= %s::timestamptz"
+                " GROUP BY category, worker_id ORDER BY category, cnt DESC, worker_id ASC",
+                (self.pool_id, since),
+            )
+            rows = cur.fetchall()
+        for row in rows:
+            category = row["category"]
+            offenders = result.setdefault(category, [])
+            if len(offenders) < n:
+                offenders.append((row["worker_id"], row["cnt"]))
+        return result
 
     def oldest_classified_at(self) -> Optional[str]:
         with self._cursor() as cur:
