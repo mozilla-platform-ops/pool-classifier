@@ -78,7 +78,9 @@ identical. The image must also embed the immutable Git commit for provenance.
    prefix).
 2. Change `[project].version` in `pyproject.toml` to `VERSION`, then run
    `uv lock` to refresh `uv.lock` metadata.
-3. Run the full test suite and review the release diff.
+3. Run `scripts/run_local_postgres_tests.sh` successfully (the required full
+   suite, including PostgreSQL-backed integration tests), then review the
+   release diff.
 4. Commit the version and lockfile together, for example:
    `git commit -m "chore: release v$VERSION"`.
 5. Create an annotated tag only after that commit exists:
@@ -105,9 +107,11 @@ Do not tag an unchanged package version: a tag such as `v1.1.2` with
 
 For an operational or performance deployment that is not a release, do not
 create or reuse a semver tag. Start from a clean, committed checkout and derive
-both identities from `HEAD`:
+both identities from `HEAD`. A successful `scripts/run_local_postgres_tests.sh`
+is required before submitting the build:
 
 ```bash
+scripts/run_local_postgres_tests.sh
 SOURCE_COMMIT="$(git rev-parse HEAD)"
 SOURCE_TAG="sha-$SOURCE_COMMIT"
 test -z "$(git status --porcelain)"

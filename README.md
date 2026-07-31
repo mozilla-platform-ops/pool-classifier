@@ -129,6 +129,13 @@ scripts/run_local_postgres_tests.sh
 
 ## Build and deploy
 
+A successful PostgreSQL-inclusive test run is required before either a tagged
+release or an ad-hoc deployment:
+
+```sh
+scripts/run_local_postgres_tests.sh
+```
+
 If Cloud Build, Cloud Run, or Cloud SQL commands fail because the active CLI
 credentials need reauthentication, refresh both the `gcloud` CLI account and
 Application Default Credentials in one browser login:
@@ -144,6 +151,7 @@ do not copy a SHA by hand. This command does not change production traffic:
 
 ```sh
 VERSION=VERSION
+scripts/run_local_postgres_tests.sh
 RELEASE_COMMIT="$(git rev-parse "v${VERSION}^{commit}")"
 test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
 test -z "$(git status --porcelain)"
@@ -160,6 +168,7 @@ exact committed `HEAD` and a commit-derived image tag. This keeps the About
 page link correct without creating or reusing a version tag:
 
 ```sh
+scripts/run_local_postgres_tests.sh
 SOURCE_COMMIT="$(git rev-parse HEAD)"
 SOURCE_TAG="sha-$SOURCE_COMMIT"
 test -z "$(git status --porcelain)"
