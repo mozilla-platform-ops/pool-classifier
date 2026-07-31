@@ -137,12 +137,17 @@ Application Default Credentials in one browser login:
 gcloud auth login aerickson@firefox.gcp.mozilla.com --update-adc
 ```
 
-Build the release image from the repository root. This command does not change
-production traffic:
+Build the release image from the repository root. Derive the commit once from
+the annotated release tag; do not copy a SHA by hand. This command does not
+change production traffic:
 
 ```sh
+VERSION=VERSION
+RELEASE_COMMIT="$(git rev-parse "v${VERSION}^{commit}")"
+test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+
 gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_TAG=vVERSION,COMMIT_SHA=$(git rev-parse "vVERSION^{commit}") \
+  --substitutions=_TAG="v$VERSION",COMMIT_SHA="$RELEASE_COMMIT" \
   --project=relops-pool-classifier .
 ```
 

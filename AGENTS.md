@@ -88,9 +88,10 @@ identical. The image must also embed the immutable Git commit for provenance.
    release tag, then build it with matching image-tag and commit provenance:
 
    ```bash
-   test "$(git rev-parse HEAD)" = "$(git rev-parse "v$VERSION^{commit}")"
+   RELEASE_COMMIT="$(git rev-parse "v${VERSION}^{commit}")"
+   test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
    gcloud builds submit --config cloudbuild.yaml \
-     --substitutions=_TAG="v$VERSION",COMMIT_SHA="$(git rev-parse "v$VERSION^{commit}")" \
+     --substitutions=_TAG="v$VERSION",COMMIT_SHA="$RELEASE_COMMIT" \
      --project=relops-pool-classifier .
    ```
 
