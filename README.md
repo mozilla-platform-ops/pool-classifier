@@ -129,6 +129,14 @@ scripts/run_local_postgres_tests.sh
 
 ## Build and deploy
 
+If Cloud Build, Cloud Run, or Cloud SQL commands fail because the active CLI
+credentials need reauthentication, refresh both the `gcloud` CLI account and
+Application Default Credentials in one browser login:
+
+```sh
+gcloud auth login aerickson@firefox.gcp.mozilla.com --update-adc
+```
+
 Build the release image from the repository root. This command does not change
 production traffic:
 
