@@ -580,7 +580,7 @@ def test_pool_summaries_global_parity(pg):
     since_24h = _now_iso(-24)
     threshold = 1
 
-    s = pool_summaries_global(DSN, threshold, since_1h, since_24h).get(POOL_ID)
+    s = pool_summaries_global(DSN, (POOL_ID,), threshold, since_1h, since_24h).get(POOL_ID)
     assert s is not None, "seeded pool should appear in the grouped result"
 
     # Each batched field must equal the per-pool method it replaces.
@@ -594,10 +594,11 @@ def test_pool_summaries_global_parity(pg):
     assert s["ok_24h"] == pg.count_recent_successes(since_24h)
 
 
-def test_pool_summaries_global_absent_for_empty_pool(pg):
-    # No seed → pool has no rows → it should simply not appear in the result.
-    summaries = pool_summaries_global(DSN, 1, _now_iso(-1), _now_iso(-24))
-    assert POOL_ID not in summaries
+def test_pool_summaries_global_returns_zero_summary_for_requested_empty_pool(pg):
+    # Requested overview pools remain represented even before their first scan.
+    summaries = pool_summaries_global(DSN, (POOL_ID,), 1, _now_iso(-1), _now_iso(-24))
+    assert summaries[POOL_ID]["workers"] == 0
+    assert summaries[POOL_ID]["task_runs"] == 0
 
 
 def test_observed_start_lag_summaries_global_uses_nearest_rank_percentiles(pg):

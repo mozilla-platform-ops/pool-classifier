@@ -392,6 +392,7 @@ def _public_pool_summary(pool, summary: dict | None, now: datetime) -> dict:
         "api_version": 1,
         "pool": _pool_config(pool),
         "metrics": {
+            "summary_window": "24h",
             "workers": summary.get("workers", 0),
             "alerting_workers": summary.get("alerting", 0),
             "task_runs": summary.get("task_runs", 0),
@@ -411,11 +412,12 @@ def _public_pool_summary(pool, summary: dict | None, now: datetime) -> dict:
     }
 
 
-def _global_pool_summaries(dsn: str) -> dict:
-    """Query standard dashboard windows once per short cache lifetime."""
+def _global_pool_summaries(dsn: str, pool_ids: tuple[str, ...]) -> dict:
+    """Query current dashboard windows once per short cache lifetime."""
     now = datetime.now(timezone.utc).replace(microsecond=0)
     return pool_summaries_global(
         dsn,
+        pool_ids,
         CONSECUTIVE_FAILURE_ALERT,
         (now - timedelta(hours=1)).isoformat(),
         (now - timedelta(hours=24)).isoformat(),
@@ -500,13 +502,18 @@ def create_app() -> Flask:
         lag_summaries: dict = {}
         dsn = os.environ.get("DATABASE_URL")
         if dsn:
+            overview_pool_ids = tuple(
+                f"{pool.provisioner}/{pool.worker_type}"
+                for pool in registry.all_pools_including_disabled()
+                if pool.enabled
+            )
             try:
                 summaries = _cached_overview_result(
-                    ("pool-summaries", dsn, ("1h", "24h")),
-                    lambda: _global_pool_summaries(dsn),
+                    ("pool-summaries", dsn, overview_pool_ids, ("1h", "24h")),
+                    lambda: _global_pool_summaries(dsn, overview_pool_ids),
                 )
             except Exception as e:
-                logger.warning("index: pool_summaries_global failed: %s", e)
+                logger.warning("index: current pool summaries failed: %s", e)
             try:
                 lag_summaries = _cached_overview_result(
                     ("observed-start-lag", dsn, "7d"),
@@ -548,7 +555,9 @@ def create_app() -> Flask:
                 errors_per_host_1h = success_rate_1h = errors_per_host_24h = success_rate_24h = None
                 collection_latest = None
             else:
-                workers, alerting, oldest, latest = s["workers"], s["alerting"], s["oldest"], s["latest"]
+                workers, alerting = s["workers"], s["alerting"]
+                oldest = s["task_collection_started"] or s["oldest"]
+                latest = s["collection_latest"] or s["latest"]
                 collection_latest = s["collection_latest"]
                 errors_per_host_1h, success_rate_1h = _eph(s["err_1h"], workers), _sr(s["err_1h"], s["ok_1h"])
                 errors_per_host_24h, success_rate_24h = _eph(s["err_24h"], workers), _sr(s["err_24h"], s["ok_24h"])
@@ -724,8 +733,8 @@ def create_app() -> Flask:
             now = datetime.now(timezone.utc).replace(microsecond=0)
             try:
                 summaries = _cached_overview_result(
-                    ("pool-summaries", dsn, ("1h", "24h")),
-                    lambda: _global_pool_summaries(dsn),
+                    ("pool-summaries", dsn, (f"{provisioner}/{worker_type}",), ("1h", "24h")),
+                    lambda: _global_pool_summaries(dsn, (f"{provisioner}/{worker_type}",)),
                 )
             except Exception as exc:  # noqa: BLE001 - read-only dashboard endpoint remains available
                 logger.warning("pool summary: aggregate query failed: %s", exc)

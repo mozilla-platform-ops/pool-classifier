@@ -70,7 +70,10 @@ The handler looks up each pool from two dicts keyed by `pool_id`, and computes
 - **Precedent:** `count_category_hits_global(dsn, since)` (storage.py, used by
   `/patterns`) is already this pattern — a module-level function that opens one
   connection and runs a global `GROUP BY` query. Add a sibling, e.g.
-  `pool_summaries_global(dsn, threshold, since_1h, since_24h) -> {pool_id: {...}}`.
+  `pool_summaries_global(dsn, pool_ids, threshold, since_1h, since_24h) -> {pool_id: {...}}`.
+  The task-run metrics are scoped to the standard trailing 24-hour dashboard
+  window and drive from the requested pool IDs; lifetime aggregates belong in
+  a rollup or snapshot rather than this request-time path.
 - **Rewrite the index loop** to call it once and look each pool up; keep the
   `errors/host` + success-rate math in the handler.
 - **No template change** — `index.html` keeps consuming the same `rows` shape.

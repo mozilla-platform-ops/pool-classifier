@@ -355,6 +355,7 @@ def test_pool_summary_api_returns_metrics_coverage_and_freshness(monkeypatch):
     assert response.json["pool"]["availability_mode"] == "listed"
     assert response.json["metrics"] == {
         "workers": 4, "alerting_workers": 1, "task_runs": 12, "successes": 9, "errors": 3,
+        "summary_window": "24h",
         "success_rate_pct": 75.0,
         "windows": {
             "1h": {"successes": 3, "errors": 1, "success_rate_pct": 75.0},
