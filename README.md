@@ -137,23 +137,41 @@ Application Default Credentials in one browser login:
 gcloud auth login aerickson@firefox.gcp.mozilla.com --update-adc
 ```
 
-Build the release image from the repository root. Derive the commit once from
-the annotated release tag; do not copy a SHA by hand. This command does not
-change production traffic:
+### Tagged release image
+
+For a tagged release, derive the commit once from the annotated release tag;
+do not copy a SHA by hand. This command does not change production traffic:
 
 ```sh
 VERSION=VERSION
 RELEASE_COMMIT="$(git rev-parse "v${VERSION}^{commit}")"
 test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+test -z "$(git status --porcelain)"
 
 gcloud builds submit --config cloudbuild.yaml \
   --substitutions=_TAG="v$VERSION",COMMIT_SHA="$RELEASE_COMMIT" \
   --project=relops-pool-classifier .
 ```
 
+### Ad-hoc revision image
+
+For a non-release deployment (for example, performance validation), use the
+exact committed `HEAD` and a commit-derived image tag. This keeps the About
+page link correct without creating or reusing a version tag:
+
+```sh
+SOURCE_COMMIT="$(git rev-parse HEAD)"
+SOURCE_TAG="sha-$SOURCE_COMMIT"
+test -z "$(git status --porcelain)"
+
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions=_TAG="$SOURCE_TAG",COMMIT_SHA="$SOURCE_COMMIT" \
+  --project=relops-pool-classifier .
+```
+
 After Terraform has created the two jobs, run the manual production gate with
-the same immutable release image. A failed command stops here; do not deploy or
-promote traffic after a failure.
+the same immutable image. A failed command stops here; do not deploy or
+promote traffic after a failure. Use either `vVERSION` or `sha-COMMIT` below.
 
 ```sh
 IMAGE=us-west1-docker.pkg.dev/relops-pool-classifier/pool-classifier/app:vVERSION

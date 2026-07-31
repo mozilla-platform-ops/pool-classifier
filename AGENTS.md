@@ -101,4 +101,24 @@ identical. The image must also embed the immutable Git commit for provenance.
 Do not tag an unchanged package version: a tag such as `v1.1.2` with
 `pyproject.toml` still at `1.1.1` produces a misleading application version.
 
+### Ad-hoc deployment workflow
+
+For an operational or performance deployment that is not a release, do not
+create or reuse a semver tag. Start from a clean, committed checkout and derive
+both identities from `HEAD`:
+
+```bash
+SOURCE_COMMIT="$(git rev-parse HEAD)"
+SOURCE_TAG="sha-$SOURCE_COMMIT"
+test -z "$(git status --porcelain)"
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions=_TAG="$SOURCE_TAG",COMMIT_SHA="$SOURCE_COMMIT" \
+  --project=relops-pool-classifier .
+```
+
+Deploy the resulting `app:$SOURCE_TAG` through the same migration, candidate,
+verification, and traffic-promotion gates. The package version can remain the
+most recent release version, but the image tag and embedded commit identify the
+actual deployed revision.
+
 <!-- end-br-agent-instructions -->
