@@ -144,6 +144,24 @@ def test_late_return_contact_corrects_an_inferred_timeout(tmp_path):
     assert buckets[1]["available_worker_hours"] == pytest.approx(1)
 
 
+def test_utilization_summary_uses_a_window_start_baseline(tmp_path):
+    storage = _storage(tmp_path)
+    _complete_coverage(storage, end_hours=48)
+    # The final observation before the requested window is a late correction:
+    # its effective time is old, but it wins because it was observed last.
+    _transition(storage, "w1", True, "online", _iso(), _iso())
+    _transition(storage, "w1", False, "timeout", _iso(hours=1), _iso(hours=1))
+    _transition(storage, "w1", True, "late-return", _iso(minutes=30), _iso(hours=2))
+    # This is the only transition the 1h summary needs after its baseline.
+    _transition(storage, "w1", False, "timeout", _iso(hours=47, minutes=30), _iso(hours=47, minutes=31))
+    storage.commit()
+
+    result = storage.get_utilization_summary({"1h": 3600})
+
+    bucket = result["windows"]["1h"]["utilization"]
+    assert bucket["available_worker_hours"] == pytest.approx(0.5)
+
+
 def test_incomplete_coverage_suppresses_metrics(tmp_path):
     storage = _storage(tmp_path)
     for source in ("task_runs", "worker_availability"):

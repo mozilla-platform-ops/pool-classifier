@@ -246,6 +246,36 @@ def test_worker_availability_storage_parity(sqlite, pg):
         assert sqlite_state[field] == postgres_state[field]
 
 
+def test_utilization_summary_uses_window_start_baseline_in_both_backends(sqlite, pg):
+    start = datetime(2026, 7, 21, 10, 0, tzinfo=timezone.utc)
+
+    def iso(hours=0, minutes=0):
+        return (start + timedelta(hours=hours, minutes=minutes)).isoformat()
+
+    for storage in (sqlite, pg):
+        for source in ("task_runs", "worker_availability"):
+            storage.record_collection_coverage(source, iso(), True, 48 * 3600)
+            storage.record_collection_coverage(source, iso(hours=48), True, 48 * 3600)
+        for available, reason, effective_at, observed_at in (
+            (True, "online", iso(), iso()),
+            (False, "timeout", iso(hours=1), iso(hours=1)),
+            # This old effective time wins at the 1h boundary because it was
+            # observed last, so it must be selected as the baseline.
+            (True, "late-return", iso(minutes=30), iso(hours=2)),
+            (False, "timeout", iso(hours=47, minutes=30), iso(hours=47, minutes=31)),
+        ):
+            storage.record_worker_availability_transition(
+                "w1", "group-1", available, False, effective_at, None,
+                reason, effective_at, observed_at,
+            )
+        storage.commit()
+
+    expected = 0.5
+    for storage in (sqlite, pg):
+        bucket = storage.get_utilization_summary({"1h": 3600})["windows"]["1h"]["utilization"]
+        assert bucket["available_worker_hours"] == pytest.approx(expected)
+
+
 def test_current_quarantine_details_uses_state_as_the_source_of_truth(sqlite, pg):
     observed = "2026-07-14T10:01:00+00:00"
     until = "2026-07-14T12:00:00+00:00"

@@ -708,16 +708,9 @@ class SqliteStorage:
                 (range_end, range_start),
             )
         ]
-        availability_transitions = [
-            dict(row)
-            for row in self.db.execute(
-                "SELECT id, worker_id, available, effective_at, observed_at"
-                " FROM worker_availability_transitions"
-                " WHERE julianday(effective_at) < julianday(?)"
-                " ORDER BY observed_at, id",
-                (range_end,),
-            )
-        ]
+        availability_transitions = self._availability_transitions_for_window(
+            range_start, range_end,
+        )
         return calculate_utilization(
             self.pool_id,
             range_start,
@@ -787,10 +780,36 @@ class SqliteStorage:
             "SELECT worker_id, run_started AS start_at, run_resolved AS end_at FROM task_results"
             " WHERE run_started IS NOT NULL AND run_resolved IS NOT NULL"
             " AND julianday(run_started) < julianday(?) AND julianday(run_resolved) > julianday(?)", (end, start))]
-        transitions = [dict(row) for row in self.db.execute(
-            "SELECT id, worker_id, available, effective_at, observed_at FROM worker_availability_transitions"
-            " WHERE julianday(effective_at) < julianday(?) ORDER BY observed_at, id", (end,))]
+        transitions = self._availability_transitions_for_window(start, end)
         return calculate_utilization_summary(self.pool_id, windows, task_runs, transitions, coverage["task_runs"], coverage["worker_availability"])
+
+    def _availability_transitions_for_window(self, range_start: str, range_end: str) -> list[dict]:
+        """Return one state baseline per worker plus transitions in the window.
+
+        Availability is resolved by observation order, even when a late
+        observation has an earlier effective time.  The latest observed event
+        effective at the window start is therefore sufficient as the baseline;
+        older events cannot affect any point in the requested range.
+        """
+        return [
+            dict(row)
+            for row in self.db.execute(
+                "WITH baseline AS ("
+                " SELECT id, worker_id, available, effective_at, observed_at,"
+                " ROW_NUMBER() OVER (PARTITION BY worker_id ORDER BY observed_at DESC, id DESC) AS position"
+                " FROM worker_availability_transitions"
+                " WHERE julianday(effective_at) <= julianday(?)"
+                " )"
+                " SELECT id, worker_id, available, effective_at, observed_at FROM baseline WHERE position = 1"
+                " UNION ALL"
+                " SELECT id, worker_id, available, effective_at, observed_at"
+                " FROM worker_availability_transitions"
+                " WHERE julianday(effective_at) > julianday(?)"
+                " AND julianday(effective_at) < julianday(?)"
+                " ORDER BY observed_at, id",
+                (range_start, range_start, range_end),
+            )
+        ]
 
     def record_worker_availability_transition(
         self,
@@ -1793,23 +1812,9 @@ class PostgresStorage:
                 }
                 for row in cur.fetchall()
             ]
-            cur.execute(
-                "SELECT id, worker_id, available, effective_at, observed_at"
-                " FROM worker_availability_transitions"
-                " WHERE pool_id = %s AND effective_at < %s::timestamptz"
-                " ORDER BY observed_at, id",
-                (self.pool_id, range_end),
+            availability_transitions = self._availability_transitions_for_window(
+                cur, range_start, range_end,
             )
-            availability_transitions = [
-                {
-                    "id": row["id"],
-                    "worker_id": row["worker_id"],
-                    "available": row["available"],
-                    "effective_at": _to_iso(row["effective_at"]),
-                    "observed_at": _to_iso(row["observed_at"]),
-                }
-                for row in cur.fetchall()
-            ]
             cur.execute(
                 "SELECT source, start_at, end_at FROM collection_coverage_intervals"
                 " WHERE pool_id = %s ORDER BY source, start_at",
@@ -1883,9 +1888,39 @@ class PostgresStorage:
             end = end_dt.isoformat()
             cur.execute("SELECT worker_id, run_started AS start_at, run_resolved AS end_at FROM task_results WHERE pool_id = %s AND run_started IS NOT NULL AND run_resolved IS NOT NULL AND run_started < %s::timestamptz AND run_resolved > %s::timestamptz", (self.pool_id, end, start))
             task_runs = [{"worker_id": row["worker_id"], "start_at": _to_iso(row["start_at"]), "end_at": _to_iso(row["end_at"])} for row in cur.fetchall()]
-            cur.execute("SELECT id, worker_id, available, effective_at, observed_at FROM worker_availability_transitions WHERE pool_id = %s AND effective_at < %s::timestamptz ORDER BY observed_at, id", (self.pool_id, end))
-            transitions = [{"id": row["id"], "worker_id": row["worker_id"], "available": row["available"], "effective_at": _to_iso(row["effective_at"]), "observed_at": _to_iso(row["observed_at"])} for row in cur.fetchall()]
+            transitions = self._availability_transitions_for_window(cur, start, end)
         return calculate_utilization_summary(self.pool_id, windows, task_runs, transitions, coverage["task_runs"], coverage["worker_availability"])
+
+    def _availability_transitions_for_window(self, cur, range_start: str, range_end: str) -> list[dict]:
+        """Return one observation-ordered baseline per worker and in-window events."""
+        cur.execute(
+            "WITH baseline AS ("
+            " SELECT DISTINCT ON (worker_id) id, worker_id, available, effective_at, observed_at"
+            " FROM worker_availability_transitions"
+            " WHERE pool_id = %s AND effective_at <= %s::timestamptz"
+            " ORDER BY worker_id, observed_at DESC, id DESC"
+            " ), in_window AS ("
+            " SELECT id, worker_id, available, effective_at, observed_at"
+            " FROM worker_availability_transitions"
+            " WHERE pool_id = %s AND effective_at > %s::timestamptz"
+            " AND effective_at < %s::timestamptz"
+            " )"
+            " SELECT id, worker_id, available, effective_at, observed_at FROM baseline"
+            " UNION ALL"
+            " SELECT id, worker_id, available, effective_at, observed_at FROM in_window"
+            " ORDER BY observed_at, id",
+            (self.pool_id, range_start, self.pool_id, range_start, range_end),
+        )
+        return [
+            {
+                "id": row["id"],
+                "worker_id": row["worker_id"],
+                "available": row["available"],
+                "effective_at": _to_iso(row["effective_at"]),
+                "observed_at": _to_iso(row["observed_at"]),
+            }
+            for row in cur.fetchall()
+        ]
 
     def record_worker_availability_transition(
         self,
