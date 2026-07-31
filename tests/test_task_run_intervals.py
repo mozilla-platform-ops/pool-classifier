@@ -586,6 +586,7 @@ def test_start_lag_dashboard_links_trend_and_heatmap_hover(tmp_path):
         heatmap={"worker-1": {0: {"s": 1, "critical": 0, "high": 0, "low": 0}}},
     )
     assert '<table class="hm-grid not-sortable">' in heatmap_html
+    assert "Workers are ordered by recent failure severity (critical counts twice), then hostname." in heatmap_html
 
     offenders_html = classifier._write_html({"worker-1": {"failures_by_category": {"test": 1}}}, quarantined=set())
     assert '<h2 id="s-offenders">Top Offenders</h2>' in offenders_html

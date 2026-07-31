@@ -2035,7 +2035,7 @@ class PoolClassifier:
 
             parts += [
                 '<h2 id="s-heatmap">Worker Activity</h2>',
-                '<p class="gen">Only hosts with activity in the last 12 hours are shown.</p>',
+                '<p class="gen">Only hosts with activity in the last 12 hours are shown. Workers are ordered by recent failure severity (critical counts twice), then hostname.</p>',
                 '<div class="hm-legend">',
                 '  <span><span class="hm-swatch" style="background:#1a4a20"></span>success</span>',
                 '  <span><span class="hm-swatch" style="background:#7a1515"></span>critical</span>',
