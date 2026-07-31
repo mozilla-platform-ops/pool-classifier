@@ -283,6 +283,20 @@ On production, point the maintenance job to the release image, then run the
 same operation with an observed 1h or 24h window. Preserve the JSON output
 from both environments when selecting or rejecting an index.
 
+The production plan captured on 2026-07-31 selected a parallel sequential scan
+for the 1h query despite the existing `(pool_id, run_started)` index: its
+`run_started < end` condition matched nearly all historical rows. The measured
+replacement is a partial covering `(pool_id, run_resolved)` index, because
+`run_resolved > start` is selective for a recent window. Create it only through
+the reviewed maintenance operation, then rerun the plan capture to verify the
+new access path:
+
+```sh
+gcloud run jobs execute pool-classifier-db-maintenance \
+  --args="-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,create-utilization-task-run-index" \
+  --wait --region=us-west1 --project=relops-pool-classifier
+```
+
 Infrastructure changes live under
 `worker_health/pool_classifier_web/terraform/`:
 

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from worker_health.pool_classifier_web import storage as storage_module
 from worker_health.pool_classifier_web.scripts import (
     create_unresolved_task_run_index,
+    create_utilization_task_run_index,
     datastore_summary,
     db_maintenance,
     migrate,
@@ -94,6 +95,31 @@ def test_concurrent_index_command_uses_autocommit_and_verifies_index(monkeypatch
     assert connect_calls == [(("postgresql://example",), {"autocommit": True})]
     assert any(
         "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_task_results_unresolved" in sql
+        for sql, _params in cursor.executed
+    )
+    assert ("SELECT pg_advisory_lock(%s)", (migrate.MIGRATION_LOCK_ID,)) in cursor.executed
+    assert ("SELECT pg_advisory_unlock(%s)", (migrate.MIGRATION_LOCK_ID,)) in cursor.executed
+
+
+def test_utilization_index_command_uses_autocommit_and_verifies_index(monkeypatch):
+    cursor = _Cursor(
+        fetchone_results=(None, (True,)),
+        fetchall_results=([("pool_id",), ("worker_id",), ("run_started",), ("run_resolved",)],),
+    )
+    connection = _Connection(cursor)
+    connect_calls = []
+
+    def connect(*args, **kwargs):
+        connect_calls.append((args, kwargs))
+        return connection
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=connect))
+
+    create_utilization_task_run_index.create_utilization_task_run_index("postgresql://example")
+
+    assert connect_calls == [(("postgresql://example",), {"autocommit": True})]
+    assert any(
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_task_results_utilization_resolved" in sql
         for sql, _params in cursor.executed
     )
     assert ("SELECT pg_advisory_lock(%s)", (migrate.MIGRATION_LOCK_ID,)) in cursor.executed
