@@ -19,6 +19,13 @@ WORKERS_PATH = "/api/v1/pools/provisioner/worker-type/workers"
 API_START = datetime(2026, 7, 21, 10, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _clear_process_local_overview_cache():
+    app_module._reset_overview_cache()
+    yield
+    app_module._reset_overview_cache()
+
+
 def _api_storage(tmp_path, available=True, coverage_minutes=60):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     storage.init_schema()
@@ -167,6 +174,61 @@ def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
 
     assert 'P95 unavailable: 2 observed starts (minimum 5).' in response.text
     assert 'data-sort-value="252.0"' not in response.text
+
+
+def test_index_caches_global_aggregates_for_a_short_ttl(monkeypatch):
+    pool = Pool("display-only-id", "proj", "worker", "*/15 * * * *")
+    calls = {"summary": 0, "lag": 0}
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setenv("OVERVIEW_CACHE_TTL_SECONDS", "30")
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [pool])
+
+    def summaries(*_args):
+        calls["summary"] += 1
+        return {}
+
+    def lag_summaries(*_args):
+        calls["lag"] += 1
+        return {}
+
+    app_module._reset_overview_cache()
+    monkeypatch.setattr(app_module, "pool_summaries_global", summaries)
+    monkeypatch.setattr(app_module, "observed_start_lag_summaries_global", lag_summaries)
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        assert client.get("/").status_code == 200
+        assert client.get("/").status_code == 200
+
+    assert calls == {"summary": 1, "lag": 1}
+
+
+def test_utilization_summary_cache_scopes_entries_by_pool_and_window_set(monkeypatch):
+    calls = []
+
+    class Storage:
+        def get_utilization_summary(self, windows):
+            calls.append(windows)
+            return {"windows": {name: {"status": "ok"} for name in windows}}
+
+    classifiers = {
+        ("provisioner", "worker-type"): SimpleNamespace(storage=Storage(), availability_mode="recent_contact"),
+        ("provisioner", "other-worker"): SimpleNamespace(storage=Storage(), availability_mode="recent_contact"),
+    }
+    monkeypatch.setattr(app_module, "_get_classifier", lambda provisioner, worker_type: classifiers.get((provisioner, worker_type)))
+    monkeypatch.setenv("OVERVIEW_CACHE_TTL_SECONDS", "30")
+    app_module._reset_overview_cache()
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        assert client.get(f"{SUMMARY_PATH}?windows=1h").status_code == 200
+        assert client.get(f"{SUMMARY_PATH}?windows=1h").status_code == 200
+        assert client.get(f"{SUMMARY_PATH}?windows=24h").status_code == 200
+        assert client.get("/api/v1/pools/provisioner/other-worker/utilization/summary?windows=1h").status_code == 200
+
+    assert calls == [{"1h": 3600}, {"24h": 86400}, {"1h": 3600}]
 
 
 @pytest.mark.parametrize(

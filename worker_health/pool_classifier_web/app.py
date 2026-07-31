@@ -5,11 +5,14 @@ from __future__ import annotations
 from collections import Counter
 import base64
 import binascii
+import copy
 import json
 from importlib.metadata import PackageNotFoundError, version
 import logging
 import math
 import os
+from threading import Lock
+from time import monotonic
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask, Response, abort, jsonify, render_template, request
@@ -42,6 +45,44 @@ DEFAULT_OBSERVED_START_LAG_SLO_SECONDS = 4 * 60 * 60
 DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES = 5
 COVERAGE_STALE_AFTER = timedelta(hours=1)
 REPOSITORY_URL = "https://github.com/mozilla-platform-ops/pool-classifier"
+DEFAULT_OVERVIEW_CACHE_TTL_SECONDS = 30
+
+# Dashboard aggregates are intentionally process-local: metric definitions are
+# still evolving, so a short TTL is safer and simpler than persisted rollups.
+_overview_cache: dict[tuple, tuple[float, object]] = {}
+_overview_cache_lock = Lock()
+
+
+def _overview_cache_ttl_seconds() -> float:
+    """Return the configured short-lived cache duration, or disable caching."""
+    try:
+        return max(0, float(os.environ.get("OVERVIEW_CACHE_TTL_SECONDS", DEFAULT_OVERVIEW_CACHE_TTL_SECONDS)))
+    except ValueError:
+        logger.warning("OVERVIEW_CACHE_TTL_SECONDS must be numeric; disabling overview cache")
+        return 0
+
+
+def _cached_overview_result(key: tuple, calculate):
+    """Return a defensive copy of a short-lived process-local aggregate."""
+    ttl = _overview_cache_ttl_seconds()
+    if not ttl:
+        return calculate()
+    now = monotonic()
+    with _overview_cache_lock:
+        cached = _overview_cache.get(key)
+        if cached is not None and cached[0] > now:
+            return copy.deepcopy(cached[1])
+
+    result = calculate()
+    with _overview_cache_lock:
+        _overview_cache[key] = (now + ttl, copy.deepcopy(result))
+    return result
+
+
+def _reset_overview_cache() -> None:
+    """Clear process-local aggregate state (primarily useful to tests)."""
+    with _overview_cache_lock:
+        _overview_cache.clear()
 
 
 def _application_version() -> str:
@@ -359,6 +400,23 @@ def _public_pool_summary(pool, summary: dict | None, now: datetime) -> dict:
     }
 
 
+def _global_pool_summaries(dsn: str) -> dict:
+    """Query standard dashboard windows once per short cache lifetime."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    return pool_summaries_global(
+        dsn,
+        CONSECUTIVE_FAILURE_ALERT,
+        (now - timedelta(hours=1)).isoformat(),
+        (now - timedelta(hours=24)).isoformat(),
+    )
+
+
+def _global_observed_start_lag_summaries(dsn: str) -> dict:
+    """Query the overview's fixed seven-day lag window once per TTL."""
+    end = datetime.now(timezone.utc).replace(microsecond=0)
+    return observed_start_lag_summaries_global(dsn, (end - timedelta(days=7)).isoformat(), end.isoformat())
+
+
 def create_app() -> Flask:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = Flask(__name__)
@@ -391,10 +449,6 @@ def create_app() -> Flask:
     def index():
         now_dt = datetime.now(timezone.utc)
         now = now_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        since_1h = (now_dt.replace(microsecond=0) - timedelta(hours=1)).isoformat()
-        since_24h = (now_dt.replace(microsecond=0) - timedelta(hours=24)).isoformat()
-        lag_end = now_dt.replace(microsecond=0).isoformat()
-        lag_start = (now_dt.replace(microsecond=0) - timedelta(days=7)).isoformat()
         # One pair of GROUP BY pool_id queries for every pool, on one connection
         # (vs ~7 queries per pool on a per-pool connection). See PC_DB_REFACTOR.md.
         summaries: dict = {}
@@ -402,11 +456,17 @@ def create_app() -> Flask:
         dsn = os.environ.get("DATABASE_URL")
         if dsn:
             try:
-                summaries = pool_summaries_global(dsn, CONSECUTIVE_FAILURE_ALERT, since_1h, since_24h)
+                summaries = _cached_overview_result(
+                    ("pool-summaries", dsn, ("1h", "24h")),
+                    lambda: _global_pool_summaries(dsn),
+                )
             except Exception as e:
                 logger.warning("index: pool_summaries_global failed: %s", e)
             try:
-                lag_summaries = observed_start_lag_summaries_global(dsn, lag_start, lag_end)
+                lag_summaries = _cached_overview_result(
+                    ("observed-start-lag", dsn, "7d"),
+                    lambda: _global_observed_start_lag_summaries(dsn),
+                )
             except Exception as e:
                 logger.warning("index: observed_start_lag_summaries_global failed: %s", e)
 
@@ -472,12 +532,17 @@ def create_app() -> Flask:
 
     @app.get("/patterns")
     def patterns():
-        since = (datetime.now(timezone.utc) - timedelta(hours=24)).replace(microsecond=0).isoformat()
         hits: dict[str, int] = {}
         try:
             dsn = os.environ.get("DATABASE_URL")
             if dsn:
-                hits = count_category_hits_global(dsn, since)
+                hits = _cached_overview_result(
+                    ("category-hits", dsn, "24h"),
+                    lambda: count_category_hits_global(
+                        dsn,
+                        (datetime.now(timezone.utc) - timedelta(hours=24)).replace(microsecond=0).isoformat(),
+                    ),
+                )
         except Exception as e:
             logger.warning("patterns: hit-count query failed: %s", e)
         # All patterns, including disabled — the page is for inspecting config.
@@ -612,11 +677,9 @@ def create_app() -> Flask:
         if dsn:
             now = datetime.now(timezone.utc).replace(microsecond=0)
             try:
-                summaries = pool_summaries_global(
-                    dsn,
-                    CONSECUTIVE_FAILURE_ALERT,
-                    (now - timedelta(hours=1)).isoformat(),
-                    (now - timedelta(hours=24)).isoformat(),
+                summaries = _cached_overview_result(
+                    ("pool-summaries", dsn, ("1h", "24h")),
+                    lambda: _global_pool_summaries(dsn),
                 )
             except Exception as exc:  # noqa: BLE001 - read-only dashboard endpoint remains available
                 logger.warning("pool summary: aggregate query failed: %s", exc)
@@ -684,7 +747,10 @@ def create_app() -> Flask:
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:
             return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
-        result = pc.storage.get_utilization_summary(windows)
+        result = _cached_overview_result(
+            ("utilization-summary", provisioner, worker_type, tuple(windows.items()), id(pc.storage)),
+            lambda: pc.storage.get_utilization_summary(windows),
+        )
         result.update({"api_version": 1, "availability_mode": pc.availability_mode})
         return jsonify(result)
 
