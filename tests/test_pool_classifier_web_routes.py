@@ -274,6 +274,44 @@ def test_overview_utilization_batch_returns_enabled_pools_and_caches_result(monk
     assert calls == [{"1h": 3600, "24h": 86400}, {"1h": 3600, "24h": 86400}]
 
 
+def test_overview_utilization_batch_caps_cold_database_workers(monkeypatch):
+    worker_limits = []
+
+    class RecordingExecutor:
+        def __init__(self, max_workers):
+            worker_limits.append(max_workers)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def map(self, function, values):
+            return map(function, values)
+
+    class Storage:
+        def get_utilization_summary(self, windows):
+            return {"windows": {name: {"status": "ok"} for name in windows}}
+
+    pools = [Pool(f"pool-{index}", "proj", f"worker-{index}", "*/15 * * * *") for index in range(5)]
+    classifiers = {
+        (pool.provisioner, pool.worker_type): SimpleNamespace(storage=Storage(), availability_mode="recent_contact")
+        for pool in pools
+    }
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: pools)
+    monkeypatch.setattr(app_module, "_get_classifier", lambda provisioner, worker_type: classifiers[(provisioner, worker_type)])
+    monkeypatch.setattr(app_module, "ThreadPoolExecutor", RecordingExecutor)
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/api/v1/overview/utilization?windows=1h,24h")
+
+    assert response.status_code == 200
+    assert worker_limits == [4]
+
+
 @pytest.mark.parametrize(
     ("seconds", "expected_class"),
     [

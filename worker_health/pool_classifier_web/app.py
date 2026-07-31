@@ -6,6 +6,7 @@ from collections import Counter
 import base64
 import binascii
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import json
 from importlib.metadata import PackageNotFoundError, version
 import logging
@@ -46,6 +47,7 @@ DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES = 5
 COVERAGE_STALE_AFTER = timedelta(hours=1)
 REPOSITORY_URL = "https://github.com/mozilla-platform-ops/pool-classifier"
 DEFAULT_OVERVIEW_CACHE_TTL_SECONDS = 30
+MAX_OVERVIEW_UTILIZATION_QUERIES = 4
 
 # Dashboard aggregates are intentionally process-local: metric definitions are
 # still evolving, so a short TTL is safer and simpler than persisted rollups.
@@ -423,18 +425,27 @@ def _overview_utilization_summaries(windows: dict[str, int]) -> dict:
     pool_keys = tuple((pool.provisioner, pool.worker_type) for pool in pools)
 
     def calculate() -> dict:
-        summaries = {}
+        classifiers = []
         for pool in pools:
             pc = _get_classifier(pool.provisioner, pool.worker_type)
-            if pc is None:
-                continue
+            if pc is not None:
+                classifiers.append((pool, pc))
+
+        def summarize(pool_and_classifier):
+            pool, pc = pool_and_classifier
             result = _cached_overview_result(
                 ("utilization-summary", pool.provisioner, pool.worker_type, tuple(windows.items()), id(pc.storage)),
                 lambda: pc.storage.get_utilization_summary(windows),
             )
             result.update({"availability_mode": pc.availability_mode})
-            summaries[f"{pool.provisioner}/{pool.worker_type}"] = result
-        return summaries
+            return f"{pool.provisioner}/{pool.worker_type}", result
+
+        if not classifiers:
+            return {}
+        # Cold summaries are independent per pool. Match the previous browser
+        # ceiling while keeping the whole operation behind one HTTP request.
+        with ThreadPoolExecutor(max_workers=min(MAX_OVERVIEW_UTILIZATION_QUERIES, len(classifiers))) as executor:
+            return dict(executor.map(summarize, classifiers))
 
     return _cached_overview_result(
         ("overview-utilization-summaries", pool_keys, tuple(windows.items())),
