@@ -10,11 +10,13 @@ Requires a live Postgres instance. Skip unless PC_TEST_DATABASE_URL is set.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 psycopg = pytest.importorskip("psycopg")
 
+from worker_health.pool_classifier_web import app as app_module  # noqa: E402
 from worker_health.pool_classifier_web.scripts.migrate import apply_migrations  # noqa: E402
 
 DSN = os.environ.get("PC_TEST_DATABASE_URL", "")
@@ -30,6 +32,13 @@ SUMMARY_URL = f"/api/v1/pools/{PROVISIONER}/{WORKER_TYPE}/summary"
 FAILURES_URL = f"/api/v1/pools/{PROVISIONER}/{WORKER_TYPE}/failures"
 WORKERS_URL = f"/api/v1/pools/{PROVISIONER}/{WORKER_TYPE}/workers"
 CLASSIFY_URL = f"/classify/{PROVISIONER}/{WORKER_TYPE}"
+
+
+@pytest.fixture(autouse=True)
+def _clear_process_local_overview_cache():
+    app_module._reset_overview_cache()
+    yield
+    app_module._reset_overview_cache()
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -169,8 +178,9 @@ def test_utilization_api_postgres_integration(client):
 
 
 def test_failures_and_workers_api_postgres_integration(client):
-    start = "2026-07-21T10:00:00+00:00"
-    end = "2026-07-21T11:00:00+00:00"
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    start = (now - timedelta(minutes=5)).isoformat()
+    end = (now + timedelta(minutes=5)).isoformat()
     with psycopg.connect(DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
