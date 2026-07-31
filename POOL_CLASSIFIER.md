@@ -26,7 +26,7 @@ worker_health/
     test_web_app.py                   # Flask integration tests
     test_postgres_storage.py          # storage parity tests
 pc_start.sh                           # convenience: run the flask app
-pc_fetch_data.sh                      # convenience: POST /classify/* for all pools
+pc_fetch_data.sh                      # convenience: POST /classify-all for all pools
 ```
 
 ## Local dev
@@ -77,7 +77,7 @@ Then:
 # Single pool
 curl -s -X POST localhost:8080/classify/proj-autophone/gecko-t-lambda-perf-a55 | jq .
 
-# Every enabled non-VM pool (autophone first, then releng-hardware, shuffled within each phase)
+# Every enabled non-VM pool through the aggregate scheduler path
 bash pc_fetch_data.sh
 
 # Intentionally include `-vms` worker types too

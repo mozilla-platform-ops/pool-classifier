@@ -77,8 +77,8 @@ truth — there is no terraform pool list.
 | `GET /pools/<prov>/<wt>` | IAP | Per-pool page |
 | `GET /pools/<prov>/<wt>/overview.md` | IAP | Markdown report |
 | `GET /pools/<prov>/<wt>/unclassified/<task>.log` | IAP | Streamed unclassified log |
-| `POST /classify/<prov>/<wt>` | OIDC | Classify one pool (manual / `pc_fetch_data.sh`) |
-| `POST /classify-all` | OIDC | Sequential classify of all enabled pools (Scheduler) |
+| `POST /classify/<prov>/<wt>` | OIDC | Classify one pool manually |
+| `POST /classify-all` | OIDC | Sequential classify of all enabled pools (Scheduler / `pc_fetch_data.sh`) |
 
 ## Deploying
 

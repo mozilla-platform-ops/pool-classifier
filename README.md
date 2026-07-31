@@ -86,7 +86,7 @@ Trigger classify cycles:
 # Single pool
 curl -s -X POST localhost:8080/classify/proj-autophone/gecko-t-lambda-perf-a55 | jq .
 
-# Every enabled non-VM pool (`-vms` worker types are skipped by default)
+# Every enabled non-VM pool through the same aggregate endpoint as production
 bash pc_fetch_data.sh
 
 # Intentionally include VM pools too

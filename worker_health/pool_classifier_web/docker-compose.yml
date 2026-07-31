@@ -24,6 +24,9 @@ services:
       - ../../:/app
     environment:
       DATABASE_URL: postgresql://pc:pc@postgres/pool_classifier  # pragma: allowlist secret
+      # Keep uv's environment outside the bind-mounted checkout so container
+      # entry points never overwrite the host project's .venv.
+      UV_PROJECT_ENVIRONMENT: /tmp/pool-classifier-venv
     command: run --frozen --no-dev python -m worker_health.pool_classifier_web.scripts.migrate
     depends_on:
       postgres:
