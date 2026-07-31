@@ -154,6 +154,9 @@ def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch)
     assert '5 observed starts' in html
     assert '<span class="ok">4m 12s</span>' in html
     assert "/utilization/summary?windows=1h,24h" in html
+    assert "const UTILIZATION_REQUEST_CONCURRENCY = 4;" in html
+    assert "async function loadUtilizationSummaries()" in html
+    assert "void loadUtilizationSummaries();" in html
 
 
 def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
