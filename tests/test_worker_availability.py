@@ -103,6 +103,27 @@ def test_quarantine_and_unquarantine_transitions(tmp_path):
     assert unquarantine["effective_at"] == unquarantined_at.isoformat()
 
 
+def test_detail_render_uses_quarantine_snapshot_without_taskcluster(tmp_path, monkeypatch):
+    classifier, storage = _classifier(tmp_path)
+    observed = datetime(2026, 7, 14, 10, 0, tzinfo=timezone.utc).isoformat()
+    until = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc).isoformat()
+    storage.upsert_worker_availability_state(
+        "worker-1", "group-1", False, True, None, until, "quarantine", observed, observed,
+    )
+    storage.upsert_quarantine_entry("worker-1", until, "hardware repair", observed, "operator", observed)
+    storage.commit()
+    monkeypatch.setattr(
+        classifier,
+        "_list_quarantined_workers",
+        lambda: pytest.fail("detail rendering must not call Taskcluster"),
+    )
+
+    html = classifier.render_html()
+
+    assert "hardware repair" in html
+    assert "Snapshot:" in html
+
+
 def test_configurable_threshold_and_missing_contact(tmp_path):
     classifier, storage = _classifier(tmp_path, threshold=600)
     observed = datetime(2026, 7, 14, 10, 0, tzinfo=timezone.utc)

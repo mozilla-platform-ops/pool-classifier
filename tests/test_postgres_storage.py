@@ -246,6 +246,34 @@ def test_worker_availability_storage_parity(sqlite, pg):
         assert sqlite_state[field] == postgres_state[field]
 
 
+def test_current_quarantine_details_uses_state_as_the_source_of_truth(sqlite, pg):
+    observed = "2026-07-14T10:01:00+00:00"
+    until = "2026-07-14T12:00:00+00:00"
+    for storage in (sqlite, pg):
+        storage.upsert_worker_availability_state(
+            "current", "group-1", False, True, None, until, "quarantine", observed, observed,
+        )
+        storage.upsert_worker_availability_state(
+            "cleared", "group-2", True, False, None, None, "unquarantine", observed, observed,
+        )
+        storage.upsert_quarantine_entry("current", until, "hardware repair", observed, "operator", observed)
+        # Historical metadata alone must not make a cleared worker look quarantined.
+        storage.upsert_quarantine_entry("cleared", until, "old reason", observed, "operator", observed)
+        storage.commit()
+
+    expected = {
+        "current": {
+            "quarantine_until": until,
+            "reason": "hardware repair",
+            "set_at": observed,
+            "client_id": "operator",
+            "observed_at": observed,
+        },
+    }
+    assert sqlite.get_current_quarantine_details() == expected
+    assert pg.get_current_quarantine_details() == expected
+
+
 def test_worker_availability_mode_cutover_resets_only_availability_history(sqlite, pg):
     observed = "2026-07-22T10:00:00+00:00"
     for storage in (sqlite, pg):

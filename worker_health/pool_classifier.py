@@ -1379,18 +1379,11 @@ class PoolClassifier:
         since_1d = (now - timedelta(days=1)).isoformat()
         since_12h = (now - timedelta(hours=12)).isoformat()
         workers = self._query_workers()
-        if (
-            self._cached_quarantined is not None
-            and time.time() - self._last_quarantine_refresh < WORKER_REFRESH_INTERVAL
-        ):
-            quarantined = self._cached_quarantined
-            quarantine_details = self._cached_quarantine_details
-        else:
-            quarantined = self._list_quarantined_workers()
-            quarantine_details = self._update_quarantine_cache(quarantined)
-            self._cached_quarantined = quarantined
-            self._cached_quarantine_details = quarantine_details
-            self._last_quarantine_refresh = time.time()
+        quarantine_details = self.storage.get_current_quarantine_details()
+        quarantined = {
+            worker_id: details["quarantine_until"]
+            for worker_id, details in quarantine_details.items()
+        }
         windowed_sr = self._query_windowed_sr()
         heatmap = self._query_heatmap(since_12h)
         return self._write_html(
@@ -1888,9 +1881,14 @@ class PoolClassifier:
         if quarantine_details:
             quarantine_count = len(quarantine_details)
             quarantine_label = "worker" if quarantine_count == 1 else "workers"
+            snapshot_at = max(
+                (details.get("observed_at") for details in quarantine_details.values() if details.get("observed_at")),
+                default=None,
+            )
+            snapshot_note = f" Snapshot: {fmt(snapshot_at)}." if snapshot_at else ""
             parts += [
                 '<h2 id="s-quarantined">Quarantined Workers</h2>',
-                f'<p class="gen">{quarantine_count} {quarantine_label} currently quarantined.</p>',
+                f'<p class="gen">{quarantine_count} {quarantine_label} currently quarantined.{snapshot_note}</p>',
                 "<table>",
                 "  <thead><tr>",
                 "    <th>Worker</th><th>Reason</th><th>Set By</th><th>Set</th>"

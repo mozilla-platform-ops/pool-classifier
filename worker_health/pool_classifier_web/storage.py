@@ -573,6 +573,26 @@ class SqliteStorage:
     def get_quarantine_cache(self) -> Dict[str, dict]:
         return {row["worker_id"]: dict(row) for row in self.db.execute("SELECT * FROM quarantine_cache")}
 
+    def get_current_quarantine_details(self) -> Dict[str, dict]:
+        """Return current quarantine state enriched with any cached metadata."""
+        rows = self.db.execute(
+            "SELECT state.worker_id, state.quarantine_until, state.observed_at,"
+            " cache.reason, cache.set_at, cache.client_id"
+            " FROM worker_availability_state AS state"
+            " LEFT JOIN quarantine_cache AS cache ON cache.worker_id = state.worker_id"
+            " WHERE state.quarantined = 1 ORDER BY state.worker_id",
+        )
+        return {
+            row["worker_id"]: {
+                "quarantine_until": row["quarantine_until"],
+                "reason": row["reason"] or "",
+                "set_at": row["set_at"] or "",
+                "client_id": row["client_id"] or "",
+                "observed_at": row["observed_at"],
+            }
+            for row in rows
+        }
+
     def get_worker_availability_states(self) -> Dict[str, dict]:
         return {
             row["worker_id"]: dict(row)
@@ -1568,6 +1588,30 @@ class PostgresStorage:
                 d["fetched_at"] = _to_iso(d["fetched_at"])
                 result[d["worker_id"]] = d
         return result
+
+    def get_current_quarantine_details(self) -> Dict[str, dict]:
+        """Return current quarantine state enriched with any cached metadata."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT state.worker_id, state.quarantine_until, state.observed_at,"
+                " cache.reason, cache.set_at, cache.client_id"
+                " FROM worker_availability_state AS state"
+                " LEFT JOIN quarantine_cache AS cache"
+                "   ON cache.pool_id = state.pool_id AND cache.worker_id = state.worker_id"
+                " WHERE state.pool_id = %s AND state.quarantined = TRUE ORDER BY state.worker_id",
+                (self.pool_id,),
+            )
+            rows = cur.fetchall()
+        return {
+            row["worker_id"]: {
+                "quarantine_until": _to_iso(row["quarantine_until"]),
+                "reason": row["reason"] or "",
+                "set_at": _to_iso(row["set_at"]) or "",
+                "client_id": row["client_id"] or "",
+                "observed_at": _to_iso(row["observed_at"]),
+            }
+            for row in rows
+        }
 
     def get_worker_availability_states(self) -> Dict[str, dict]:
         with self._cursor() as cur:
