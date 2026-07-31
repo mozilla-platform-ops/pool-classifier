@@ -7,7 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from worker_health.pool_classifier_web import storage as storage_module
-from worker_health.pool_classifier_web.scripts import create_unresolved_task_run_index, migrate
+from worker_health.pool_classifier_web.scripts import (
+    create_unresolved_task_run_index,
+    db_maintenance,
+    migrate,
+)
 from worker_health.pool_classifier_web.storage import PostgresStorage
 
 
@@ -91,6 +95,38 @@ def test_concurrent_index_command_uses_autocommit_and_verifies_index(monkeypatch
     )
     assert ("SELECT pg_advisory_lock(%s)", (migrate.MIGRATION_LOCK_ID,)) in cursor.executed
     assert ("SELECT pg_advisory_unlock(%s)", (migrate.MIGRATION_LOCK_ID,)) in cursor.executed
+
+
+def test_db_maintenance_dispatches_only_allowlisted_operation(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setitem(
+        db_maintenance.OPERATIONS,
+        "create-unresolved-task-run-index",
+        lambda dsn: calls.append(dsn),
+    )
+
+    db_maintenance.run_operation("create-unresolved-task-run-index", "postgresql://example")
+
+    assert calls == ["postgresql://example"]
+    output = capsys.readouterr().out
+    assert '"event": "db_maintenance_started"' in output
+    assert '"event": "db_maintenance_completed"' in output
+
+
+def test_db_maintenance_rejects_unknown_operation():
+    try:
+        db_maintenance.run_operation("drop-everything", "postgresql://example")
+    except ValueError as exc:
+        assert "unknown maintenance operation" in str(exc)
+    else:
+        raise AssertionError("unknown operation was accepted")
+
+
+def test_db_maintenance_main_requires_database_url(monkeypatch, capsys):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    assert db_maintenance.main(["--operation", "create-unresolved-task-run-index"]) == 1
+    assert "DATABASE_URL not set" in capsys.readouterr().err
 
 
 def test_postgres_storage_initialization_does_not_apply_migrations(monkeypatch):

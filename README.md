@@ -154,23 +154,28 @@ timestamp columns without backfilling historical rows; the observation-timestamp
 backfill is a separate operational task.
 
 Use the maintenance job only for explicitly reviewed index work and operational
-backfills; it is not the migration job. For example, after the migration job
-has recorded migration 007, point the maintenance job at the release image and
-execute it manually:
+backfills; it is not the migration job. Terraform creates this durable runner
+once. Each execution selects an allowlisted operation from the release image,
+so normal migrations and later maintenance operations do not require Terraform
+changes. For example, after the migration job has recorded migration 007, point
+the maintenance job at the release image and execute the concurrent-index
+operation manually:
 
 ```sh
 IMAGE=us-west1-docker.pkg.dev/relops-pool-classifier/pool-classifier/app:vVERSION
 gcloud run jobs update pool-classifier-db-maintenance \
   --image="$IMAGE" --region=us-west1 --project=relops-pool-classifier
 gcloud run jobs execute pool-classifier-db-maintenance \
+  --args="-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,create-unresolved-task-run-index" \
   --wait --region=us-west1 --project=relops-pool-classifier
 ```
 
-The job runs `CREATE INDEX CONCURRENTLY` for
+The `create-unresolved-task-run-index` operation runs `CREATE INDEX CONCURRENTLY` for
 `idx_task_results_unresolved` outside a transaction and fails if migration 007
-is absent or the resulting index is invalid. Inspect its Cloud Logging output
-before treating the release as complete. This remains a manual release step
-until the dedicated migration-deployment work is implemented.
+is absent or the resulting index is invalid. The job has no default operation:
+executing it without `--args` fails visibly. Inspect its structured Cloud
+Logging output before treating the release as complete. This remains a manual
+release step until the dedicated migration-deployment work is implemented.
 
 Infrastructure changes live under
 `worker_health/pool_classifier_web/terraform/`:

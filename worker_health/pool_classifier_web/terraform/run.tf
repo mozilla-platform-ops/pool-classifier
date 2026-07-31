@@ -180,9 +180,12 @@ resource "google_cloud_run_v2_job" "migrate" {
   ]
 }
 
-# This job performs heavyweight, explicitly triggered database maintenance.
-# It shares the production service account, DATABASE_URL secret, and VPC path
-# so it can reach Cloud SQL, but it is never invoked by a web-service startup.
+# This durable job performs heavyweight, explicitly triggered database
+# maintenance.  Each execution must select an allowlisted operation with
+# --args; this lets future reviewed maintenance work reuse the runner without
+# Terraform changes.  It shares the production service account, DATABASE_URL
+# secret, and VPC path so it can reach Cloud SQL, but it is never invoked by a
+# web-service startup.
 resource "google_cloud_run_v2_job" "db_maintenance" {
   name     = "pool-classifier-db-maintenance"
   location = var.region
@@ -201,7 +204,7 @@ resource "google_cloud_run_v2_job" "db_maintenance" {
       containers {
         image   = local.image
         command = ["python"]
-        args    = ["-m", "worker_health.pool_classifier_web.scripts.create_unresolved_task_run_index"]
+        args    = ["-m", "worker_health.pool_classifier_web.scripts.db_maintenance"]
 
         env {
           name = "DATABASE_URL"
