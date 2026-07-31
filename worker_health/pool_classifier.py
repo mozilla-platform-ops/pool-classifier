@@ -2245,7 +2245,7 @@ class PoolClassifier:
             "  }",
             "  document.querySelectorAll('table:not(.not-sortable) th').forEach(th => th.addEventListener('click', () => sortTable(th)));",
             "</script>",
-            f'<p class="footer">Generated: <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
+            f'<p class="footer">generated on <span class="utc-time" data-utc="{now.isoformat()}">{now.strftime("%Y-%m-%d %H:%M:%S UTC")}</span></p>',
             "</body>",
             "</html>",
             "",

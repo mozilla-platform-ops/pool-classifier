@@ -97,7 +97,7 @@ def test_pool_html_serves_complete_snapshot_without_constructing_a_classifier(mo
         lambda *_args: {
             "source_at": "2026-07-31T12:00:00+00:00",
             "generated_at": "2026-07-31T12:01:00+00:00",
-            "payload": {"detail_html": "<html><body>saved detail</body></html>"},
+            "payload": {"detail_html": "<html><body>saved detail<p class=\"footer\">generated on test</p></body></html>"},
         },
     )
     monkeypatch.setattr(app_module, "_get_classifier", lambda *_args: pytest.fail("must use snapshot"))
@@ -108,7 +108,7 @@ def test_pool_html_serves_complete_snapshot_without_constructing_a_classifier(mo
         response = client.get("/pools/provisioner/worker-type")
 
     assert b"saved detail" in response.data
-    assert b"Snapshot source: 2026-07-31T12:00:00+00:00" in response.data
+    assert b"data from test" in response.data
     assert response.headers["X-Pool-Classifier-Snapshot-Source"] == "2026-07-31T12:00:00+00:00"
 
 
@@ -157,6 +157,18 @@ def test_default_lag_visualization_uses_snapshot(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.json["buckets"] == []
     assert response.json["snapshot"]["stale"] is False
+
+
+def test_default_lag_visualization_falls_back_to_a_bounded_live_window(monkeypatch, tmp_path):
+    storage = _api_storage(tmp_path)
+    monkeypatch.setattr(app_module, "_read_dashboard_snapshot", lambda *_args: None)
+    client = _api_client(monkeypatch, storage)
+
+    response = client.get("/api/v1/pools/provisioner/worker-type/observed-start-lag/visualization")
+
+    assert response.status_code == 200
+    assert response.json["api_version"] == 1
+    assert "snapshot" not in response.json
 
 
 def test_api_v1_discovery_lists_versioned_endpoints():
@@ -258,7 +270,7 @@ def test_index_uses_overview_snapshot_without_global_aggregates(monkeypatch):
         response = client.get("/")
 
     assert response.status_code == 200
-    assert b"Snapshot source:" in response.data
+    assert b"data from" in response.data
 
 
 def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):

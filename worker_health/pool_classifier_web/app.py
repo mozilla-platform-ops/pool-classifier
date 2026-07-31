@@ -169,9 +169,15 @@ def _utilization_summary_windows() -> dict[str, int]:
     return {name: seconds for name, seconds in UTILIZATION_WINDOWS.items() if name in names}
 
 
-def _observed_start_lag_parameters() -> tuple[str, str, int]:
-    start = _parse_utilization_datetime("start", request.args.get("start"))
-    end = _parse_utilization_datetime("end", request.args.get("end"))
+def _observed_start_lag_parameters(default_window_seconds: int | None = None) -> tuple[str, str, int]:
+    start_value = request.args.get("start")
+    end_value = request.args.get("end")
+    if start_value is None and end_value is None and default_window_seconds is not None:
+        end = datetime.now(timezone.utc).replace(microsecond=0)
+        start = end - timedelta(seconds=default_window_seconds)
+    else:
+        start = _parse_utilization_datetime("start", start_value)
+        end = _parse_utilization_datetime("end", end_value)
     if end <= start:
         raise ValueError("end must be after start")
     if (end - start).total_seconds() > MAX_UTILIZATION_RANGE_SECONDS:
@@ -481,6 +487,18 @@ def _snapshot_metadata(snapshot: dict) -> dict:
     }
 
 
+def _snapshot_freshness_label(metadata: dict) -> str:
+    """Return the concise, user-facing freshness label for a snapshot."""
+    source_at = _parse_utilization_datetime("source_at", metadata["source_at"])
+    label = _timestamp_label("data from", source_at)
+    return f"{label} (stale)" if metadata["stale"] else label
+
+
+def _timestamp_label(prefix: str, timestamp: datetime) -> str:
+    """Format the timestamp shown in dashboard footers."""
+    return f"{prefix} {timestamp.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+
+
 def _read_dashboard_snapshot(dsn: str | None, scope: str, pool_id: str = "") -> dict | None:
     if not dsn:
         return None
@@ -581,7 +599,7 @@ def create_app() -> Flask:
     @app.get("/")
     def index():
         now_dt = datetime.now(timezone.utc)
-        now = now_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        now = _timestamp_label("generated on", now_dt)
         # One pair of GROUP BY pool_id queries for every pool, on one connection
         # (vs ~7 queries per pool on a per-pool connection). See PC_DB_REFACTOR.md.
         summaries: dict = {}
@@ -594,11 +612,7 @@ def create_app() -> Flask:
                 summaries = payload.get("pool_summaries", {})
                 lag_summaries = payload.get("lag_summaries", {})
                 metadata = _snapshot_metadata(snapshot)
-                stale = " — stale" if metadata["stale"] else ""
-                now = (
-                    f"Snapshot source: {metadata['source_at']}; generated: {metadata['generated_at']}"
-                    f"{stale}"
-                )
+                now = _snapshot_freshness_label(metadata)
             else:
                 overview_pool_ids = tuple(
                     f"{pool.provisioner}/{pool.worker_type}"
@@ -705,7 +719,7 @@ def create_app() -> Flask:
             "patterns.html",
             patterns=rows,
             hits=hits,
-            generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            generated=_timestamp_label("generated on", datetime.now(timezone.utc)),
         )
 
     @app.get("/pool-discovery")
@@ -798,13 +812,14 @@ def create_app() -> Flask:
         )
         if snapshot and (detail_html := snapshot["payload"].get("detail_html")):
             metadata = _snapshot_metadata(snapshot)
-            stale = " <strong>stale</strong>" if metadata["stale"] else ""
-            freshness = (
-                '<p class="gen">Snapshot source: '
-                f'{metadata["source_at"]}; generated: {metadata["generated_at"]}.{stale}</p>'
-            )
+            detail_html = detail_html.replace('<p class="footer">Generated: ', '<p class="footer">data from ', 1)
+            detail_html = detail_html.replace('<p class="footer">generated on ', '<p class="footer">data from ', 1)
+            if metadata["stale"]:
+                detail_html = detail_html.replace(
+                    "</body>", f'<p class="gen">{_snapshot_freshness_label(metadata)}</p></body>', 1,
+                )
             response = Response(
-                detail_html.replace("<body>", f"<body>{freshness}", 1),
+                detail_html,
                 content_type="text/html; charset=utf-8",
             )
             response.headers["X-Pool-Classifier-Snapshot-Source"] = snapshot["source_at"]
@@ -999,7 +1014,7 @@ def create_app() -> Flask:
                 result["snapshot"] = _snapshot_metadata(snapshot)
                 return jsonify(result)
         try:
-            start, end, slo_seconds = _observed_start_lag_parameters()
+            start, end, slo_seconds = _observed_start_lag_parameters(default_window_seconds=7 * 24 * 60 * 60)
             min_samples = _observed_start_lag_min_samples()
         except ValueError as exc:
             return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
