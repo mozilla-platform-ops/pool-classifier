@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from worker_health.pool_classifier_web import storage as storage_module
 from worker_health.pool_classifier_web.scripts import (
     create_unresolved_task_run_index,
+    datastore_summary,
     db_maintenance,
     migrate,
 )
@@ -143,6 +145,92 @@ def test_db_maintenance_main_requires_database_url(monkeypatch, capsys):
 
     assert db_maintenance.main(["--operation", "create-unresolved-task-run-index"]) == 1
     assert "DATABASE_URL not set" in capsys.readouterr().err
+
+
+class _SummaryCursor:
+    def __init__(self):
+        self.executed = []
+        self.description = []
+        self._result_sets = iter(
+            [
+                [("16.9",)],
+                [("autovacuum", "on")],
+                [("task_results", 12, 3, 4096, None, None, None, None)],
+                [("idx_task_results_worker", 10, 20, 30, 1024)],
+                [("client backend", "idle", "Client", "ClientRead", 2, None)],
+                [(0,)],
+            ],
+        )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executed.append((" ".join(sql.split()), params))
+        if "set_config" in sql:
+            self.description = []
+            self._current = []
+            return
+        self._current = next(self._result_sets)
+        if "SHOW server_version" in sql:
+            names = ["server_version"]
+        elif "pg_settings" in sql:
+            names = ["name", "setting"]
+        elif "pg_stat_user_tables" in sql:
+            names = [
+                "relname", "n_live_tup", "n_dead_tup", "pg_total_relation_size",
+                "last_vacuum", "last_autovacuum", "last_analyze", "last_autoanalyze",
+            ]
+        elif "pg_stat_user_indexes" in sql:
+            names = ["indexrelname", "idx_scan", "idx_tup_read", "idx_tup_fetch", "pg_relation_size"]
+        elif "pg_stat_activity" in sql:
+            names = ["backend_type", "state", "wait_event_type", "wait_event", "count", "max"]
+        else:
+            names = ["count"]
+        self.description = [SimpleNamespace(name=name) for name in names]
+
+    def fetchone(self):
+        return self._current[0]
+
+    def fetchall(self):
+        return self._current
+
+
+def test_datastore_summary_is_read_only_and_structured(monkeypatch):
+    cursor = _SummaryCursor()
+    connection = _Connection(cursor)
+    connect_calls = []
+
+    def connect(*args, **kwargs):
+        connect_calls.append((args, kwargs))
+        return connection
+
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=connect))
+
+    summary = datastore_summary.collect_datastore_summary("postgresql://example")
+
+    assert connect_calls == [(("postgresql://example",), {"autocommit": True})]
+    assert summary["server_version"] == "16.9"
+    assert summary["tables"] == [{"relname": "task_results", "n_live_tup": 12, "n_dead_tup": 3,
+                                   "pg_total_relation_size": 4096, "last_vacuum": None,
+                                   "last_autovacuum": None, "last_analyze": None, "last_autoanalyze": None}]
+    assert summary["task_results_missing_observation_timestamps"] == 0
+    sql = "\n".join(statement for statement, _params in cursor.executed)
+    assert "default_transaction_read_only" in sql
+    assert "statement_timeout" in sql
+    assert "INSERT" not in sql
+    assert "UPDATE" not in sql
+
+
+def test_datastore_summary_emits_one_json_record(monkeypatch, capsys):
+    monkeypatch.setattr(datastore_summary, "collect_datastore_summary", lambda _dsn: {"tables": []})
+
+    datastore_summary.run("postgresql://example", [])
+
+    assert json.loads(capsys.readouterr().out) == {"event": "datastore_summary", "summary": {"tables": []}}
 
 
 def test_postgres_storage_initialization_does_not_apply_migrations(monkeypatch):

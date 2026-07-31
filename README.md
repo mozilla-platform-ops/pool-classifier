@@ -229,6 +229,32 @@ Use `--dry-run` to report the first batch's size without updating rows, or
 `--max-batches=N` for a deliberately bounded maintenance execution. Finish by
 rerunning `--count-only` and confirming it reports zero rows remaining.
 
+### Datastore summary
+
+The `datastore-summary` operation is read-only and emits one structured JSON
+record for comparing a local database with production. It includes PostgreSQL
+and autovacuum settings, core-table live/dead-row estimates and sizes,
+`task_results` index statistics, timestamp-backfill completeness, and grouped
+connection activity. It never emits connection strings or query text; each
+query has a 10-second statement timeout.
+
+Locally, run it against the same database used by the web app:
+
+```sh
+DATABASE_URL=postgresql://pc:pc@localhost:5433/pool_classifier \
+  uv run -m worker_health.pool_classifier_web.scripts.db_maintenance \
+  --operation datastore-summary
+```
+
+For production, first update the maintenance job to the desired release image,
+then execute the same allowlisted operation and inspect its JSON log record:
+
+```sh
+gcloud run jobs execute pool-classifier-db-maintenance \
+  --args="-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,datastore-summary" \
+  --wait --region=us-west1 --project=relops-pool-classifier
+```
+
 Infrastructure changes live under
 `worker_health/pool_classifier_web/terraform/`:
 
