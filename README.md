@@ -163,19 +163,14 @@ gcloud auth login aerickson@firefox.gcp.mozilla.com --update-adc
 
 ### Tagged release image
 
-For a tagged release, derive the commit once from the annotated release tag;
-do not copy a SHA by hand. This command does not change production traffic:
+For a tagged release, use the checked build wrapper. It derives the commit from
+the annotated release tag and rejects an unclean checkout, a tag that is not
+`HEAD`, or a package-version mismatch. It does not change production traffic:
 
 ```sh
 VERSION=VERSION
 scripts/run_local_postgres_tests.sh
-RELEASE_COMMIT="$(git rev-parse "v${VERSION}^{commit}")"
-test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
-test -z "$(git status --porcelain)"
-
-gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_TAG="v$VERSION",COMMIT_SHA="$RELEASE_COMMIT" \
-  --project=relops-pool-classifier .
+scripts/build_release_image.sh "$VERSION"
 ```
 
 ### Ad-hoc revision image
