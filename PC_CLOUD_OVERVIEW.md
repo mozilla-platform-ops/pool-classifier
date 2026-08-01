@@ -14,6 +14,7 @@ local dev, see `POOL_CLASSIFIER.md`.
 | Domain | `pool-classifier.relops.mozilla.com` |
 | Load balancer IP | `34.107.179.124` (A record target) |
 | Cloud Run service | `pool-classifier` |
+| Cloud Run jobs | `pool-classifier-migrate`, `pool-classifier-db-maintenance`, `pool-classifier-db-diagnose` |
 | Cloud Run Console | https://console.cloud.google.com/run/overview?authuser=1&project=relops-pool-classifier |
 | Cloud Run URL (LB-only ingress) | `https://pool-classifier-gpn5d6lwgq-uw.a.run.app` |
 | Cloud SQL instance | `pool-classifier-db` (Postgres 16; db `pool_classifier`, user `pc`) |

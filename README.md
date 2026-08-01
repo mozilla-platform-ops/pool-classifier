@@ -303,12 +303,13 @@ DATABASE_URL=postgresql://pc:pc@localhost:5433/pool_classifier \
   --operation datastore-summary
 ```
 
-For production, first update the maintenance job to the desired release image,
-then execute the same allowlisted operation and inspect its JSON log record:
+For production, first update the dedicated diagnostic job to the desired release
+image, then execute it and inspect its JSON log record:
 
 ```sh
-gcloud run jobs execute pool-classifier-db-maintenance \
-  --args="-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,datastore-summary" \
+gcloud run jobs update pool-classifier-db-diagnose --image="$IMAGE" \
+  --region=us-west1 --project=relops-pool-classifier
+gcloud run jobs execute pool-classifier-db-diagnose \
   --wait --region=us-west1 --project=relops-pool-classifier
 ```
 

@@ -232,7 +232,63 @@ resource "google_cloud_run_v2_job" "db_maintenance" {
 
   # Cloud Build stamps the release image through `gcloud run jobs update`.
   lifecycle {
-    ignore_changes = [template[0].template[0].containers[0].image]
+    ignore_changes = [
+      template[0].template[0].containers[0].image,
+      client,
+      client_version,
+    ]
+  }
+
+  depends_on = [
+    google_secret_manager_secret_version.db_url,
+    google_vpc_access_connector.pc,
+    google_project_service.apis,
+  ]
+}
+
+# This durable, read-only job reports datastore size, vacuum, index, and
+# connection health through Cloud Logging. Keep it separate from maintenance:
+# diagnostics must never accept a mutating operation or arbitrary SQL.
+resource "google_cloud_run_v2_job" "db_diagnose" {
+  name     = "pool-classifier-db-diagnose"
+  location = var.region
+
+  template {
+    template {
+      service_account = google_service_account.pc_run.email
+      timeout         = "300s"
+      max_retries     = 0
+
+      vpc_access {
+        connector = google_vpc_access_connector.pc.id
+        egress    = "PRIVATE_RANGES_ONLY"
+      }
+
+      containers {
+        image   = local.image
+        command = ["python"]
+        args    = ["-m", "worker_health.pool_classifier_web.scripts.datastore_summary"]
+
+        env {
+          name = "DATABASE_URL"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.pc["pc-db-url"].secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  # Cloud Build stamps the release image through `gcloud run jobs update`.
+  lifecycle {
+    ignore_changes = [
+      template[0].template[0].containers[0].image,
+      client,
+      client_version,
+    ]
   }
 
   depends_on = [
