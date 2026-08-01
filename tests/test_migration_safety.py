@@ -171,6 +171,21 @@ def test_db_maintenance_forwards_operation_arguments(monkeypatch):
     assert calls == [("postgresql://example", ["--batch-size", "200"])]
 
 
+def test_db_maintenance_start_lag_operation_uses_database_url(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        db_maintenance.backfill_start_lag_all_pools,
+        "main",
+        lambda argv: calls.append(argv) or 0,
+    )
+
+    db_maintenance.run_operation(
+        "backfill-observed-start-lag", "postgresql://example", ["--lookback-days", "30"],
+    )
+
+    assert calls == [["--database-url", "postgresql://example", "--lookback-days", "30"]]
+
+
 def test_db_maintenance_main_requires_database_url(monkeypatch, capsys):
     monkeypatch.delenv("DATABASE_URL", raising=False)
 

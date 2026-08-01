@@ -35,19 +35,24 @@ with `--backfill-state-file`) to retry them.
 
 ## Every Postgres pool
 
-To drain the eligible backlog for every pool already stored in Postgres, use
-the repository script. It discovers only pools with at least one run missing
-`run_scheduled`, keeps separate retry state for each pool, and repeats bounded
-batches until each pool is drained.
+To enrich the dashboard's current seven-day window for every pool already
+stored in Postgres, use the reviewed Cloud Run maintenance operation. It
+discovers only pools with a recent run missing `run_scheduled` and repeats
+bounded batches until each pool's window is drained.
 
 ```bash
-DATABASE_URL=postgresql://pc:pc@127.0.0.1:5433/pool_classifier \
-uv run --frozen python scripts/backfill_start_lag_all_pools.py
+gcloud run jobs execute pool-classifier-db-maintenance \
+  --args="-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,backfill-observed-start-lag" \
+  --wait --region=us-west1 --project=relops-pool-classifier
 ```
 
-Use `--batch-size`, `--concurrency`, and `--requests-per-second` to tune the
-Queue request load. The script exits nonzero if a pool has exhausted transient
-Queue retries or has an active classifier cycle; rerun it to retry that pool.
+The production operation defaults to `--lookback-days 7`, matching the overview
+and detail dashboards. Pass a larger value explicitly when a historical
+backfill is warranted. Its original local wrapper also accepts
+`--lookback-days`, `--batch-size`, `--concurrency`, and
+`--requests-per-second`. The operation exits nonzero if a pool has exhausted
+transient Queue retries or has an active classifier cycle; rerun it to retry
+that pool.
 
 Press Ctrl-C once to stop after the current pool batch has finished and its
 database updates and state file are durable. The script exits with status 130;

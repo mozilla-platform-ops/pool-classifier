@@ -23,6 +23,7 @@ from worker_health.pool_classifier_web.scripts.create_unresolved_task_run_index 
 from worker_health.pool_classifier_web.scripts.create_utilization_task_run_index import (
     create_utilization_task_run_index,
 )
+from scripts import backfill_start_lag_all_pools
 
 Operation = Callable[[str, list[str]], None]
 
@@ -38,7 +39,18 @@ def _create_utilization_task_run_index(dsn: str, argv: list[str]) -> None:
         raise ValueError("create-utilization-task-run-index does not accept operation arguments")
     create_utilization_task_run_index(dsn)
 
+
+def _backfill_observed_start_lag(dsn: str, argv: list[str]) -> None:
+    """Enrich Queue metadata, defaulting to the dashboard's seven-day window."""
+    exit_code = backfill_start_lag_all_pools.main(
+        ["--database-url", dsn, *argv],
+    )
+    if exit_code:
+        raise RuntimeError(f"observed start-lag backfill exited with status {exit_code}")
+
+
 OPERATIONS: dict[str, Operation] = {
+    "backfill-observed-start-lag": _backfill_observed_start_lag,
     "backfill-m007-task-timestamps": backfill_m007_task_timestamps.run,
     "create-unresolved-task-run-index": _create_unresolved_task_run_index,
     "create-utilization-task-run-index": _create_utilization_task_run_index,

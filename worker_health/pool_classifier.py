@@ -277,6 +277,7 @@ class PoolClassifier:
     def backfill_start_lag(
         self, batch_size: int = 500, concurrency: int = 5, retries: int = 2, requests_per_second: float = 5.0,
         state_file: Optional[Path] = None, should_stop: Optional[Callable[[], bool]] = None,
+        not_before: Optional[str] = None,
     ) -> dict:
         """Enrich one bounded batch of stored runs with Queue schedule metadata.
 
@@ -296,7 +297,7 @@ class PoolClassifier:
                 (item[0], item[1]) for item in pool_state.get("unmatched_runs", [])
                 if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], int)
             }
-            backlog = self.storage.count_task_runs_missing_schedule()
+            backlog = self.storage.count_task_runs_missing_schedule(not_before=not_before)
             logger.info(
                 "[%s/%s] Start-lag backfill backlog: %d runs across %d tasks missing Queue scheduled metadata; "
                 "state file skips %d expired tasks and %d unmatched runs",
@@ -306,7 +307,7 @@ class PoolClassifier:
             rows = []
             offset = 0
             while len(rows) < batch_size:
-                candidates = self.storage.list_task_runs_missing_schedule(batch_size, offset)
+                candidates = self.storage.list_task_runs_missing_schedule(batch_size, offset, not_before=not_before)
                 if not candidates:
                     break
                 offset += len(candidates)

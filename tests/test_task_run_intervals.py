@@ -474,6 +474,36 @@ def test_start_lag_backfill_excludes_unresolved_observed_runs(tmp_path, monkeypa
     assert status_calls == []
 
 
+def test_start_lag_backfill_respects_not_before(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+    for task_id, started_at in (
+        ("old-task", "2026-07-01T10:00:00+00:00"),
+        ("recent-task", "2026-07-14T10:00:00+00:00"),
+    ):
+        storage.record_task_result(
+            task_id, "worker-1", 0, "completed", None, "completed",
+            started_at, "2026-07-14T10:05:00+00:00", "2026-07-14T10:05:00+00:00",
+        )
+    storage.commit()
+    calls = []
+    monkeypatch.setattr(classifier, "_ensure_tc", lambda: None)
+    monkeypatch.setattr(
+        classifier,
+        "_get_task_status",
+        lambda task_id: calls.append(task_id) or {"status": {"runs": [{"runId": 0, "scheduled": "2026-07-14T09:55:00+00:00"}]}},
+    )
+
+    result = classifier.backfill_start_lag(
+        batch_size=10, concurrency=1, retries=0, not_before="2026-07-10T00:00:00+00:00",
+    )
+
+    assert result["enriched_runs"] == 1
+    assert calls == ["recent-task"]
+    assert storage.count_task_runs_missing_schedule() == {"runs": 1, "tasks": 1}
+
+
 def test_start_lag_backfill_finishes_and_persists_a_stop_requested_batch(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)

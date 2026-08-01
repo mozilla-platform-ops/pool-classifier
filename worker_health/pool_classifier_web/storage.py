@@ -276,21 +276,35 @@ class SqliteStorage:
             seen.setdefault(row["worker_id"], set()).add((row["task_id"], row["run_id"]))
         return seen
 
-    def list_task_runs_missing_schedule(self, limit: int, offset: int = 0) -> List[dict]:
+    def list_task_runs_missing_schedule(
+        self, limit: int, offset: int = 0, not_before: Optional[str] = None,
+    ) -> List[dict]:
+        query = (
+            "SELECT task_id, run_id FROM task_results"
+            " WHERE run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL"
+        )
+        parameters: list[object] = []
+        if not_before is not None:
+            query += " AND run_started >= ?"
+            parameters.append(not_before)
+        query += " ORDER BY COALESCE(run_resolved, classified_at) DESC, task_id, run_id LIMIT ? OFFSET ?"
+        parameters.extend((limit, offset))
         return [
             dict(row)
-            for row in self.db.execute(
-                "SELECT task_id, run_id FROM task_results"
-                " WHERE run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL"
-                " ORDER BY COALESCE(run_resolved, classified_at) DESC, task_id, run_id LIMIT ? OFFSET ?",
-                (limit, offset),
-            )
+            for row in self.db.execute(query, parameters)
         ]
 
-    def count_task_runs_missing_schedule(self) -> dict:
-        row = self.db.execute(
+    def count_task_runs_missing_schedule(self, not_before: Optional[str] = None) -> dict:
+        query = (
             "SELECT COUNT(*) AS runs, COUNT(DISTINCT task_id) AS tasks FROM task_results"
-            " WHERE run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL",
+            " WHERE run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL"
+        )
+        parameters: list[object] = []
+        if not_before is not None:
+            query += " AND run_started >= ?"
+            parameters.append(not_before)
+        row = self.db.execute(
+            query, parameters,
         ).fetchone()
         return {"runs": row["runs"], "tasks": row["tasks"]}
 
@@ -1397,23 +1411,34 @@ class PostgresStorage:
                 seen.setdefault(row["worker_id"], set()).add((row["task_id"], row["run_id"]))
         return seen
 
-    def list_task_runs_missing_schedule(self, limit: int, offset: int = 0) -> List[dict]:
+    def list_task_runs_missing_schedule(
+        self, limit: int, offset: int = 0, not_before: Optional[str] = None,
+    ) -> List[dict]:
+        query = (
+            "SELECT task_id, run_id FROM task_results"
+            " WHERE pool_id = %s AND run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL"
+        )
+        parameters: list[object] = [self.pool_id]
+        if not_before is not None:
+            query += " AND run_started >= %s::timestamptz"
+            parameters.append(not_before)
+        query += " ORDER BY COALESCE(run_resolved, classified_at) DESC, task_id, run_id LIMIT %s OFFSET %s"
+        parameters.extend((limit, offset))
         with self._cursor() as cur:
-            cur.execute(
-                "SELECT task_id, run_id FROM task_results"
-                " WHERE pool_id = %s AND run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL"
-                " ORDER BY COALESCE(run_resolved, classified_at) DESC, task_id, run_id LIMIT %s OFFSET %s",
-                (self.pool_id, limit, offset),
-            )
+            cur.execute(query, parameters)
             return [dict(row) for row in cur.fetchall()]
 
-    def count_task_runs_missing_schedule(self) -> dict:
+    def count_task_runs_missing_schedule(self, not_before: Optional[str] = None) -> dict:
+        query = (
+            "SELECT COUNT(*) AS runs, COUNT(DISTINCT task_id) AS tasks FROM task_results"
+            " WHERE pool_id = %s AND run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL"
+        )
+        parameters: list[object] = [self.pool_id]
+        if not_before is not None:
+            query += " AND run_started >= %s::timestamptz"
+            parameters.append(not_before)
         with self._cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) AS runs, COUNT(DISTINCT task_id) AS tasks FROM task_results"
-                " WHERE pool_id = %s AND run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL",
-                (self.pool_id,),
-            )
+            cur.execute(query, parameters)
             row = cur.fetchone()
             return {"runs": row["runs"], "tasks": row["tasks"]}
 

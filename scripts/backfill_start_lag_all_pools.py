@@ -8,6 +8,7 @@ import logging
 import os
 import signal
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -32,13 +33,15 @@ class StopAfterCurrentBatch:
         )
 
 
-def pool_ids_with_backlog(database_url: str) -> list[str]:
+def pool_ids_with_backlog(database_url: str, not_before: str) -> list[str]:
     """Return stored pools that still have runs eligible for enrichment."""
     with postgres_connect(database_url, "maintenance") as connection, connection.cursor() as cursor:
         cursor.execute(
             "SELECT pool_id FROM task_results "
             "WHERE run_scheduled IS NULL AND run_started IS NOT NULL AND run_id IS NOT NULL "
+            "AND run_started >= %s::timestamptz "
             "GROUP BY pool_id ORDER BY pool_id",
+            (not_before,),
         )
         return [row[0] for row in cursor.fetchall()]
 
@@ -63,6 +66,7 @@ def backfill_pool(
     retries: int,
     requests_per_second: float,
     state_dir: Path,
+    not_before: str,
     should_stop: Callable[[], bool],
 ) -> tuple[bool, bool, str | None]:
     """Drain one pool's eligible backlog and report a non-fatal skip reason."""
@@ -86,6 +90,7 @@ def backfill_pool(
                 requests_per_second=requests_per_second,
                 state_file=state_file(state_dir, pool_id),
                 should_stop=should_stop,
+                not_before=not_before,
             )
             print(f"{pool_id}: {result}")
             if result.get("stop_requested"):
@@ -108,7 +113,7 @@ def backfill_pool(
         storage.close()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Backfill observed start-lag metadata for every Postgres pool with eligible runs.",
     )
@@ -122,24 +127,35 @@ def main() -> int:
     parser.add_argument("--retries", type=int, default=2, metavar="COUNT")
     parser.add_argument("--requests-per-second", type=float, default=5.0, metavar="RATE")
     parser.add_argument(
+        "--lookback-days", type=int, default=7, metavar="DAYS",
+        help="only enrich runs started within this trailing window (default: 7)",
+    )
+    parser.add_argument(
         "--state-dir",
         type=Path,
         default=Path(".backfill-start-lag-state"),
         help="directory for per-pool Queue skip state",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if not args.database_url:
         parser.error("--database-url or DATABASE_URL is required")
-    if args.batch_size <= 0 or args.concurrency <= 0 or args.retries < 0 or args.requests_per_second <= 0:
-        parser.error("batch-size, concurrency, and requests-per-second must be positive; retries must not be negative")
+    if (
+        args.batch_size <= 0 or args.concurrency <= 0 or args.retries < 0
+        or args.requests_per_second <= 0 or args.lookback_days <= 0
+    ):
+        parser.error(
+            "batch-size, concurrency, requests-per-second, and lookback-days must be positive; "
+            "retries must not be negative"
+        )
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s")
     stop = StopAfterCurrentBatch()
     previous_handler = signal.signal(signal.SIGINT, stop.handle_signal)
     try:
         args.state_dir.mkdir(parents=True, exist_ok=True)
-        pool_ids = pool_ids_with_backlog(args.database_url)
+        not_before = (datetime.now(timezone.utc) - timedelta(days=args.lookback_days)).isoformat()
+        pool_ids = pool_ids_with_backlog(args.database_url, not_before)
         if not pool_ids:
             print("No eligible start-lag backlog found.")
             return 0
@@ -158,6 +174,7 @@ def main() -> int:
                 args.retries,
                 args.requests_per_second,
                 args.state_dir,
+                not_before,
                 lambda: stop.requested,
             )
             if stopped:

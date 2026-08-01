@@ -226,6 +226,24 @@ resource "google_cloud_run_v2_job" "db_maintenance" {
             }
           }
         }
+
+        # The observed-start-lag maintenance operation asks Taskcluster Queue
+        # for historical scheduling metadata. Other operations simply do not
+        # consume this credential.
+        env {
+          name = "TC_TOKEN_JSON"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.pc["pc-tc-token"].secret_id
+              version = "latest"
+            }
+          }
+        }
+
+        env {
+          name  = "TC_ROOT_URL"
+          value = "https://firefox-ci-tc.services.mozilla.com"
+        }
       }
     }
   }
