@@ -15,6 +15,7 @@ import sys
 from collections.abc import Callable
 
 from worker_health.pool_classifier_web.scripts import backfill_m007_task_timestamps
+from worker_health.pool_classifier_web.scripts import backfill_start_lag_all_pools
 from worker_health.pool_classifier_web.scripts import datastore_summary
 from worker_health.pool_classifier_web.scripts import utilization_query_plan
 from worker_health.pool_classifier_web.scripts.create_unresolved_task_run_index import (
@@ -23,7 +24,6 @@ from worker_health.pool_classifier_web.scripts.create_unresolved_task_run_index 
 from worker_health.pool_classifier_web.scripts.create_utilization_task_run_index import (
     create_utilization_task_run_index,
 )
-from scripts import backfill_start_lag_all_pools
 
 Operation = Callable[[str, list[str]], None]
 
