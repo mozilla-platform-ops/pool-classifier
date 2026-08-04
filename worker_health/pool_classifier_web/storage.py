@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -165,6 +166,30 @@ CREATE TABLE IF NOT EXISTS worker_availability_mode (
     mode        TEXT NOT NULL,
     changed_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS worker_recent_task_windows (
+    worker_id TEXT PRIMARY KEY,
+    worker_group TEXT,
+    observed_at TEXT NOT NULL,
+    recent_tasks_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_run_coverage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observed_at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    worker_id TEXT,
+    worker_group TEXT,
+    previous_observed_at TEXT,
+    previous_recent_tasks_json TEXT,
+    current_recent_tasks_json TEXT,
+    previous_window_count INTEGER,
+    current_window_count INTEGER,
+    overlap_count INTEGER,
+    error_type TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_task_run_coverage_events_time
+    ON task_run_coverage_events (observed_at);
 """
 
 
@@ -420,6 +445,39 @@ class SqliteStorage:
         if not historical:
             return None
         return bool(historical.intersection(task_runs))
+
+    def get_recent_task_window(self, worker_id: str) -> Optional[dict]:
+        row = self.db.execute(
+            "SELECT worker_group, observed_at, recent_tasks_json FROM worker_recent_task_windows WHERE worker_id = ?",
+            (worker_id,),
+        ).fetchone()
+        return None if row is None else {**dict(row), "recent_tasks": json.loads(row["recent_tasks_json"])}
+
+    def record_recent_task_window(self, worker_id: str, worker_group: str, task_runs, observed_at: str) -> None:
+        self.db.execute(
+            "INSERT INTO worker_recent_task_windows (worker_id, worker_group, observed_at, recent_tasks_json) VALUES (?,?,?,?)"
+            " ON CONFLICT(worker_id) DO UPDATE SET worker_group=excluded.worker_group, observed_at=excluded.observed_at, recent_tasks_json=excluded.recent_tasks_json",
+            (worker_id, worker_group, observed_at, json.dumps(task_runs)),
+        )
+
+    def record_task_run_coverage_event(self, observed_at: str, reason: str, worker_id: str, worker_group: str,
+                                       previous: Optional[dict], current, overlap_count: Optional[int], error_type: Optional[str] = None) -> None:
+        self.db.execute(
+            "INSERT INTO task_run_coverage_events (observed_at, reason, worker_id, worker_group, previous_observed_at, previous_recent_tasks_json, current_recent_tasks_json, previous_window_count, current_window_count, overlap_count, error_type) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (observed_at, reason, worker_id, worker_group, previous and previous["observed_at"],
+             json.dumps(previous["recent_tasks"]) if previous else None, json.dumps(current) if current is not None else None,
+             len(previous["recent_tasks"]) if previous else None, len(current) if current is not None else None, overlap_count, error_type),
+        )
+        self.db.execute("DELETE FROM task_run_coverage_events WHERE observed_at < datetime(?, '-30 days')", (observed_at,))
+
+    def list_task_run_coverage_events(self, start: str, end: str, limit: int = 100) -> List[dict]:
+        rows = self.db.execute(
+            "SELECT * FROM task_run_coverage_events WHERE observed_at >= ? AND observed_at < ? ORDER BY observed_at DESC, id DESC LIMIT ?",
+            (start, end, limit),
+        )
+        return [{**dict(row), "previous_recent_tasks": json.loads(row["previous_recent_tasks_json"]) if row["previous_recent_tasks_json"] else None,
+                 "current_recent_tasks": json.loads(row["current_recent_tasks_json"]) if row["current_recent_tasks_json"] else None}
+                for row in rows]
 
     def expire_task_run(self, task_id: str, run_id: Optional[int], checked_at: str) -> bool:
         """Stop retrying a definitively expired Taskcluster task reference."""
@@ -1552,6 +1610,26 @@ class PostgresStorage:
         if not historical:
             return None
         return bool(historical.intersection(task_runs))
+
+    def get_recent_task_window(self, worker_id: str) -> Optional[dict]:
+        with self._cursor() as cur:
+            cur.execute("SELECT worker_group, observed_at, recent_tasks FROM worker_recent_task_windows WHERE pool_id = %s AND worker_id = %s", (self.pool_id, worker_id))
+            row = cur.fetchone()
+        return None if row is None else {**dict(row), "observed_at": _to_iso(row["observed_at"])}
+
+    def record_recent_task_window(self, worker_id: str, worker_group: str, task_runs, observed_at: str) -> None:
+        with self._write_cursor() as cur:
+            cur.execute("INSERT INTO worker_recent_task_windows (pool_id, worker_id, worker_group, observed_at, recent_tasks) VALUES (%s,%s,%s,%s::timestamptz,%s::jsonb) ON CONFLICT(pool_id, worker_id) DO UPDATE SET worker_group=EXCLUDED.worker_group, observed_at=EXCLUDED.observed_at, recent_tasks=EXCLUDED.recent_tasks", (self.pool_id, worker_id, worker_group, observed_at, json.dumps(task_runs)))
+
+    def record_task_run_coverage_event(self, observed_at: str, reason: str, worker_id: str, worker_group: str, previous: Optional[dict], current, overlap_count: Optional[int], error_type: Optional[str] = None) -> None:
+        with self._write_cursor() as cur:
+            cur.execute("INSERT INTO task_run_coverage_events (pool_id, observed_at, reason, worker_id, worker_group, previous_observed_at, previous_recent_tasks, current_recent_tasks, previous_window_count, current_window_count, overlap_count, error_type) VALUES (%s,%s::timestamptz,%s,%s,%s,%s::timestamptz,%s::jsonb,%s::jsonb,%s,%s,%s,%s)", (self.pool_id, observed_at, reason, worker_id, worker_group, previous["observed_at"] if previous else None, json.dumps(previous["recent_tasks"]) if previous else None, json.dumps(current) if current is not None else None, len(previous["recent_tasks"]) if previous else None, len(current) if current is not None else None, overlap_count, error_type))
+            cur.execute("DELETE FROM task_run_coverage_events WHERE pool_id = %s AND observed_at < %s::timestamptz - interval '30 days'", (self.pool_id, observed_at))
+
+    def list_task_run_coverage_events(self, start: str, end: str, limit: int = 100) -> List[dict]:
+        with self._cursor() as cur:
+            cur.execute("SELECT id, observed_at, reason, worker_id, worker_group, previous_observed_at, previous_recent_tasks, current_recent_tasks, previous_window_count, current_window_count, overlap_count, error_type FROM task_run_coverage_events WHERE pool_id = %s AND observed_at >= %s::timestamptz AND observed_at < %s::timestamptz ORDER BY observed_at DESC, id DESC LIMIT %s", (self.pool_id, start, end, limit))
+            return [{**dict(row), "observed_at": _to_iso(row["observed_at"]), "previous_observed_at": _to_iso(row["previous_observed_at"])} for row in cur.fetchall()]
 
     def expire_task_run(self, task_id: str, run_id: Optional[int], checked_at: str) -> bool:
         """Stop retrying a definitively expired Taskcluster task reference."""

@@ -909,6 +909,23 @@ def create_app() -> Flask:
             },
         )
 
+    @app.get("/api/v1/pools/<provisioner>/<worker_type>/coverage-breaks")
+    def pool_coverage_breaks(provisioner: str, worker_type: str):
+        try:
+            start, end = _bounded_failure_window()
+        except ValueError as exc:
+            return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
+        pc = _get_classifier(provisioner, worker_type)
+        if pc is None:
+            return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
+        return jsonify({
+            "api_version": 1,
+            "pool_id": f"{provisioner}/{worker_type}",
+            "start_at": start,
+            "end_at": end,
+            "events": pc.storage.list_task_run_coverage_events(start, end),
+        })
+
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/workers")
     def pool_workers(provisioner: str, worker_type: str):
         try:

@@ -223,6 +223,11 @@ def test_classifier_starts_new_coverage_interval_for_unbridged_window(tmp_path, 
     classifier.classify_cycle(workers=[{"workerId": "worker-1", "workerGroup": "group-1"}])
 
     assert len(storage.get_collection_coverage("task_runs")["intervals"]) == 2
+    events = storage.list_task_run_coverage_events("2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+    assert events[0]["reason"] == "recent_tasks_no_overlap"
+    assert events[0]["worker_id"] == "worker-1"
+    assert events[0]["previous_recent_tasks"] == [["task-1", 0]]
+    assert events[0]["current_recent_tasks"] == [["task-2", 0]]
 
 
 def test_threaded_polling_persists_a_baseline_task_window(tmp_path, monkeypatch):

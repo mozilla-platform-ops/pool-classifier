@@ -572,12 +572,20 @@ class PoolClassifier:
                 for task in recent
                 if task.get("taskId")
             ]
+            previous_window = self.storage.get_recent_task_window(worker_id)
             if not window:
+                self.storage.record_recent_task_window(worker_id, worker_group, window, observed_at)
                 continue
             window_observed = True
-            continuity_by_worker[worker_id] = self.storage.task_run_window_continuity(
-                worker_id, window,
-            )
+            previous_runs = set(map(tuple, previous_window["recent_tasks"])) if previous_window else set()
+            overlap_count = len(previous_runs.intersection(window))
+            continuity_by_worker[worker_id] = None if previous_window is None else bool(overlap_count)
+            if continuity_by_worker[worker_id] is False:
+                self.storage.record_task_run_coverage_event(
+                    observed_at, "recent_tasks_no_overlap", worker_id, worker_group,
+                    previous_window, window, overlap_count,
+                )
+            self.storage.record_recent_task_window(worker_id, worker_group, window, observed_at)
             seen = self.seen_task_runs.setdefault(worker_id, set())
             for task_id, run_id in window:
                 if (task_id, run_id) in seen:
@@ -741,16 +749,16 @@ class PoolClassifier:
         tasks, complete, _continuity, _window_observed = self._new_terminal_tasks_with_continuity(worker_id, worker_group)
         return tasks, complete
 
-    def _poll_one_worker(self, worker: dict) -> Tuple[str, str, Optional[List[dict]]]:
+    def _poll_one_worker(self, worker: dict) -> Tuple[str, str, Optional[List[dict]], Optional[str]]:
         """Fetch only: the main thread owns storage transactions."""
         worker_id = worker["workerId"]
         worker_group = worker["workerGroup"]
         logger.debug(f"  polling {worker_id}")
         try:
-            return worker_id, worker_group, self._get_recent_tasks(worker_group, worker_id)
+            return worker_id, worker_group, self._get_recent_tasks(worker_group, worker_id), None
         except Exception as exc:
             logger.warning("%s: failed to fetch recent tasks: %s", worker_id, exc)
-            return worker_id, worker_group, None
+            return worker_id, worker_group, None, type(exc).__name__
 
     def _record_collection_coverage(
         self,
@@ -979,7 +987,7 @@ class PoolClassifier:
             terminated = False
             try:
                 with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
-                    for worker_id, worker_group, recent in thread_pool.imap_unordered(
+                    for worker_id, worker_group, recent, error_type in thread_pool.imap_unordered(
                         self._poll_one_worker,
                         workers,
                     ):
@@ -990,6 +998,10 @@ class PoolClassifier:
                             # failure.  A later overlapping window bridges the
                             # missing poll; a later non-overlap proves a gap.
                             task_window_fetch_failed = True
+                            self.storage.record_task_run_coverage_event(
+                                datetime.now(timezone.utc).isoformat(), "get_worker_error", worker_id, worker_group,
+                                self.storage.get_recent_task_window(worker_id), None, None, error_type,
+                            )
                         else:
                             fetched_windows.append((worker_id, worker_group, recent))
                         if self._interrupted:
