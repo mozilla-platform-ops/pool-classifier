@@ -623,6 +623,21 @@ def test_start_lag_dashboard_links_trend_and_heatmap_hover(tmp_path):
     assert "Workers with the most failures in the last day, grouped by category." in offenders_html
 
 
+def test_utilization_timeline_explains_incomplete_coverage_with_break_diagnostics(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+
+    html = classifier._write_html({})
+
+    assert 'const COVERAGE_BREAKS_URL = "/api/v1/pools/provisioner/worker-type/coverage-breaks";' in html
+    assert "coverageEventsForBucket" in html
+    assert "Recent task windows did not overlap" in html
+    assert "windows: ${previous} → ${current}; overlap: ${overlap}" in html
+    assert "No retained coverage-break event explains this gap." in html
+    assert "Coverage: ${bucket.coverage_pct.toFixed(1)}%" in html
+
+
 def test_all_workers_summary_describes_tracked_workers_and_all_quarantines(tmp_path):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
