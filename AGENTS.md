@@ -75,7 +75,9 @@ A release version has three linked identities: the package version in
 identical. The image must also embed the immutable Git commit for provenance.
 
 1. Start from a clean, up-to-date `main` and choose `VERSION` (without the `v`
-   prefix).
+   prefix). By default, release versions must advance only the patch component
+   (for example, `1.2.0` to `1.2.1`). A minor or major version bump requires
+   explicit user direction.
 2. Change `[project].version` in `pyproject.toml` to `VERSION`, then run
    `uv lock` to refresh `uv.lock` metadata.
 3. Run `scripts/run_local_postgres_tests.sh` successfully (the required full
