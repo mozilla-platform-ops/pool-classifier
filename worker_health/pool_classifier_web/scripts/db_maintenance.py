@@ -43,7 +43,11 @@ def _create_utilization_task_run_index(dsn: str, argv: list[str]) -> None:
 def _backfill_observed_start_lag(dsn: str, argv: list[str]) -> None:
     """Enrich Queue metadata, defaulting to the dashboard's seven-day window."""
     exit_code = backfill_start_lag_all_pools.main(
-        ["--database-url", dsn, *argv],
+        [
+            "--database-url", dsn,
+            "--state-dir", "/tmp/pool-classifier-backfill-start-lag-state",
+            *argv,
+        ],
     )
     if exit_code:
         raise RuntimeError(f"observed start-lag backfill exited with status {exit_code}")

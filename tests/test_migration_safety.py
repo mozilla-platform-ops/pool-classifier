@@ -183,7 +183,11 @@ def test_db_maintenance_start_lag_operation_uses_database_url(monkeypatch):
         "backfill-observed-start-lag", "postgresql://example", ["--lookback-days", "30"],
     )
 
-    assert calls == [["--database-url", "postgresql://example", "--lookback-days", "30"]]
+    assert calls == [[
+        "--database-url", "postgresql://example",
+        "--state-dir", "/tmp/pool-classifier-backfill-start-lag-state",
+        "--lookback-days", "30",
+    ]]
 
 
 def test_db_maintenance_main_requires_database_url(monkeypatch, capsys):
