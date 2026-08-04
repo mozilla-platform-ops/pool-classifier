@@ -106,6 +106,103 @@ def test_classifier_keeps_overlap_coverage_through_transient_status_failure(tmp_
     assert storage.list_unresolved_task_runs(10)[0]["task_id"] == "task-1"
 
 
+def _coverage_classifier(tmp_path, monkeypatch, windows):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(classifier, "_update_reports", lambda: None)
+
+    def recent_tasks(_group, _worker):
+        result = next(windows)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(classifier, "_get_recent_tasks", recent_tasks)
+    monkeypatch.setattr(classifier, "_get_task_status", lambda _task: {"status": {"runs": []}})
+    return classifier, storage
+
+
+def test_classifier_bridges_transient_get_worker_failure_when_next_window_overlaps(tmp_path, monkeypatch):
+    task = [{"taskId": "task-1", "runId": 0}]
+    classifier, storage = _coverage_classifier(tmp_path, monkeypatch, iter([task, RuntimeError("Queue busy"), task]))
+    workers = [{"workerId": "worker-1", "workerGroup": "group-1"}]
+
+    for _ in range(3):
+        classifier.classify_cycle(workers=workers)
+
+    assert len(storage.get_collection_coverage("task_runs")["intervals"]) == 1
+
+
+def test_classifier_bridges_repeated_get_worker_failures_when_next_window_overlaps(tmp_path, monkeypatch):
+    task = [{"taskId": "task-1", "runId": 0}]
+    classifier, storage = _coverage_classifier(
+        tmp_path, monkeypatch, iter([task, RuntimeError("Queue busy"), RuntimeError("Queue busy"), task]),
+    )
+    workers = [{"workerId": "worker-1", "workerGroup": "group-1"}]
+
+    for _ in range(4):
+        classifier.classify_cycle(workers=workers)
+
+    assert len(storage.get_collection_coverage("task_runs")["intervals"]) == 1
+
+
+def test_classifier_preserves_gap_after_get_worker_failure_when_next_window_does_not_overlap(tmp_path, monkeypatch):
+    first_task = [{"taskId": "task-1", "runId": 0}]
+    second_task = [{"taskId": "task-2", "runId": 0}]
+    classifier, storage = _coverage_classifier(
+        tmp_path, monkeypatch, iter([first_task, RuntimeError("Queue busy"), second_task, second_task]),
+    )
+    workers = [{"workerId": "worker-1", "workerGroup": "group-1"}]
+
+    for _ in range(4):
+        classifier.classify_cycle(workers=workers)
+
+    assert len(storage.get_collection_coverage("task_runs")["intervals"]) == 2
+
+
+def test_classifier_does_not_mask_a_proven_gap_with_another_workers_fetch_failure(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(classifier, "_update_reports", lambda: None)
+    windows = {
+        "worker-fetch-failure": iter([
+            [{"taskId": "task-a", "runId": 0}], RuntimeError("Queue busy"),
+        ]),
+        "worker-gap": iter([
+            [{"taskId": "task-b", "runId": 0}], [{"taskId": "task-c", "runId": 0}],
+        ]),
+    }
+
+    def recent_tasks(_group, worker_id):
+        result = next(windows[worker_id])
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(classifier, "_get_recent_tasks", recent_tasks)
+    monkeypatch.setattr(classifier, "_get_task_status", lambda _task: {"status": {"runs": []}})
+    workers = [
+        {"workerId": "worker-fetch-failure", "workerGroup": "group-1"},
+        {"workerId": "worker-gap", "workerGroup": "group-1"},
+    ]
+
+    classifier.classify_cycle(workers=workers)
+    classifier.classify_cycle(workers=workers)
+
+    coverage = storage.get_collection_coverage("task_runs")
+    assert len(coverage["intervals"]) == 1
+    state = storage.db.execute(
+        "SELECT last_success FROM collection_coverage_state WHERE source = 'task_runs'",
+    ).fetchone()
+    assert state["last_success"] == 0
+
+
 def test_classifier_starts_new_coverage_interval_for_unbridged_window(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier(

@@ -973,6 +973,7 @@ class PoolClassifier:
             scanned = 0
             task_coverage_observed = False
             task_coverage_continuous = True
+            task_window_fetch_failed = False
             fetched_windows = []
             thread_pool = ThreadPool(WORKER_THREAD_COUNT)
             terminated = False
@@ -985,8 +986,10 @@ class PoolClassifier:
                         scanned += 1
                         bar()
                         if recent is None:
-                            task_coverage_observed = True
-                            task_coverage_continuous = False
+                            # Keep coverage pending after a transient getWorker
+                            # failure.  A later overlapping window bridges the
+                            # missing poll; a later non-overlap proves a gap.
+                            task_window_fetch_failed = True
                         else:
                             fetched_windows.append((worker_id, worker_group, recent))
                         if self._interrupted:
@@ -1034,7 +1037,9 @@ class PoolClassifier:
             )
 
             polls_complete = scanned == total_workers and not terminated and not self._interrupted
-            if task_coverage_observed:
+            # A fetch failure is recoverable only when no fetched worker has
+            # already proved a discontinuity in this pass.
+            if task_coverage_observed and (not task_window_fetch_failed or not task_coverage_continuous):
                 self._record_collection_coverage(
                     "task_runs",
                     task_coverage_continuous and polls_complete,
