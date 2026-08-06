@@ -20,6 +20,7 @@ import requests
 import taskcluster
 
 from worker_health.pool_classifier_web.patterns_registry import all_patterns, categories_by_severity
+from worker_health.pool_classifier_web.job_sources import SourceMethod, classify_job_source
 from worker_health.pool_classifier_web.registry import AVAILABILITY_MODES
 from worker_health.pool_classifier_web.storage import SqliteStorage
 from worker_health.utils import human_delta
@@ -257,6 +258,20 @@ class PoolClassifier:
             if e.status_code == 404:
                 return None
             raise
+
+    def _record_job_source(self, task_id: str, classified_at: str) -> None:
+        """Fetch and cache only the compact source classification for a task."""
+        cached = self.storage.get_task_source(task_id)
+        if cached and cached["source_method"] != int(SourceMethod.TASK_FETCH_FAILED):
+            return
+        try:
+            self._ensure_tc()
+            task = self.tc_queue.task(task_id)
+        except Exception as exc:
+            logger.warning("%s: task-definition fetch failed: %s", task_id, exc)
+            task = None
+        source = classify_job_source(task)
+        self.storage.record_task_source(task_id, source.source, int(source.method), classified_at)
 
     def _get_task_status_with_retry(
         self, task_id: str, retries: int, rate_limiter: _RequestRateLimiter,
@@ -895,6 +910,7 @@ class PoolClassifier:
                 bar()
 
             classified_at = datetime.now(timezone.utc).isoformat()
+            self._record_job_source(task_id, classified_at)
 
             if run_state == "completed":
                 category = None
@@ -1812,6 +1828,7 @@ class PoolClassifier:
             "  .util-timeline-legend { display:flex; gap:1rem; flex-wrap:wrap; margin:.45rem 0 1.2rem; color:#888; font-size:.8em; }",
             "  .lag-chart-wrap { width:100%; max-width:80rem; overflow-x:auto; border:1px solid #333; background:#161616; padding:.5rem; box-sizing:border-box; } .lag-chart { width:100%; min-width:42rem; height:12rem; display:block; } .lag-chart .lag-linked-hover { stroke:#fff; stroke-width:3; filter:drop-shadow(0 0 3px #fff); } .lag-chart rect.lag-linked-hover { fill:#ddd; } .lag-compact { color:#888; font-size:.85em; margin:.5rem 0; }",
             "  .lag-legend { display:flex; gap:1rem; flex-wrap:wrap; margin:.45rem 0; color:#888; font-size:.8em; } .lag-line { display:inline-block; width:1.5rem; border-top:2px solid; vertical-align:middle; margin-right:.3rem; }",
+            "  .source-controls button { border:0; background:transparent; color:#777; cursor:pointer; font:inherit; padding:0 .25rem; } .source-controls button.active { color:#f90; } .source-chart { display:flex; align-items:end; gap:.35rem; height:12rem; max-width:80rem; padding:.5rem; border:1px solid #333; background:#161616; } .source-day { flex:1; height:100%; display:flex; flex-direction:column-reverse; min-width:1rem; } .source-segment { min-height:1px; } .source-legend { display:flex; flex-wrap:wrap; gap:.8rem; color:#aaa; font-size:.8em; margin:.5rem 0; }",
             "  .lag-heatmap-wrap { overflow-x:auto; max-width:80rem; } .lag-heatmap { display:grid; grid-template-columns:1.75rem repeat(24, minmax(1.35rem, 1fr)); gap:3px; min-width:42rem; margin-top:.6rem; }",
             "  .lag-hm-label { color:#777; font-size:.72em; text-align:center; } .lag-hm-day { text-align:left; padding-right:.2rem; align-self:center; } .lag-hm-cell { height:1rem; border:0; border-radius:2px; cursor:default; outline:1px solid #111; } .lag-hm-cell.insufficient { background:repeating-linear-gradient(135deg,#333 0,#333 4px,#222 4px,#222 8px) !important; } .lag-hm-cell:hover { filter:brightness(1.25); outline-color:#aaa; } .lag-hm-cell.lag-linked-hover { box-shadow:inset 0 0 0 2px #fff; filter:brightness(1.35); position:relative; z-index:1; }",
             navigation_styles,
@@ -1825,6 +1842,7 @@ class PoolClassifier:
         timeline_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/utilization"
         coverage_breaks_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/coverage-breaks"
         start_lag_visualization_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/observed-start-lag/visualization"
+        job_sources_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/job-sources"
         guide_url = f"/pools/{self.provisioner}/{self.worker_type}/utilization-api-guide"
 
         pool_summary = []
@@ -1854,6 +1872,7 @@ class PoolClassifier:
             '  <a href="#s-attention">Consecutive Failures</a><span class="sep">|</span>',
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
             '  <a href="#s-start-lag">Start Lag</a><span class="sep">|</span>',
+            '  <a href="#s-job-sources">Job Sources</a><span class="sep">|</span>',
             '  <a href="#s-utilization">Utilization</a><span class="sep">|</span>',
             '  <a href="#s-heatmap">Worker Activity</a><span class="sep">|</span>',
             '  <a href="#s-offenders">Top Offenders</a><span class="sep">|</span>',
@@ -1977,6 +1996,10 @@ class PoolClassifier:
             else ""
         )
         parts += [
+            '<h2 id="s-job-sources">Job Volume by Source</h2>',
+            '<p class="gen">Terminal task runs grouped by the Taskcluster project tag or an explicit reviewed source mapping.</p>',
+            '<p class="source-controls"><button type="button" class="active" data-source-days="7">[7d]</button><button type="button" data-source-days="14">[14d]</button></p>',
+            '<p id="source-freshness" class="gen">Loading job sources…</p><div id="source-legend" class="source-legend"></div><div id="source-chart" class="source-chart" role="img" aria-label="Daily job volume by source"></div>',
             '<h2 id="s-start-lag">Start Lag</h2>',
             '<p class="gen">Observed scheduled-to-start time for terminal task runs. This excludes jobs that never started, so it is not a queue total, drop rate, or pool-health verdict.</p>',
             '<p id="lag-freshness" class="gen">Loading observed start lag…</p>',
@@ -2146,6 +2169,7 @@ class PoolClassifier:
             f"  const UTIL_TIMELINE_URL = {json.dumps(timeline_url)};",
             f"  const COVERAGE_BREAKS_URL = {json.dumps(coverage_breaks_url)};",
             f"  const START_LAG_VISUALIZATION_URL = {json.dumps(start_lag_visualization_url)};",
+            f"  const JOB_SOURCES_URL = {json.dumps(job_sources_url)};",
             "  const utilCards = document.getElementById('util-cards');",
             "  const utilFreshness = document.getElementById('util-freshness');",
             "  const utilTimeline = document.getElementById('util-timeline');",
@@ -2154,6 +2178,7 @@ class PoolClassifier:
             "  try { const saved = Number(localStorage.getItem(UTIL_TIMELINE_KEY)); if (saved === 24 || saved === 48) utilTimelineHours = saved; } catch (_) {}",
             "  const esc = value => String(value).replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));",
             "  const lagFreshness = document.getElementById('lag-freshness'), lagChart = document.getElementById('lag-chart'), lagChartWrap = document.getElementById('lag-chart-wrap'), lagHeatmap = document.getElementById('lag-heatmap'), lagHeatmapWrap = document.getElementById('lag-heatmap-wrap');",
+            "  const sourceChart=document.getElementById('source-chart'), sourceLegend=document.getElementById('source-legend'), sourceFreshness=document.getElementById('source-freshness'), sourceButtons=[...document.querySelectorAll('[data-source-days]')]; let sourceDays=7; const sourceColor=s=>`hsl(${[...s].reduce((n,c)=>n+c.charCodeAt(0),0)%360} 55% 48%)`; function loadSources(){fetch(`${JOB_SOURCES_URL}?days=${sourceDays}`).then(r=>r.ok?r.json():Promise.reject(new Error(`HTTP ${r.status}`))).then(data=>{const sources=[...new Set(data.buckets.map(b=>b.source))].sort(), days=[...new Set(data.buckets.map(b=>b.day))], byDay=new Map(days.map(d=>[d,[]])); data.buckets.forEach(b=>byDay.get(b.day).push(b)); const max=Math.max(...days.map(d=>byDay.get(d).reduce((n,b)=>n+b.tasks,0)),1); sourceChart.innerHTML=days.map(d=>{const rows=byDay.get(d), total=rows.reduce((n,b)=>n+b.tasks,0); return `<div class='source-day' title='${d}: ${total} tasks'>${rows.map(b=>`<div class='source-segment' style='height:${100*b.tasks/max}%;background:${sourceColor(b.source)}' title='${d}\\n${b.source}: ${b.tasks}'></div>`).join('')}</div>`}).join(''); sourceLegend.innerHTML=sources.map(s=>`<span><i class='hm-swatch' style='background:${sourceColor(s)}'></i>${esc(s)}</span>`).join(''); sourceFreshness.textContent=`Last ${sourceDays} days · ${data.buckets.reduce((n,b)=>n+b.tasks,0)} terminal runs`;}).catch(e=>{sourceFreshness.textContent=`Job sources unavailable: ${e.message}`;});} sourceButtons.forEach(b=>b.addEventListener('click',()=>{sourceDays=Number(b.dataset.sourceDays);sourceButtons.forEach(x=>x.classList.toggle('active',x===b));loadSources();})); loadSources();",
             "  const fmtLag = value => value == null ? '—' : value >= 60 ? `${(value / 60).toFixed(value % 60 ? 1 : 0)}m` : `${value.toFixed(0)}s`;",
             "  const lagKey = startAt => { const date = new Date(startAt); return `${(date.getUTCDay()+6)%7}-${date.getUTCHours()}`; }; const setLagHover = key => document.querySelectorAll(`[data-lag-key=\"${key}\"]`).forEach(element => element.classList.add('lag-linked-hover')); const clearLagHover = () => document.querySelectorAll('.lag-linked-hover').forEach(element => element.classList.remove('lag-linked-hover')); const bindLagHover = () => document.querySelectorAll('[data-lag-key]').forEach(element => { element.addEventListener('mouseenter', () => setLagHover(element.dataset.lagKey)); element.addEventListener('mouseleave', clearLagHover); });",
             "  function renderLag(data) { const usable = data.buckets.filter(b => b.sufficient_samples); if (!usable.length) { lagChart.innerHTML = `<text x='24' y='35' fill='#888'>Not enough observed terminal runs yet (need ${data.min_samples} per hour).</text>`; return; } const width=lagChart.clientWidth||960, height=lagChart.clientHeight||240, left=82, right=width-32, top=18, bottom=height-42; lagChart.setAttribute('viewBox',`0 0 ${width} ${height}`); const first=data.buckets.indexOf(usable[0]), last=data.buckets.indexOf(usable.at(-1)), span=data.buckets.slice(first,last+1), rawMax=Math.max(data.slo_seconds,...usable.map(b=>b.p95_seconds)), niceSteps=[60,120,300,600,900,1800,3600,7200,14400,21600,43200,86400], axisStep=niceSteps.find(step=>Math.ceil(rawMax/step)<=10)||niceSteps.at(-1), axisMax=Math.ceil(rawMax/axisStep)*axisStep, tickCount=axisMax/axisStep, labelEvery=Math.ceil(tickCount/5), maxCount=Math.max(...span.map(b=>b.sample_count),1), x=i=>span.length===1?(left+right)/2:left+i*(right-left)/(span.length-1), y=v=>bottom-v/axisMax*(bottom-top), axisLabel=v=>v>=3600?`${v/3600}h`:fmtLag(v), points=key=>usable.map(b=>`${x(span.indexOf(b)).toFixed(1)},${y(b[key])}`).join(' '); const bars=span.map((b,i)=>`<rect class='lag-point' data-lag-key='${lagKey(b.start_at)}' x='${x(i)-2}' y='${height-20-b.sample_count/maxCount*22}' width='4' height='${b.sample_count/maxCount*22}' fill='#555'><title>${b.start_at}\\n${b.sample_count} samples\\np50 ${fmtLag(b.p50_seconds)}, p95 ${fmtLag(b.p95_seconds)}</title></rect>`).join(''); const dots=usable.flatMap(b=>[['p50_seconds','#5dd'],['p95_seconds','#f90']].map(([key,color])=>`<circle class='lag-point' data-lag-key='${lagKey(b.start_at)}' cx='${x(span.indexOf(b))}' cy='${y(b[key])}' r='4.5' fill='${color}'><title>${b.start_at}\\n${key === 'p50_seconds' ? 'p50' : 'p95'} ${fmtLag(b[key])}\\n${b.sample_count} samples</title></circle>`)).join(''); const lines=usable.length>=4?`<polyline points='${points('p50_seconds')}' fill='none' stroke='#5dd' stroke-width='2.5'/><polyline points='${points('p95_seconds')}' fill='none' stroke='#f90' stroke-width='2.5'/>`:''; const ticks=Array.from({length:tickCount+1},(_,i)=>i*axisStep).map((v,i)=>`<line x1='${left}' y1='${y(v)}' x2='${right}' y2='${y(v)}' stroke='#2d2d2d'/><line x1='${left-4}' y1='${y(v)}' x2='${left}' y2='${y(v)}' stroke='#666'/>${(i%labelEvery===0||v===axisMax)?`<text x='${left-8}' y='${y(v)+5}' text-anchor='end' fill='#aaa' font-size='14'>${axisLabel(v)}</text>`:''}`).join(''); lagChart.innerHTML=`${ticks}<line x1='${left}' y1='${y(data.slo_seconds)}' x2='${right}' y2='${y(data.slo_seconds)}' stroke='#f44' stroke-dasharray='5 4'/><text x='${left+4}' y='${y(data.slo_seconds)-5}' fill='#f77' font-size='14'>SLO ${fmtLag(data.slo_seconds)}</text><text x='${left}' y='${height-4}' fill='#999' font-size='14'>${span[0].start_at.slice(5,16)} UTC</text><text x='${right}' y='${height-4}' text-anchor='end' fill='#999' font-size='14'>${span.at(-1).start_at.slice(5,16)} UTC</text>${bars}${lines}${dots}`; }",

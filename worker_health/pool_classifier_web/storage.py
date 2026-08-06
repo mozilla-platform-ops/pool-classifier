@@ -105,6 +105,13 @@ CREATE INDEX IF NOT EXISTS idx_task_results_worker ON task_results (worker_id);
 CREATE INDEX IF NOT EXISTS idx_task_results_started ON task_results (run_started);
 CREATE INDEX IF NOT EXISTS idx_task_results_cat ON task_results (category);
 
+CREATE TABLE IF NOT EXISTS task_sources (
+    task_id       TEXT PRIMARY KEY,
+    source        TEXT NOT NULL,
+    source_method INTEGER NOT NULL,
+    fetched_at    TEXT NOT NULL
+);
+
 
 CREATE TABLE IF NOT EXISTS quarantine_cache (
     worker_id        TEXT PRIMARY KEY,
@@ -291,6 +298,17 @@ class SqliteStorage:
         for row in self.db.execute("SELECT worker_id, task_id FROM task_results"):
             seen.setdefault(row["worker_id"], set()).add(row["task_id"])
         return seen
+
+    def get_task_source(self, task_id: str) -> Optional[dict]:
+        row = self.db.execute("SELECT source, source_method FROM task_sources WHERE task_id = ?", (task_id,)).fetchone()
+        return dict(row) if row else None
+
+    def record_task_source(self, task_id: str, source: str, source_method: int, fetched_at: str) -> None:
+        self.db.execute(
+            "INSERT INTO task_sources (task_id, source, source_method, fetched_at) VALUES (?,?,?,?)"
+            " ON CONFLICT(task_id) DO UPDATE SET source=excluded.source, source_method=excluded.source_method, fetched_at=excluded.fetched_at",
+            (task_id, source, source_method, fetched_at),
+        )
 
     def get_seen_task_runs(self) -> Dict[str, set]:
         seen: Dict[str, set] = {}
@@ -810,6 +828,14 @@ class SqliteStorage:
             )
         ]
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
+
+    def get_job_source_volume(self, range_start: str, range_end: str) -> list[dict]:
+        return [dict(row) for row in self.db.execute(
+            "SELECT substr(r.run_started, 1, 10) AS day, COALESCE(s.source, 'unknown') AS source, COUNT(*) AS tasks"
+            " FROM task_results r LEFT JOIN task_sources s ON s.task_id = r.task_id"
+            " WHERE r.run_started >= ? AND r.run_started < ? GROUP BY day, source ORDER BY day, source",
+            (range_start, range_end),
+        )]
 
     def get_observed_start_lag_visualization(
         self, range_start: str, range_end: str, slo_seconds: int, min_samples: int,
@@ -1457,6 +1483,20 @@ class PostgresStorage:
                 seen.setdefault(row["worker_id"], set()).add(row["task_id"])
         return seen
 
+    def get_task_source(self, task_id: str) -> Optional[dict]:
+        with self._cursor() as cur:
+            cur.execute("SELECT source, source_method FROM task_sources WHERE task_id = %s", (task_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def record_task_source(self, task_id: str, source: str, source_method: int, fetched_at: str) -> None:
+        with self._write_cursor() as cur:
+            cur.execute(
+                "INSERT INTO task_sources (task_id, source, source_method, fetched_at) VALUES (%s,%s,%s,%s::timestamptz)"
+                " ON CONFLICT(task_id) DO UPDATE SET source=EXCLUDED.source, source_method=EXCLUDED.source_method, fetched_at=EXCLUDED.fetched_at",
+                (task_id, source, source_method, fetched_at),
+            )
+
     def get_seen_task_runs(self) -> Dict[str, set]:
         seen: Dict[str, set] = {}
         with self._cursor() as cur:
@@ -1958,6 +1998,17 @@ class PostgresStorage:
                 for row in cur.fetchall()
             ]
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
+
+    def get_job_source_volume(self, range_start: str, range_end: str) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT r.run_started::date::text AS day, COALESCE(s.source, 'unknown') AS source, COUNT(*) AS tasks"
+                " FROM task_results r LEFT JOIN task_sources s ON s.task_id = r.task_id"
+                " WHERE r.pool_id = %s AND r.run_started >= %s::timestamptz AND r.run_started < %s::timestamptz"
+                " GROUP BY day, source ORDER BY day, source",
+                (self.pool_id, range_start, range_end),
+            )
+            return [dict(row) for row in cur.fetchall()]
 
     def get_observed_start_lag_visualization(
         self, range_start: str, range_end: str, slo_seconds: int, min_samples: int,

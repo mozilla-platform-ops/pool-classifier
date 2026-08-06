@@ -1020,6 +1020,22 @@ def create_app() -> Flask:
         result["api_version"] = 1
         return jsonify(result)
 
+    @app.get("/api/v1/pools/<provisioner>/<worker_type>/job-sources")
+    def pool_job_sources(provisioner: str, worker_type: str):
+        try:
+            days = int(request.args.get("days", "7"))
+        except ValueError:
+            days = 0
+        if days not in {7, 14}:
+            return jsonify({"error": {"code": "invalid_parameter", "message": "days must be 7 or 14"}}), 400
+        pc = _get_classifier(provisioner, worker_type)
+        if pc is None:
+            return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        return jsonify({"api_version": 1, "start_at": start.isoformat(), "end_at": end.isoformat(), "days": days,
+                        "buckets": pc.storage.get_job_source_volume(start.isoformat(), end.isoformat())})
+
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/observed-start-lag/visualization")
     def pool_observed_start_lag_visualization(provisioner: str, worker_type: str):
         if request.args.get("start") is None and request.args.get("end") is None:
