@@ -19,6 +19,20 @@ gcloud run jobs execute pool-classifier-db-maintenance \
 
 The job has no default operation: execution without `--args` fails visibly.
 
+## Migration policy and associated backfills
+
+Migrations are applied automatically at application startup and are limited to
+fast schema changes. Check the `schema_migrations` table or deployment logs to
+confirm a migration is recorded before running any associated maintenance job.
+Never add a historical table update to a startup migration: provide a bounded,
+restart-safe maintenance operation instead.
+
+| Migration / data | Required follow-up | Where to run it |
+| --- | --- | --- |
+| 007 `observed_task_runs` | Backfill legacy `observed_at` and `last_checked_at` values when historical timestamp coverage is needed. | [Timestamp backfill](#timestamp-backfill) |
+| 006 `observed_start_lag` | Optional enrichment of recent Queue `scheduled` metadata for dashboard start-lag data. | [Observed start-lag backfill](backfill-observed-start-lag.md) |
+| 010 `task_sources` | Optional enrichment of recent task-source labels for the job-source chart; the migration itself is schema-only. | [Job-source backfill](#job-source-backfill) |
+
 ## Timestamp backfill
 
 After migration 007 is recorded, backfill legacy `task_results` timestamp rows
@@ -39,6 +53,25 @@ gcloud run jobs execute pool-classifier-db-maintenance \
 
 Use `--dry-run` to inspect the first batch or `--max-batches=N` to bound an
 execution. Finish with `--count-only` and confirm zero rows remain.
+
+## Job-source backfill
+
+Migration 010 creates `task_sources`; it deliberately does not fetch or infer
+historical data. To enrich already-stored task runs, use the reviewed
+`backfill-job-sources` operation. It defaults to the preceding 14 days and
+requires an explicit `--lookback-days` increase for a wider historical window.
+It stores only the compact derived source/method, never the Taskcluster task
+definition, and successful batches are idempotent.
+
+```sh
+gcloud run jobs execute pool-classifier-db-maintenance \
+  --args="-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,backfill-job-sources,--lookback-days,14" \
+  --wait --region=us-west1 --project=relops-pool-classifier
+```
+
+The operation reports selected, fetched, classified, unknown, and error task
+counts for every pool. Re-run after an error: unsuccessful fetches remain
+unrecorded and therefore eligible for the next bounded execution.
 
 ## Datastore summary
 
