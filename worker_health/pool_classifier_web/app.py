@@ -541,6 +541,8 @@ def _timestamp_label(prefix: str, timestamp: datetime) -> str:
 
 
 def _read_dashboard_snapshot(dsn: str | None, scope: str, pool_id: str = "") -> dict | None:
+    if os.environ.get("POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS") == "1":
+        return None
     if not dsn:
         return None
     try:

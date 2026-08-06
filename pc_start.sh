@@ -1,6 +1,8 @@
 #!/bin/bash
 #
 # pc_start.sh — start the pool_classifier Flask app
+# Set POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS=1 to render current page
+# code instead of stored dashboard snapshots (useful for local UI work).
 #
 
 set -e

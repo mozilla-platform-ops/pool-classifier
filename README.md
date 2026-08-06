@@ -20,6 +20,14 @@ The local dashboard is available at <http://localhost:8080/>. A Taskcluster
 token is required at `~/.tc_token`; see the development guide for its format
 and the complete local workflow.
 
+To inspect current detail-page code without waiting for a classifier to replace
+a cached dashboard snapshot, start a separate local listener with snapshots
+disabled:
+
+```sh
+PC_PORT=8081 POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS=1 ./pc_start.sh
+```
+
 ## Documentation
 
 ### Development
