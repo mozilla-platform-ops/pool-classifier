@@ -29,7 +29,7 @@ presented as a complete queue-health verdict.
 1. **Observed scheduled-to-start lag.** Track `runs[].scheduled` to
    `runs[].started` for terminal runs already discovered through the existing
    per-worker collection. This is tracked by
-   [pool-classifier-trp](../.beads/issues.jsonl). Before calling
+   [pool-classifier-trp](../../.beads/issues.jsonl). Before calling
    `scheduled` a readiness timestamp, verify its Taskcluster semantics and
    retain the raw timestamp in storage and API responses. Calculate only
    ordered pairs with both timestamps, then publish a bounded-window count,

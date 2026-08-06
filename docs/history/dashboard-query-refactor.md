@@ -7,7 +7,8 @@ rewritten in `app.py`, parity tests in `tests/test_postgres_storage.py`
 Goal: collapse the dashboard index page's per-pool query fan-out into a couple
 of `GROUP BY pool_id` queries on a single connection. Wins on both **latency**
 (cold-load slowness) and **DB connections** (the index is a major driver of the
-connection exhaustion documented in `PC_CLOUD_RUN_MIGRATION.md`).
+connection exhaustion documented in
+[`cloud-run-migration.md`](cloud-run-migration.md)).
 
 ## Problem
 

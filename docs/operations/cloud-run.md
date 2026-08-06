@@ -1,8 +1,9 @@
 # Pool Classifier — Cloud Deployment Overview
 
 Operator reference for the Pool Classifier running on Google Cloud Run. For the
-migration history and design rationale, see `PC_CLOUD_RUN_MIGRATION.md`. For
-local dev, see `POOL_CLASSIFIER.md`.
+migration history and design rationale, see
+[the Cloud Run migration history](../history/cloud-run-migration.md). For local
+development, see [the local setup guide](../development/local-setup.md).
 
 ## Key identifiers
 

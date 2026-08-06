@@ -708,7 +708,8 @@ def create_app() -> Flask:
         now_dt = datetime.now(timezone.utc)
         now = _timestamp_label("generated on", now_dt)
         # One pair of GROUP BY pool_id queries for every pool, on one connection
-        # (vs ~7 queries per pool on a per-pool connection). See PC_DB_REFACTOR.md.
+        # (vs ~7 queries per pool on a per-pool connection). See the dashboard
+        # query refactor history in docs/history/dashboard-query-refactor.md.
         summaries: dict = {}
         lag_summaries: dict = {}
         dsn = os.environ.get("DATABASE_URL")
