@@ -687,7 +687,7 @@ def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
         availability_mode = "recent_contact"
 
         def classify_cycle(self):
-            return {"scanned": 1}
+            return {"scanned": 1, "total_workers": 7}
 
         def render_html(self, **_kwargs):
             return "<html></html>"
@@ -713,8 +713,67 @@ def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
     assert overview_payload["classify_all_completed_at"]
     pool_timing = overview_payload["pool_timings"]["proj/timed"]
     assert pool_timing["duration_seconds"] >= 0
+    assert pool_timing["total_workers"] == 7
     assert pool_timing["started_at"]
     assert pool_timing["completed_at"]
+
+
+def test_classify_all_orders_pools_by_prior_workers_per_second(monkeypatch):
+    pools = [
+        SimpleNamespace(provisioner="proj", worker_type="slow"),
+        SimpleNamespace(provisioner="proj", worker_type="fast"),
+        SimpleNamespace(provisioner="proj", worker_type="unknown"),
+    ]
+    classified = []
+
+    class Classifier:
+        def __init__(self, worker_type):
+            self.worker_type = worker_type
+
+        def classify_cycle(self):
+            classified.append(self.worker_type)
+            return {"scanned": 1, "total_workers": 1}
+
+    monkeypatch.delenv("CLASSIFY_OIDC_AUDIENCE", raising=False)
+    monkeypatch.setattr(app_module.registry, "all_pools", lambda: pools)
+    monkeypatch.setattr(
+        app_module,
+        "_read_dashboard_snapshot",
+        lambda *_args: {
+            "payload": {
+                "pool_timings": {
+                    "proj/slow": {"total_workers": 20, "duration_seconds": 20},
+                    "proj/fast": {"total_workers": 10, "duration_seconds": 2},
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        app_module,
+        "_get_classifier",
+        lambda _provisioner, worker_type, **_kwargs: Classifier(worker_type),
+    )
+
+    app = create_app()
+    app.config["TESTING"] = True
+    response = app.test_client().post("/classify-all")
+
+    assert response.status_code == 200
+    assert classified == ["fast", "slow", "unknown"]
+
+
+def test_classify_all_uses_stable_order_when_prior_timing_is_invalid(monkeypatch):
+    pools = [
+        SimpleNamespace(provisioner="proj", worker_type="zeta"),
+        SimpleNamespace(provisioner="proj", worker_type="alpha"),
+    ]
+
+    ordered = app_module._classify_all_pool_order(
+        pools,
+        {"payload": {"pool_timings": {"proj/zeta": {"total_workers": "2", "duration_seconds": 1}}}},
+    )
+
+    assert [pool.worker_type for pool in ordered] == ["alpha", "zeta"]
 
 
 def test_utilization_api_filters_range_and_buckets(monkeypatch, tmp_path):

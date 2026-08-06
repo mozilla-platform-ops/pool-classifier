@@ -524,6 +524,38 @@ def _format_runtime(seconds: float) -> str:
     return f"{hours}h {minutes}m"
 
 
+def _classify_all_pool_order(pools, overview_snapshot: dict | None) -> list:
+    """Order pools by the workers refreshed per second in the prior full scan.
+
+    Snapshot data is advisory: a first run, a partial preceding run, or a
+    manually edited snapshot must retain deterministic provisioner/worker-type
+    ordering rather than preventing a classify cycle from starting.
+    """
+    timings = (overview_snapshot or {}).get("payload", {}).get("pool_timings", {})
+
+    def sort_key(pool) -> tuple:
+        label = f"{pool.provisioner}/{pool.worker_type}"
+        timing = timings.get(label, {}) if isinstance(timings, dict) else {}
+        try:
+            duration = timing["duration_seconds"]
+            workers = timing["total_workers"]
+        except (KeyError, TypeError, ValueError):
+            return (1, 0.0, pool.provisioner, pool.worker_type)
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or isinstance(workers, bool)
+            or not isinstance(workers, int)
+            or not math.isfinite(duration)
+            or duration <= 0
+            or workers < 0
+        ):
+            return (1, 0.0, pool.provisioner, pool.worker_type)
+        return (0, -(workers / duration), pool.provisioner, pool.worker_type)
+
+    return sorted(pools, key=sort_key)
+
+
 def _admin_dashboard_data(dsn: str) -> dict:
     """Read the small operational status dataset needed by the admin page."""
     with postgres_connect(dsn, "web") as conn:
@@ -1253,15 +1285,16 @@ def create_app() -> Flask:
     @require_scheduler_oidc
     def classify_all():
         # Sequential fan-out over all enabled pools, driven by a single Cloud
-        # Scheduler job. Mirrors pc_fetch_data.sh (proj-autophone first, then the
-        # rest) and runs one pool at a time on purpose — concurrent per-pool jobs
-        # exhausted the Postgres connection budget. Per-pool failures are caught
-        # so one bad pool doesn't abort the run; the advisory lock makes
-        # overlapping runs safe (busy pools are skipped).
-        pools = sorted(
-            registry.all_pools(),
-            key=lambda p: (p.provisioner != "proj-autophone", p.provisioner, p.worker_type),
+        # Scheduler job. It runs one pool at a time on purpose — concurrent
+        # per-pool jobs exhausted the Postgres connection budget. The last
+        # complete scan ranks pools by workers refreshed per second; missing or
+        # invalid history falls back to stable registry order. Per-pool failures
+        # are caught so one bad pool doesn't abort the run; the advisory lock
+        # makes overlapping runs safe (busy pools are skipped).
+        previous_overview = _read_dashboard_snapshot(
+            os.environ.get("DATABASE_URL"), OVERVIEW_SCOPE,
         )
+        pools = _classify_all_pool_order(registry.all_pools(), previous_overview)
         classify_all_started_at = datetime.now(timezone.utc)
         classify_all_started_monotonic = monotonic()
         results = []
@@ -1281,11 +1314,14 @@ def create_app() -> Flask:
                 except Exception:  # noqa: BLE001 - do not turn a successful scan into a retry
                     logger.exception("classify-all: snapshot build failed for %s", label)
                 pool_completed_at = datetime.now(timezone.utc)
-                pool_timings[label] = {
+                timing = {
                     "started_at": pool_started_at.isoformat(),
                     "completed_at": pool_completed_at.isoformat(),
                     "duration_seconds": monotonic() - pool_started_monotonic,
                 }
+                if isinstance(summary.get("total_workers"), int) and not isinstance(summary["total_workers"], bool):
+                    timing["total_workers"] = summary["total_workers"]
+                pool_timings[label] = timing
                 results.append({"pool": label, "status": "ok", "summary": summary})
             except ClassifyLockBusy:
                 results.append({"pool": label, "status": "busy"})

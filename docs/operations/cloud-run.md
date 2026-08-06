@@ -67,7 +67,9 @@ Service accounts:
 
 **Classify flow:** one Scheduler job → `POST /classify-all` → the app reads
 `pools.yaml` (`registry.all_pools()`) and classifies every enabled pool
-**sequentially** (proj-autophone first). `pools.yaml` is the single source of
+**sequentially**, ordered from the previous complete scan's workers refreshed
+per second (with deterministic fallback ordering when no history exists).
+`pools.yaml` is the single source of
 truth — there is no terraform pool list.
 
 ## HTTP endpoints
