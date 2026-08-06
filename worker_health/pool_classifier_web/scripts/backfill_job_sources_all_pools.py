@@ -29,16 +29,17 @@ class StopAfterCurrentBatch:
         print("Ctrl-C received; finishing the current batch before stopping. Press Ctrl-C again to abort.", file=sys.stderr)
 
 
-def pool_ids_with_backlog(database_url: str, not_before: str) -> list[str]:
-    """Return pools with recent task rows that have no cached source metadata."""
+def backlog_by_pool(database_url: str, not_before: str) -> list[tuple[str, int]]:
+    """Return missing recent source records, grouped by pool, without fetching tasks."""
     with postgres_connect(database_url, "maintenance") as connection, connection.cursor() as cursor:
         cursor.execute(
-            "SELECT r.pool_id FROM task_results r LEFT JOIN task_sources s ON s.task_id = r.task_id "
+            "SELECT r.pool_id, COUNT(DISTINCT r.task_id) FROM task_results r "
+            "LEFT JOIN task_sources s ON s.task_id = r.task_id "
             "WHERE s.task_id IS NULL AND r.run_started IS NOT NULL AND r.run_started >= %s::timestamptz "
             "GROUP BY r.pool_id ORDER BY r.pool_id",
             (not_before,),
         )
-        return [row[0] for row in cursor.fetchall()]
+        return [(row[0], row[1]) for row in cursor.fetchall()]
 
 
 def backfill_pool(
@@ -79,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--concurrency", type=int, default=5, metavar="REQUESTS")
     parser.add_argument("--retries", type=int, default=2, metavar="COUNT")
     parser.add_argument("--requests-per-second", type=float, default=5.0, metavar="RATE")
+    parser.add_argument("--count-only", action="store_true", help="report eligible tasks without fetching or writing")
     parser.add_argument(
         "--lookback-days", type=int, default=14, metavar="DAYS",
         help="only backfill tasks started within this trailing window (default: 14)",
@@ -94,10 +96,17 @@ def main(argv: list[str] | None = None) -> int:
     previous_handler = signal.signal(signal.SIGINT, stop.handle_signal)
     try:
         not_before = (datetime.now(timezone.utc) - timedelta(days=args.lookback_days)).isoformat()
-        pool_ids = pool_ids_with_backlog(args.database_url, not_before)
-        if not pool_ids:
+        backlog = backlog_by_pool(args.database_url, not_before)
+        if not backlog:
             print("No eligible job-source backlog found.")
             return 0
+        if args.count_only:
+            total = sum(tasks for _pool_id, tasks in backlog)
+            print(f"Eligible job-source backlog: {total} task(s) across {len(backlog)} pool(s) from the last {args.lookback_days} days.")
+            for pool_id, tasks in backlog:
+                print(f"{pool_id}: {tasks} task(s)")
+            return 0
+        pool_ids = [pool_id for pool_id, _tasks in backlog]
         print(f"Backfilling {len(pool_ids)} pool(s) from the last {args.lookback_days} days.")
         skipped = []
         for pool_id in pool_ids:

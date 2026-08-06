@@ -64,6 +64,12 @@ It stores only the compact derived source/method, never the Taskcluster task
 definition, and successful batches are idempotent.
 
 ```sh
+# Inspect the bounded scope without contacting Taskcluster or changing data.
+gcloud run jobs execute pool-classifier-db-maintenance \
+  --args="-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,backfill-job-sources,--count-only" \
+  --wait --region=us-west1 --project=relops-pool-classifier
+
+# Backfill the default 14-day window.
 gcloud run jobs execute pool-classifier-db-maintenance \
   --args="-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,backfill-job-sources,--lookback-days,14" \
   --wait --region=us-west1 --project=relops-pool-classifier
