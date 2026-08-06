@@ -24,6 +24,16 @@
 <table><thead><tr><th>Migration</th><th>Status</th><th>Applied (UTC)</th></tr></thead><tbody>
 {% for migration in migrations %}<tr><td>{{ migration.version }}</td>{% if migration.applied_at %}<td class="ok">applied</td><td><time datetime="{{ migration.applied_at.isoformat() }}">{{ migration.applied_at_utc }}</time></td>{% else %}<td class="pending">pending</td><td>—</td>{% endif %}</tr>{% endfor %}
 </tbody></table>
+{% if classify_all_duration %}
+<h2>Last successful classify-all</h2>
+<table><thead><tr><th>Total runtime</th><th>Completed (UTC)</th></tr></thead><tbody>
+<tr><td class="ok">{{ classify_all_duration }}</td><td><time datetime="{{ classify_all_completed_at.isoformat() }}">{{ classify_all_completed_at_utc }}</time></td></tr>
+</tbody></table>
+<h2>Per-pool runtime</h2>
+<table><thead><tr><th>Pool</th><th>Runtime</th><th>Completed (UTC)</th></tr></thead><tbody>
+{% for timing in pool_timings %}<tr><td>{{ timing.pool_id }}</td><td class="ok">{{ timing.duration }}</td><td><time datetime="{{ timing.completed_at.isoformat() }}">{{ timing.completed_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</time></td></tr>{% endfor %}
+</tbody></table>
+{% endif %}
 <h2>Pool dashboard snapshots</h2>
 <table><thead><tr><th>Pool</th><th>Snapshot source</th><th>Pool state</th></tr></thead><tbody>
 {% for snapshot in snapshots %}<tr><td>{{ snapshot.pool_id }}</td>{% if snapshot.source_at %}<td class="{{ 'stale' if snapshot.stale else 'ok' }}"><time datetime="{{ snapshot.source_at.isoformat() }}" title="{{ snapshot.source_at_utc }}">{{ snapshot.age }}</time>{% if snapshot.stale %} (stale){% endif %}</td>{% else %}<td class="missing">never</td>{% endif %}<td>{{ 'enabled' if snapshot.enabled else 'disabled' }}</td></tr>{% endfor %}

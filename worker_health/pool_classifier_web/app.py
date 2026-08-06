@@ -512,6 +512,18 @@ def _relative_age(timestamp: datetime, *, now: datetime | None = None) -> str:
     return f"{hours // 24}d ago"
 
 
+def _format_runtime(seconds: float) -> str:
+    """Format a scan runtime compactly while retaining useful second precision."""
+    whole_seconds = max(0, round(seconds))
+    if whole_seconds < 60:
+        return f"{whole_seconds}s"
+    minutes, seconds = divmod(whole_seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m"
+
+
 def _admin_dashboard_data(dsn: str) -> dict:
     """Read the small operational status dataset needed by the admin page."""
     with postgres_connect(dsn, "web") as conn:
@@ -527,12 +539,22 @@ def _admin_dashboard_data(dsn: str) -> dict:
                 pool_id: {"source_at": source_at, "generated_at": generated_at}
                 for pool_id, source_at, generated_at in cur.fetchall()
             }
+            cur.execute(
+                "SELECT source_at, generated_at, payload FROM dashboard_snapshots "
+                "WHERE scope = %s AND pool_id = '' AND schema_version = %s",
+                (OVERVIEW_SCOPE, 1),
+            )
+            overview_row = cur.fetchone()
 
     migrations = [
         {"version": path.stem, "applied_at": applied.get(path.stem)}
         for path in sorted(MIGRATIONS_DIR.glob("*.sql"))
     ]
-    return {"migrations": migrations, "snapshots": snapshots}
+    overview = None
+    if overview_row is not None:
+        source_at, generated_at, payload = overview_row
+        overview = {"source_at": source_at, "generated_at": generated_at, "payload": payload}
+    return {"migrations": migrations, "snapshots": snapshots, "overview": overview}
 
 
 def _timestamp_label(prefix: str, timestamp: datetime) -> str:
@@ -599,7 +621,12 @@ def create_app() -> Flask:
             source_at=generated_at,
         )
 
-    def publish_overview_snapshot() -> None:
+    def publish_overview_snapshot(
+        *,
+        classify_all_started_at: datetime | None = None,
+        classify_all_started_monotonic: float | None = None,
+        pool_timings: dict[str, dict] | None = None,
+    ) -> None:
         """Publish the fixed overview only after a complete aggregate scan."""
         dsn = os.environ.get("DATABASE_URL")
         if not dsn:
@@ -616,6 +643,16 @@ def create_app() -> Flask:
             "lag_summaries": _global_observed_start_lag_summaries(dsn),
             "utilization_summaries": _overview_utilization_summaries({"1h": 3600, "24h": 86400}),
         }
+        if classify_all_started_at is not None and classify_all_started_monotonic is not None and pool_timings is not None:
+            completed_at = datetime.now(timezone.utc)
+            payload.update(
+                {
+                    "classify_all_started_at": classify_all_started_at.isoformat(),
+                    "classify_all_completed_at": completed_at.isoformat(),
+                    "classify_all_duration_seconds": monotonic() - classify_all_started_monotonic,
+                    "pool_timings": pool_timings,
+                }
+            )
         write_snapshot(dsn, OVERVIEW_SCOPE, payload, source_at=generated_at)
 
     # Warn at startup if TC credentials are missing, but don't fail.
@@ -693,10 +730,29 @@ def create_app() -> Flask:
                     "stale": bool(source_at and now - source_at > COVERAGE_STALE_AFTER),
                 }
             )
+        overview_payload = (data.get("overview") or {}).get("payload", {})
+        completion_value = overview_payload.get("classify_all_completed_at")
+        completed_at = _parse_utilization_datetime("classify_all_completed_at", completion_value) if completion_value else None
+        pool_timings = [
+            {
+                "pool_id": pool_id,
+                "duration_seconds": timing["duration_seconds"],
+                "duration": _format_runtime(timing["duration_seconds"]),
+                "completed_at": _parse_utilization_datetime("pool completed_at", timing["completed_at"]),
+            }
+            for pool_id, timing in overview_payload.get("pool_timings", {}).items()
+        ]
+        pool_timings.sort(key=lambda timing: timing["duration_seconds"], reverse=True)
         return render_template(
             "admin.html",
             migrations=migration_rows,
             snapshots=snapshot_rows,
+            classify_all_duration=_format_runtime(overview_payload["classify_all_duration_seconds"])
+            if "classify_all_duration_seconds" in overview_payload
+            else None,
+            classify_all_completed_at=completed_at,
+            classify_all_completed_at_utc=completed_at.strftime("%Y-%m-%d %H:%M:%S UTC") if completed_at else None,
+            pool_timings=pool_timings,
             database_error=database_error,
             generated=_timestamp_label("generated on", now),
         )
@@ -1206,7 +1262,10 @@ def create_app() -> Flask:
             registry.all_pools(),
             key=lambda p: (p.provisioner != "proj-autophone", p.provisioner, p.worker_type),
         )
+        classify_all_started_at = datetime.now(timezone.utc)
+        classify_all_started_monotonic = monotonic()
         results = []
+        pool_timings = {}
         for pool in pools:
             label = f"{pool.provisioner}/{pool.worker_type}"
             try:
@@ -1214,11 +1273,19 @@ def create_app() -> Flask:
                 if pc is None:
                     results.append({"pool": label, "status": "not_found"})
                     continue
+                pool_started_at = datetime.now(timezone.utc)
+                pool_started_monotonic = monotonic()
                 summary = pc.classify_cycle()
                 try:
                     publish_pool_snapshot(pc, pool)
                 except Exception:  # noqa: BLE001 - do not turn a successful scan into a retry
                     logger.exception("classify-all: snapshot build failed for %s", label)
+                pool_completed_at = datetime.now(timezone.utc)
+                pool_timings[label] = {
+                    "started_at": pool_started_at.isoformat(),
+                    "completed_at": pool_completed_at.isoformat(),
+                    "duration_seconds": monotonic() - pool_started_monotonic,
+                }
                 results.append({"pool": label, "status": "ok", "summary": summary})
             except ClassifyLockBusy:
                 results.append({"pool": label, "status": "busy"})
@@ -1242,7 +1309,11 @@ def create_app() -> Flask:
             logger.info(log_msg, *log_args)
         if counts["ok"] == len(pools):
             try:
-                publish_overview_snapshot()
+                publish_overview_snapshot(
+                    classify_all_started_at=classify_all_started_at,
+                    classify_all_started_monotonic=classify_all_started_monotonic,
+                    pool_timings=pool_timings,
+                )
             except Exception:  # noqa: BLE001 - retain the previous aggregate snapshot
                 logger.exception("classify-all: overview snapshot build failed")
         # Surface a systemic failure (e.g. DB down) as a failed run; partial

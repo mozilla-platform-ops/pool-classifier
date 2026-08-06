@@ -671,6 +671,52 @@ def test_classify_all_warns_on_partial_failure(monkeypatch, caplog):
     assert "classify-all summary: pools=2 ok=1 busy=0 error=1 not_found=0" in caplog.text
 
 
+def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
+    pool = SimpleNamespace(provisioner="proj", worker_type="timed", enabled=True)
+    writes = []
+
+    class Storage:
+        def get_utilization_summary(self, _windows):
+            return {}
+
+        def get_observed_start_lag_visualization(self, *_args):
+            return {}
+
+    class Classifier:
+        storage = Storage()
+        availability_mode = "recent_contact"
+
+        def classify_cycle(self):
+            return {"scanned": 1}
+
+        def render_html(self, **_kwargs):
+            return "<html></html>"
+
+    monkeypatch.delenv("CLASSIFY_OIDC_AUDIENCE", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(app_module.registry, "all_pools", lambda: [pool])
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [pool])
+    monkeypatch.setattr(app_module, "_get_classifier", lambda *_args, **_kwargs: Classifier())
+    monkeypatch.setattr(app_module, "_global_pool_summaries", lambda *_args: {})
+    monkeypatch.setattr(app_module, "_global_observed_start_lag_summaries", lambda *_args: {})
+    monkeypatch.setattr(app_module, "_overview_utilization_summaries", lambda *_args: {})
+    monkeypatch.setattr(app_module, "write_snapshot", lambda *args, **kwargs: writes.append((args, kwargs)))
+
+    app = create_app()
+    app.config["TESTING"] = True
+    response = app.test_client().post("/classify-all")
+
+    assert response.status_code == 200
+    overview_payload = next(args[2] for args, _kwargs in writes if args[1] == app_module.OVERVIEW_SCOPE)
+    assert overview_payload["classify_all_duration_seconds"] >= 0
+    assert overview_payload["classify_all_started_at"]
+    assert overview_payload["classify_all_completed_at"]
+    pool_timing = overview_payload["pool_timings"]["proj/timed"]
+    assert pool_timing["duration_seconds"] >= 0
+    assert pool_timing["started_at"]
+    assert pool_timing["completed_at"]
+
+
 def test_utilization_api_filters_range_and_buckets(monkeypatch, tmp_path):
     client = _api_client(monkeypatch, _api_storage(tmp_path))
     response = client.get(

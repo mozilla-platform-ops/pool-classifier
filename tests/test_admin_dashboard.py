@@ -69,6 +69,24 @@ def test_admin_shows_migration_and_snapshot_freshness(monkeypatch):
                     "generated_at": now - timedelta(minutes=19),
                 },
             },
+            "overview": {
+                "source_at": now,
+                "generated_at": now,
+                "payload": {
+                    "classify_all_duration_seconds": 134.2,
+                    "classify_all_completed_at": now.isoformat(),
+                    "pool_timings": {
+                        "provisioner/worker-type": {
+                            "completed_at": now.isoformat(),
+                            "duration_seconds": 120,
+                        },
+                        "provisioner/disabled-type": {
+                            "completed_at": now.isoformat(),
+                            "duration_seconds": 14,
+                        },
+                    },
+                },
+            },
         },
     )
     client = _admin_client(monkeypatch)
@@ -85,6 +103,10 @@ def test_admin_shows_migration_and_snapshot_freshness(monkeypatch):
     assert b"provisioner/disabled-type" in response.data
     assert b"never" in response.data
     assert b"disabled" in response.data
+    assert b"Last successful classify-all" in response.data
+    assert b"2m 14s" in response.data
+    assert b"Per-pool runtime" in response.data
+    assert b"2m 0s" in response.data
 
 
 def test_relative_age_is_compact_and_handles_future_timestamps():
