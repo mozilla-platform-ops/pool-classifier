@@ -120,6 +120,13 @@ resource "google_cloud_run_v2_service" "pc" {
         name  = "CLASSIFY_OIDC_SA_EMAIL"
         value = google_service_account.pc_scheduler.email
       }
+
+      # Application-level authorization for /admin verifies IAP's signed
+      # assertion against the Cloud Run service audience.
+      env {
+        name  = "IAP_JWT_AUDIENCE"
+        value = "/projects/${data.google_project.project.number}/locations/${var.region}/services/${google_cloud_run_v2_service.pc.name}"
+      }
     }
   }
 

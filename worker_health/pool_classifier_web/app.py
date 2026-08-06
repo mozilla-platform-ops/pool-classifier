@@ -21,8 +21,10 @@ from flask import Flask, Response, abort, jsonify, render_template, request
 from worker_health.pool_classifier import CONSECUTIVE_FAILURE_ALERT, PoolClassifier
 from worker_health.pool_classifier_web import registry
 from worker_health.pool_classifier_web import discovery
-from worker_health.pool_classifier_web.auth import require_scheduler_oidc
+from worker_health.pool_classifier_web.auth import require_admin_iap, require_scheduler_oidc
+from worker_health.pool_classifier_web.postgres import connect as postgres_connect
 from worker_health.pool_classifier_web.registry import detect_os
+from worker_health.pool_classifier_web.scripts.migrate import MIGRATIONS_DIR
 from worker_health.pool_classifier_web import patterns_registry
 from worker_health.pool_classifier_web.snapshots import (
     OVERVIEW_SCOPE,
@@ -494,6 +496,45 @@ def _snapshot_freshness_label(metadata: dict) -> str:
     return f"{label} (stale)" if metadata["stale"] else label
 
 
+def _relative_age(timestamp: datetime, *, now: datetime | None = None) -> str:
+    """Return a compact, human-readable elapsed-time label."""
+    seconds = int(((now or datetime.now(timezone.utc)) - timestamp).total_seconds())
+    if seconds < 0:
+        return f"in {abs(seconds)}s"
+    if seconds < 60:
+        return f"{seconds}s ago"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
+
+
+def _admin_dashboard_data(dsn: str) -> dict:
+    """Read the small operational status dataset needed by the admin page."""
+    with postgres_connect(dsn, "web") as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT version, applied_at FROM schema_migrations ORDER BY version")
+            applied = {version: applied_at for version, applied_at in cur.fetchall()}
+            cur.execute(
+                "SELECT pool_id, source_at, generated_at FROM dashboard_snapshots "
+                "WHERE scope = %s AND schema_version = %s",
+                (POOL_SCOPE, 1),
+            )
+            snapshots = {
+                pool_id: {"source_at": source_at, "generated_at": generated_at}
+                for pool_id, source_at, generated_at in cur.fetchall()
+            }
+
+    migrations = [
+        {"version": path.stem, "applied_at": applied.get(path.stem)}
+        for path in sorted(MIGRATIONS_DIR.glob("*.sql"))
+    ]
+    return {"migrations": migrations, "snapshots": snapshots}
+
+
 def _timestamp_label(prefix: str, timestamp: datetime) -> str:
     """Format the timestamp shown in dashboard footers."""
     return f"{prefix} {timestamp.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
@@ -591,6 +632,54 @@ def create_app() -> Flask:
     @app.get("/healthz")
     def healthz():
         return "ok", 200, {"Content-Type": "text/plain"}
+
+    @app.get("/admin")
+    @require_admin_iap
+    def admin():
+        now = datetime.now(timezone.utc)
+        database_error = None
+        data = {"migrations": [], "snapshots": {}}
+        dsn = os.environ.get("DATABASE_URL")
+        if not dsn:
+            database_error = "DATABASE_URL is not configured"
+        else:
+            try:
+                data = _admin_dashboard_data(dsn)
+            except Exception as exc:  # noqa: BLE001 - return an authenticated diagnostic page
+                logger.warning("admin: status query failed: %s", exc)
+                database_error = "Database status is unavailable"
+
+        migration_rows = [
+            {
+                **migration,
+                "applied_at_utc": migration["applied_at"].astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                if migration["applied_at"]
+                else None,
+            }
+            for migration in data["migrations"]
+        ]
+        snapshot_rows = []
+        for pool in registry.all_pools_including_disabled():
+            pool_id = f"{pool.provisioner}/{pool.worker_type}"
+            snapshot = data["snapshots"].get(pool_id)
+            source_at = snapshot["source_at"] if snapshot else None
+            snapshot_rows.append(
+                {
+                    "pool_id": pool_id,
+                    "enabled": pool.enabled,
+                    "source_at": source_at,
+                    "source_at_utc": source_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if source_at else None,
+                    "age": _relative_age(source_at, now=now) if source_at else "never",
+                    "stale": bool(source_at and now - source_at > COVERAGE_STALE_AFTER),
+                }
+            )
+        return render_template(
+            "admin.html",
+            migrations=migration_rows,
+            snapshots=snapshot_rows,
+            database_error=database_error,
+            generated=_timestamp_label("generated on", now),
+        )
 
     @app.get("/favicon.ico")
     def favicon():

@@ -1,4 +1,4 @@
-"""OIDC bearer-token validation for the /classify/* endpoints.
+"""OIDC and IAP validation for protected endpoints.
 
 Cloud Scheduler signs each request with a Google-issued OIDC JWT whose `aud`
 is the configured audience and whose `email` is the scheduler service account.
@@ -19,12 +19,66 @@ from flask import abort, request
 logger = logging.getLogger(__name__)
 
 
+ADMIN_EMAILS = frozenset({"aerickson@mozilla.com"})
+IAP_CERTS_URL = "https://www.gstatic.com/iap/verify/public_key"
+
+
 def _verify(token: str, audience: str) -> dict:
     # Imported lazily so test environments without google-auth still load the module.
     from google.auth.transport import requests as ga_requests
     from google.oauth2 import id_token
 
     return id_token.verify_oauth2_token(token, ga_requests.Request(), audience=audience)
+
+
+def _verify_iap(token: str, audience: str) -> dict:
+    """Validate a signed IAP assertion and return its claims."""
+    # Imported lazily so test environments without google-auth still load the module.
+    from google.auth.transport import requests as ga_requests
+    from google.oauth2 import id_token
+
+    claims = id_token.verify_token(
+        token,
+        ga_requests.Request(),
+        audience=audience,
+        certs_url=IAP_CERTS_URL,
+    )
+    if claims.get("iss") != "https://cloud.google.com/iap":
+        raise ValueError("unexpected IAP JWT issuer")
+    return claims
+
+
+def require_admin_iap(view: Callable) -> Callable:
+    """Require a signed IAP assertion for one of the hardcoded administrators.
+
+    IAP already protects browser routes at the load balancer.  This is a
+    second, application-level guard: unsigned identity headers must never be
+    used to grant administrative access.
+    """
+
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        audience = os.environ.get("IAP_JWT_AUDIENCE")
+        if not audience:
+            logger.error("admin: IAP_JWT_AUDIENCE is not configured")
+            abort(403)
+
+        assertion = request.headers.get("X-Goog-IAP-JWT-Assertion", "")
+        if not assertion:
+            logger.warning("admin: missing IAP signed assertion")
+            abort(401)
+        try:
+            claims = _verify_iap(assertion, audience)
+        except Exception as exc:  # noqa: BLE001 - verification failures are unauthorized
+            logger.warning("admin: IAP assertion verification failed: %s", exc)
+            abort(401)
+
+        if claims.get("email") not in ADMIN_EMAILS:
+            logger.warning("admin: IAP user %s is not authorized", claims.get("email"))
+            abort(403)
+        return view(*args, **kwargs)
+
+    return wrapper
 
 
 def require_scheduler_oidc(view: Callable) -> Callable:

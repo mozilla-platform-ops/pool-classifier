@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+{% from "base.html" import navigation, navigation_styles %}
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<title>Pool Classifier — Admin</title>
+<style>
+  body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }
+  h2 { color: #f90; margin-top: 2rem; font-size: 1.1rem; }
+  table { border-collapse: collapse; width: 100%; max-width: 72rem; }
+  th, td { padding: .5rem .7rem; text-align: left; border-bottom: 1px solid #333; }
+  th { color: #888; } .ok { color: #5c5; } .pending, .stale { color: #f90; } .missing { color: #f66; }
+  .note { color: #888; } .error { color: #f66; border: 1px solid #733; padding: .75rem; max-width: 72rem; }
+  {{ navigation_styles() }}
+</style>
+</head>
+<body>
+{{ navigation("Admin") }}
+<p class="note">{{ generated }}</p>
+{% if database_error %}<p class="error">{{ database_error }}</p>{% else %}
+<h2>Database migrations</h2>
+<table><thead><tr><th>Migration</th><th>Status</th><th>Applied (UTC)</th></tr></thead><tbody>
+{% for migration in migrations %}<tr><td>{{ migration.version }}</td>{% if migration.applied_at %}<td class="ok">applied</td><td><time datetime="{{ migration.applied_at.isoformat() }}">{{ migration.applied_at_utc }}</time></td>{% else %}<td class="pending">pending</td><td>—</td>{% endif %}</tr>{% endfor %}
+</tbody></table>
+<h2>Pool dashboard snapshots</h2>
+<table><thead><tr><th>Pool</th><th>Snapshot source</th><th>Pool state</th></tr></thead><tbody>
+{% for snapshot in snapshots %}<tr><td>{{ snapshot.pool_id }}</td>{% if snapshot.source_at %}<td class="{{ 'stale' if snapshot.stale else 'ok' }}"><time datetime="{{ snapshot.source_at.isoformat() }}" title="{{ snapshot.source_at_utc }}">{{ snapshot.age }}</time>{% if snapshot.stale %} (stale){% endif %}</td>{% else %}<td class="missing">never</td>{% endif %}<td>{{ 'enabled' if snapshot.enabled else 'disabled' }}</td></tr>{% endfor %}
+</tbody></table>
+{% endif %}
+</body>
+</html>
