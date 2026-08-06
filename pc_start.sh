@@ -7,6 +7,9 @@ set -e
 
 export TC_TOKEN_FILE="${TC_TOKEN_FILE:-$HOME/.tc_token}"
 export DATABASE_URL="${DATABASE_URL:-postgresql://pc:pc@127.0.0.1:5433/pool_classifier}"  # pragma: allowlist secret
+# pc_start.sh is the local-only launcher; allow its local admin page by default.
+# Set ADMIN_IAP_BYPASS=0 to exercise the production authorization path.
+export ADMIN_IAP_BYPASS="${ADMIN_IAP_BYPASS:-1}"
 
 PORT="${PC_PORT:-8080}"
 
