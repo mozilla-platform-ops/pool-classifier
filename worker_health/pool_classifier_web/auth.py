@@ -58,6 +58,13 @@ def require_admin_iap(view: Callable) -> Callable:
 
     @wraps(view)
     def wrapper(*args, **kwargs):
+        # This is intentionally separate from Flask's debug setting.  Local
+        # development has no IAP proxy, so opting in explicitly keeps the
+        # production default fail-closed while making /admin usable locally.
+        if os.environ.get("ADMIN_IAP_BYPASS") == "1":
+            logger.warning("admin: IAP authorization bypassed by ADMIN_IAP_BYPASS")
+            return view(*args, **kwargs)
+
         audience = os.environ.get("IAP_JWT_AUDIENCE")
         if not audience:
             logger.error("admin: IAP_JWT_AUDIENCE is not configured")

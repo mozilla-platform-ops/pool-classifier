@@ -22,6 +22,8 @@ def test_admin_rejects_requests_without_a_signed_iap_assertion(monkeypatch):
     response = client.get("/admin")
 
     assert response.status_code == 401
+    assert b"Pool Classifier" in response.data
+    assert b"Authentication required" in response.data
 
 
 def test_admin_rejects_a_valid_non_admin_iap_identity(monkeypatch):
@@ -30,6 +32,21 @@ def test_admin_rejects_a_valid_non_admin_iap_identity(monkeypatch):
     response = client.get("/admin", headers={"X-Goog-IAP-JWT-Assertion": "signed"})
 
     assert response.status_code == 403
+    assert b"Access denied" in response.data
+    assert b"Return to the dashboard" in response.data
+
+
+def test_admin_iap_bypass_allows_local_development(monkeypatch):
+    monkeypatch.setenv("ADMIN_IAP_BYPASS", "1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(app_module, "_admin_dashboard_data", lambda _dsn: (_ for _ in ()).throw(RuntimeError()))
+    app = create_app()
+    app.config["TESTING"] = True
+
+    response = app.test_client().get("/admin")
+
+    assert response.status_code == 200
+    assert b"Database status is unavailable" in response.data
 
 
 def test_admin_shows_migration_and_snapshot_freshness(monkeypatch):

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+{% from "base.html" import navigation, navigation_styles %}
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<title>Pool Classifier — {{ title }}</title>
+<style>
+  body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }
+  main { max-width: 42rem; padding: 1rem 1.25rem; border: 1px solid #633; background: #1a1313; }
+  h1 { color: #f66; font-size: 1.2rem; margin-top: 0; } p { color: #bbb; line-height: 1.5; }
+  a { color: #58a6ff; } {{ navigation_styles() }}
+</style>
+</head>
+<body>
+{{ navigation(title) }}
+<main>
+<h1>{{ heading }}</h1>
+<p>{{ message }}</p>
+<p><a href="/">Return to the dashboard</a></p>
+</main>
+</body>
+</html>

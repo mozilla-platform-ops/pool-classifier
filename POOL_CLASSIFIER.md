@@ -66,6 +66,7 @@ What this sets:
 
 Then:
 - Dashboard: <http://localhost:8080/>
+- Admin dashboard: `ADMIN_IAP_BYPASS=1 ./pc_start.sh`, then <http://localhost:8080/admin>
 - Per-pool: <http://localhost:8080/pools/proj-autophone/gecko-t-lambda-perf-a55>
 - Health check: <http://localhost:8080/healthz>
 
@@ -128,6 +129,7 @@ Match order: patterns are sorted critical → high → low, file order within a 
 | `PATTERNS_FILE`           | Override path to `patterns.yaml`            | package-relative           |
 | `CLASSIFY_OIDC_AUDIENCE`  | If set, require OIDC bearer on `/classify/*` | unset (off, local dev)     |
 | `CLASSIFY_OIDC_SA_EMAIL`  | Expected `email` claim in the OIDC token    | unset (any caller passes)  |
+| `ADMIN_IAP_BYPASS`        | Set to `1` only for local development to allow `/admin` without IAP | unset (deny) |
 | `LOG_JSON`                | Set `true` for structured logs              | unset                      |
 | `WORKER_CONTACT_THRESHOLD_SECONDS` | Maximum healthy worker contact age | `3600`             |
 | `COLLECTION_COVERAGE_MAX_GAP_SECONDS` | Maximum gap coalesced as continuous coverage | twice poll interval |

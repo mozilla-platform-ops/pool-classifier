@@ -633,6 +633,24 @@ def create_app() -> Flask:
     def healthz():
         return "ok", 200, {"Content-Type": "text/plain"}
 
+    @app.errorhandler(401)
+    def unauthorized(_error):
+        return render_template(
+            "access_error.html",
+            title="Authentication required",
+            heading="Authentication required",
+            message="Sign in through the dashboard access proxy, then try again.",
+        ), 401
+
+    @app.errorhandler(403)
+    def forbidden(_error):
+        return render_template(
+            "access_error.html",
+            title="Access denied",
+            heading="Access denied",
+            message="Your account is not authorized to view this page.",
+        ), 403
+
     @app.get("/admin")
     @require_admin_iap
     def admin():
