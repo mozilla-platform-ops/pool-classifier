@@ -16,6 +16,7 @@ from collections.abc import Callable
 
 from worker_health.pool_classifier_web.scripts import backfill_m007_task_timestamps
 from worker_health.pool_classifier_web.scripts import backfill_start_lag_all_pools
+from worker_health.pool_classifier_web.scripts import backfill_job_sources_all_pools
 from worker_health.pool_classifier_web.scripts import datastore_summary
 from worker_health.pool_classifier_web.scripts import utilization_query_plan
 from worker_health.pool_classifier_web.scripts.create_unresolved_task_run_index import (
@@ -53,8 +54,15 @@ def _backfill_observed_start_lag(dsn: str, argv: list[str]) -> None:
         raise RuntimeError(f"observed start-lag backfill exited with status {exit_code}")
 
 
+def _backfill_job_sources(dsn: str, argv: list[str]) -> None:
+    exit_code = backfill_job_sources_all_pools.main(["--database-url", dsn, *argv])
+    if exit_code:
+        raise RuntimeError(f"job-source backfill exited with status {exit_code}")
+
+
 OPERATIONS: dict[str, Operation] = {
     "backfill-observed-start-lag": _backfill_observed_start_lag,
+    "backfill-job-sources": _backfill_job_sources,
     "backfill-m007-task-timestamps": backfill_m007_task_timestamps.run,
     "create-unresolved-task-run-index": _create_unresolved_task_run_index,
     "create-utilization-task-run-index": _create_utilization_task_run_index,

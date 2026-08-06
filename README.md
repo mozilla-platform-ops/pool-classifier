@@ -40,6 +40,7 @@ PC_PORT=8081 POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS=1 ./pc_start.sh
 - [Release and ad-hoc deployment procedure](docs/operations/deployments.md)
 - [Production database maintenance](docs/operations/database-maintenance.md)
 - [Backfill observed start-lag metadata](docs/operations/backfill-observed-start-lag.md)
+- [Backfill recent job-source metadata](docs/operations/backfill-observed-start-lag.md#job-sources)
 
 ### API reference
 

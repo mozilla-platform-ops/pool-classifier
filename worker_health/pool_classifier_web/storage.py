@@ -310,6 +310,20 @@ class SqliteStorage:
             (task_id, source, source_method, fetched_at),
         )
 
+    def list_task_ids_missing_source(self, limit: int, not_before: Optional[str] = None) -> List[str]:
+        query = (
+            "SELECT DISTINCT r.task_id FROM task_results r "
+            "LEFT JOIN task_sources s ON s.task_id = r.task_id "
+            "WHERE s.task_id IS NULL AND r.run_started IS NOT NULL"
+        )
+        parameters: list[object] = []
+        if not_before is not None:
+            query += " AND r.run_started >= ?"
+            parameters.append(not_before)
+        query += " GROUP BY r.task_id ORDER BY MAX(COALESCE(r.run_resolved, r.classified_at)) DESC, r.task_id LIMIT ?"
+        parameters.append(limit)
+        return [row[0] for row in self.db.execute(query, parameters).fetchall()]
+
     def get_seen_task_runs(self) -> Dict[str, set]:
         seen: Dict[str, set] = {}
         for row in self.db.execute(
@@ -1496,6 +1510,22 @@ class PostgresStorage:
                 " ON CONFLICT(task_id) DO UPDATE SET source=EXCLUDED.source, source_method=EXCLUDED.source_method, fetched_at=EXCLUDED.fetched_at",
                 (task_id, source, source_method, fetched_at),
             )
+
+    def list_task_ids_missing_source(self, limit: int, not_before: Optional[str] = None) -> List[str]:
+        query = (
+            "SELECT r.task_id FROM task_results r "
+            "LEFT JOIN task_sources s ON s.task_id = r.task_id "
+            "WHERE r.pool_id = %s AND s.task_id IS NULL AND r.run_started IS NOT NULL"
+        )
+        parameters: list[object] = [self.pool_id]
+        if not_before is not None:
+            query += " AND r.run_started >= %s::timestamptz"
+            parameters.append(not_before)
+        query += " GROUP BY r.task_id ORDER BY MAX(COALESCE(r.run_resolved, r.classified_at)) DESC, r.task_id LIMIT %s"
+        parameters.append(limit)
+        with self._cursor() as cur:
+            cur.execute(query, parameters)
+            return [row["task_id"] for row in cur.fetchall()]
 
     def get_seen_task_runs(self) -> Dict[str, set]:
         seen: Dict[str, set] = {}

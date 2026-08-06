@@ -57,3 +57,24 @@ that pool.
 Press Ctrl-C once to stop after the current pool batch has finished and its
 database updates and state file are durable. The script exits with status 130;
 press Ctrl-C a second time to abort immediately.
+
+## Job sources
+
+Task source metadata is stored separately from task results. To backfill the
+dashboard's source chart, run the reviewed maintenance operation. It defaults
+to the preceding 14 days; change the scope only with an explicit
+`--lookback-days` value, so it cannot accidentally scan all history.
+
+```bash
+gcloud run jobs execute pool-classifier-db-maintenance \
+  --args="-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,backfill-job-sources,--lookback-days,14" \
+  --wait --region=us-west1 --project=relops-pool-classifier
+```
+
+It discovers only task rows in that window without a cached source, fetches
+task definitions at the bounded default of five requests per second (five
+concurrent requests), and stores only the compact derived source and method.
+It makes no scheduler-name inference: `tags.project` wins, the exact
+audit-worker metadata source maps to `audit-worker`, and all other cases are
+`unknown`. Successful batches are idempotent; a failed Taskcluster fetch is
+left unrecorded for a later rerun.

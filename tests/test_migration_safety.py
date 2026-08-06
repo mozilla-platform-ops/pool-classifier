@@ -190,6 +190,23 @@ def test_db_maintenance_start_lag_operation_uses_database_url(monkeypatch):
     ]]
 
 
+def test_db_maintenance_job_source_operation_uses_database_url(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        db_maintenance.backfill_job_sources_all_pools,
+        "main",
+        lambda argv: calls.append(argv) or 0,
+    )
+
+    db_maintenance.run_operation(
+        "backfill-job-sources", "postgresql://example", ["--lookback-days", "30"],
+    )
+
+    assert calls == [[
+        "--database-url", "postgresql://example", "--lookback-days", "30",
+    ]]
+
+
 def test_db_maintenance_main_requires_database_url(monkeypatch, capsys):
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
