@@ -13,28 +13,40 @@
   th, td { padding: .5rem .7rem; text-align: left; border-bottom: 1px solid #333; }
   th { color: #888; } .ok { color: #5c5; } .pending, .stale { color: #f90; } .missing { color: #f66; }
   .note { color: #888; } .error { color: #f66; border: 1px solid #733; padding: .75rem; max-width: 72rem; }
+  .dashboard-toolbar { display: flex; align-items: center; gap: .75rem 1.5rem; flex-wrap: wrap; margin: 1rem 0; }
+  .page-nav { display: flex; align-items: center; gap: 0; flex-wrap: wrap; font-size: .9em; }
+  .page-nav a { color: #58a6ff; padding: .2rem .45rem; border-radius: 3px; }
+  .page-nav a:first-child { padding-left: 0; }
+  .page-nav a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }
+  .page-nav a:visited { color: #58a6ff; }
+  .page-nav .sep { color: #444; user-select: none; }
   {{ navigation_styles() }}
 </style>
 </head>
 <body>
 {{ navigation("Admin") }}
+{% if database_error %}<p class="note">{{ generated }}</p><p class="error">{{ database_error }}</p>{% else %}
+<div class="dashboard-toolbar">
+<nav class="page-nav" aria-label="Admin sections">
+  <a href="#database-migrations">Database migrations</a>{% if classify_all_duration %}<span class="sep">|</span><a href="#classify-all">Classify-all</a><span class="sep">|</span><a href="#pool-runtime">Per-pool runtime</a>{% endif %}<span class="sep">|</span><a href="#pool-snapshots">Pool snapshots</a>
+</nav>
+</div>
 <p class="note">{{ generated }}</p>
-{% if database_error %}<p class="error">{{ database_error }}</p>{% else %}
-<h2>Database migrations</h2>
+<h2 id="database-migrations">Database migrations</h2>
 <table><thead><tr><th>Migration</th><th>Status</th><th>Applied (UTC)</th></tr></thead><tbody>
 {% for migration in migrations %}<tr><td>{{ migration.version }}</td>{% if migration.applied_at %}<td class="ok">applied</td><td><time datetime="{{ migration.applied_at.isoformat() }}">{{ migration.applied_at_utc }}</time></td>{% else %}<td class="pending">pending</td><td>—</td>{% endif %}</tr>{% endfor %}
 </tbody></table>
 {% if classify_all_duration %}
-<h2>Last successful classify-all</h2>
+<h2 id="classify-all">Last successful classify-all</h2>
 <table><thead><tr><th>Total runtime</th><th>Completed (UTC)</th></tr></thead><tbody>
 <tr><td class="ok">{{ classify_all_duration }}</td><td><time datetime="{{ classify_all_completed_at.isoformat() }}">{{ classify_all_completed_at_utc }}</time></td></tr>
 </tbody></table>
-<h2>Per-pool runtime</h2>
+<h2 id="pool-runtime">Per-pool runtime</h2>
 <table><thead><tr><th>Pool</th><th>Runtime</th><th>Completed (UTC)</th></tr></thead><tbody>
 {% for timing in pool_timings %}<tr><td>{{ timing.pool_id }}</td><td class="ok">{{ timing.duration }}</td><td><time datetime="{{ timing.completed_at.isoformat() }}">{{ timing.completed_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</time></td></tr>{% endfor %}
 </tbody></table>
 {% endif %}
-<h2>Pool dashboard snapshots</h2>
+<h2 id="pool-snapshots">Pool dashboard snapshots</h2>
 <table><thead><tr><th>Pool</th><th>Snapshot source</th><th>Pool state</th></tr></thead><tbody>
 {% for snapshot in snapshots %}<tr><td>{{ snapshot.pool_id }}</td>{% if snapshot.source_at %}<td class="{{ 'stale' if snapshot.stale else 'ok' }}"><time datetime="{{ snapshot.source_at.isoformat() }}" title="{{ snapshot.source_at_utc }}">{{ snapshot.age }}</time>{% if snapshot.stale %} (stale){% endif %}</td>{% else %}<td class="missing">never</td>{% endif %}<td>{{ 'enabled' if snapshot.enabled else 'disabled' }}</td></tr>{% endfor %}
 </tbody></table>

@@ -98,6 +98,12 @@ def test_admin_shows_migration_and_snapshot_freshness(monkeypatch):
     response = client.get("/admin", headers={"X-Goog-IAP-JWT-Assertion": "signed"})
 
     assert response.status_code == 200
+    assert b'<nav class="page-nav" aria-label="Admin sections">' in response.data
+    assert b'href="#database-migrations"' in response.data
+    assert b'href="#classify-all"' in response.data
+    assert b'href="#pool-runtime"' in response.data
+    assert b'href="#pool-snapshots"' in response.data
+    assert response.data.index(b'aria-label="Admin sections"') < response.data.index(b"generated on")
     assert b"001_init" in response.data
     assert b"applied" in response.data
     assert b"002_task_run_intervals" in response.data
