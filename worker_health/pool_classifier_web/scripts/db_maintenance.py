@@ -26,7 +26,9 @@ from worker_health.pool_classifier_web.scripts.create_utilization_task_run_index
     create_utilization_task_run_index,
 )
 
-Operation = Callable[[str, list[str]], None]
+Operation = Callable[[str, list[str]], int | None]
+
+_GRACEFUL_STOP_EXIT_CODE = 130
 
 
 def _create_unresolved_task_run_index(dsn: str, argv: list[str]) -> None:
@@ -41,7 +43,7 @@ def _create_utilization_task_run_index(dsn: str, argv: list[str]) -> None:
     create_utilization_task_run_index(dsn)
 
 
-def _backfill_observed_start_lag(dsn: str, argv: list[str]) -> None:
+def _backfill_observed_start_lag(dsn: str, argv: list[str]) -> int | None:
     """Enrich Queue metadata, defaulting to the dashboard's seven-day window."""
     exit_code = backfill_start_lag_all_pools.main(
         [
@@ -50,14 +52,20 @@ def _backfill_observed_start_lag(dsn: str, argv: list[str]) -> None:
             *argv,
         ],
     )
+    if exit_code == _GRACEFUL_STOP_EXIT_CODE:
+        return exit_code
     if exit_code:
         raise RuntimeError(f"observed start-lag backfill exited with status {exit_code}")
+    return None
 
 
-def _backfill_job_sources(dsn: str, argv: list[str]) -> None:
+def _backfill_job_sources(dsn: str, argv: list[str]) -> int | None:
     exit_code = backfill_job_sources_all_pools.main(["--database-url", dsn, *argv])
+    if exit_code == _GRACEFUL_STOP_EXIT_CODE:
+        return exit_code
     if exit_code:
         raise RuntimeError(f"job-source backfill exited with status {exit_code}")
+    return None
 
 
 OPERATIONS: dict[str, Operation] = {
@@ -71,7 +79,7 @@ OPERATIONS: dict[str, Operation] = {
 }
 
 
-def run_operation(operation: str, dsn: str, argv: list[str] | None = None) -> None:
+def run_operation(operation: str, dsn: str, argv: list[str] | None = None) -> int:
     """Run one allowlisted operation and record its identity in job logs."""
     try:
         handler = OPERATIONS[operation]
@@ -81,7 +89,7 @@ def run_operation(operation: str, dsn: str, argv: list[str] | None = None) -> No
 
     print(json.dumps({"event": "db_maintenance_started", "operation": operation}, sort_keys=True))
     try:
-        handler(dsn, argv or [])
+        exit_code = handler(dsn, argv or [])
     except Exception as exc:
         print(
             json.dumps(
@@ -95,7 +103,11 @@ def run_operation(operation: str, dsn: str, argv: list[str] | None = None) -> No
             file=sys.stderr,
         )
         raise
+    if exit_code == _GRACEFUL_STOP_EXIT_CODE:
+        print(json.dumps({"event": "db_maintenance_stopped", "operation": operation}, sort_keys=True))
+        return exit_code
     print(json.dumps({"event": "db_maintenance_completed", "operation": operation}, sort_keys=True))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,8 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     if not dsn:
         print("DATABASE_URL not set", file=sys.stderr)
         return 1
-    run_operation(args.operation, dsn, operation_args)
-    return 0
+    return run_operation(args.operation, dsn, operation_args)
 
 
 if __name__ == "__main__":

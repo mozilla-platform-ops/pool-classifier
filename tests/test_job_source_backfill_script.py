@@ -28,3 +28,32 @@ def test_count_only_reports_an_empty_backlog(monkeypatch, capsys):
     assert backfill.main(["--database-url", "postgresql://example", "--count-only", "--lookback-days", "30"]) == 0
     assert capsys.readouterr().out.strip() == "No eligible job-source backlog found."
     assert closed == [True]
+
+
+def test_defaults_use_moderate_parallelism(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(backfill, "backlog_by_pool", lambda *_args: [("a/worker", 1)])
+    monkeypatch.setattr(
+        backfill,
+        "backfill_pool",
+        lambda pool_id, _dsn, batch_size, concurrency, retries, requests_per_second, *_args: (
+            captured.update(
+                pool_id=pool_id,
+                batch_size=batch_size,
+                concurrency=concurrency,
+                retries=retries,
+                requests_per_second=requests_per_second,
+            )
+            or (True, False, None)
+        ),
+    )
+
+    assert backfill.main(["--database-url", "postgresql://example"]) == 0
+
+    assert captured == {
+        "pool_id": "a/worker",
+        "batch_size": 500,
+        "concurrency": 12,
+        "retries": 2,
+        "requests_per_second": 8.0,
+    }

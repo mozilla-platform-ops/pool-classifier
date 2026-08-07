@@ -77,9 +77,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database-url", default=os.environ.get("DATABASE_URL"), help="Postgres DSN (default: DATABASE_URL)")
     parser.add_argument("--batch-size", type=int, default=500, metavar="TASKS")
-    parser.add_argument("--concurrency", type=int, default=5, metavar="REQUESTS")
+    parser.add_argument("--concurrency", type=int, default=12, metavar="REQUESTS")
     parser.add_argument("--retries", type=int, default=2, metavar="COUNT")
-    parser.add_argument("--requests-per-second", type=float, default=5.0, metavar="RATE")
+    parser.add_argument("--requests-per-second", type=float, default=8.0, metavar="RATE")
     parser.add_argument("--count-only", action="store_true", help="report eligible tasks without fetching or writing")
     parser.add_argument(
         "--lookback-days", type=int, default=14, metavar="DAYS",

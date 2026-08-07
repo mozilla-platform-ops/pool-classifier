@@ -60,6 +60,9 @@ Migration 010 creates `task_sources`; it deliberately does not fetch or infer
 historical data. To enrich already-stored task runs, use the reviewed
 `backfill-job-sources` operation. It defaults to the preceding 14 days and
 requires an explicit `--lookback-days` increase for a wider historical window.
+Its default batch uses 12 concurrent Taskcluster fetches, paced to 8 requests
+per second across the batch; both limits can be overridden with `--concurrency`
+and `--requests-per-second`.
 It stores only the compact derived source/method, never the Taskcluster task
 definition, and successful batches are idempotent.
 
@@ -80,6 +83,10 @@ counts for every pool. Re-run after an error: unsuccessful fetches remain
 unrecorded and therefore eligible for the next bounded execution. Deterministic
 Taskcluster 400/404 responses are recorded as `unknown` rather than retried,
 so legacy rows with invalid or expired task IDs do not block a pool.
+
+A single Ctrl-C lets the active batch commit, then stops cleanly with exit
+status 130 and a `db_maintenance_stopped` log event. Use a second Ctrl-C only
+to abort immediately.
 
 ## Datastore summary
 

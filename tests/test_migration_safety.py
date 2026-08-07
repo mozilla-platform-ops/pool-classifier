@@ -207,6 +207,17 @@ def test_db_maintenance_job_source_operation_uses_database_url(monkeypatch):
     ]]
 
 
+def test_db_maintenance_reports_a_graceful_job_source_stop_without_a_failure(monkeypatch, capsys):
+    monkeypatch.setattr(db_maintenance.backfill_job_sources_all_pools, "main", lambda _argv: 130)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+
+    assert db_maintenance.main(["--operation", "backfill-job-sources"]) == 130
+
+    output = capsys.readouterr()
+    assert '"event": "db_maintenance_stopped"' in output.out
+    assert "db_maintenance_failed" not in output.err
+
+
 def test_db_maintenance_main_requires_database_url(monkeypatch, capsys):
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
