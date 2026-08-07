@@ -88,6 +88,22 @@ def test_favicon_serves_svg_icon():
     assert b"<svg" in response.data
 
 
+def test_not_found_page_uses_shared_header_and_overview_link():
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/not-a-real-page")
+
+    assert response.status_code == 404
+    assert response.content_type.startswith("text/html")
+    assert b'<header class="site-header">' in response.data
+    assert b'<span class="site-title">Not found</span>' in response.data
+    assert "404 — Page not found".encode() in response.data
+    assert b"The page may have moved, or the URL may be incomplete." in response.data
+    assert b'<a href="/">Return to overview</a>' in response.data
+
+
 def test_pool_html_serves_complete_snapshot_without_constructing_a_classifier(monkeypatch):
     pool = Pool("display", "provisioner", "worker-type", "*/15 * * * *")
     monkeypatch.setattr(app_module.registry, "get_pool", lambda *_args: pool)

@@ -727,6 +727,10 @@ def create_app() -> Flask:
             message="Your account is not authorized to view this page.",
         ), 403
 
+    @app.errorhandler(404)
+    def not_found(_error):
+        return render_template("not_found.html"), 404
+
     @app.get("/admin")
     @require_admin_iap
     def admin():
