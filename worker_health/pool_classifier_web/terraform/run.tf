@@ -1,4 +1,5 @@
 locals {
+  service_name = "pool-classifier"
   image = (
     var.cloud_run_image != ""
     ? var.cloud_run_image
@@ -7,7 +8,7 @@ locals {
 }
 
 resource "google_cloud_run_v2_service" "pc" {
-  name     = "pool-classifier"
+  name     = local.service_name
   location = var.region
 
   # Only reachable via the load balancer. Scheduler also reaches the
@@ -125,7 +126,7 @@ resource "google_cloud_run_v2_service" "pc" {
       # assertion against the Cloud Run service audience.
       env {
         name  = "IAP_JWT_AUDIENCE"
-        value = "/projects/${data.google_project.project.number}/locations/${var.region}/services/${google_cloud_run_v2_service.pc.name}"
+        value = "/projects/${data.google_project.project.number}/locations/${var.region}/services/${local.service_name}"
       }
     }
   }
