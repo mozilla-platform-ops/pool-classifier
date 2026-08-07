@@ -113,7 +113,13 @@ def test_pool_html_serves_complete_snapshot_without_constructing_a_classifier(mo
         lambda *_args: {
             "source_at": "2026-07-31T12:00:00+00:00",
             "generated_at": "2026-07-31T12:01:00+00:00",
-            "payload": {"detail_html": "<html><body>saved detail<p class=\"footer\">generated on test</p></body></html>"},
+            "payload": {
+                "detail_html": (
+                    '<html><body><header class="site-header"><nav class="menu-popover" '
+                    'aria-label="Global navigation"><a href="/">Overview</a></nav></header>'
+                    'saved detail<p class="footer">generated on test</p></body></html>'
+                ),
+            },
         },
     )
     monkeypatch.setattr(app_module, "_get_classifier", lambda *_args: pytest.fail("must use snapshot"))
@@ -125,7 +131,40 @@ def test_pool_html_serves_complete_snapshot_without_constructing_a_classifier(mo
 
     assert b"saved detail" in response.data
     assert b"data from test" in response.data
+    assert b'href="/admin">Admin</a>' not in response.data
     assert response.headers["X-Pool-Classifier-Snapshot-Source"] == "2026-07-31T12:00:00+00:00"
+
+
+def test_pool_snapshot_navigation_uses_current_iap_admin_hint(monkeypatch):
+    pool = Pool("display", "provisioner", "worker-type", "*/15 * * * *")
+    monkeypatch.setattr(app_module.registry, "get_pool", lambda *_args: pool)
+    monkeypatch.setattr(
+        app_module,
+        "_read_dashboard_snapshot",
+        lambda *_args: {
+            "source_at": "2026-07-31T12:00:00+00:00",
+            "generated_at": "2026-07-31T12:01:00+00:00",
+            "payload": {
+                "detail_html": (
+                    '<html><body><header class="site-header"><a href="/old">old menu</a></header>'
+                    'saved detail</body></html>'
+                ),
+            },
+        },
+    )
+    monkeypatch.setattr(app_module, "_get_classifier", lambda *_args: pytest.fail("must use snapshot"))
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get(
+            "/pools/provisioner/worker-type",
+            headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:aerickson@mozilla.com"},
+        )
+
+    assert b'aria-label="Global navigation"' in response.data
+    assert b'href="/admin">Admin</a>' in response.data
+    assert b'href="/old"' not in response.data
 
 
 def test_standard_utilization_summary_uses_snapshot(monkeypatch, tmp_path):

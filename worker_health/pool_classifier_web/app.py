@@ -12,6 +12,7 @@ from importlib.metadata import PackageNotFoundError, version
 import logging
 import math
 import os
+import re
 from threading import Lock
 from time import monotonic
 from datetime import datetime, timedelta, timezone
@@ -21,7 +22,11 @@ from flask import Flask, Response, abort, jsonify, render_template, request
 from worker_health.pool_classifier import CONSECUTIVE_FAILURE_ALERT, PoolClassifier
 from worker_health.pool_classifier_web import registry
 from worker_health.pool_classifier_web import discovery
-from worker_health.pool_classifier_web.auth import require_admin_iap, require_scheduler_oidc
+from worker_health.pool_classifier_web.auth import (
+    is_admin_iap_user_hint,
+    require_admin_iap,
+    require_scheduler_oidc,
+)
 from worker_health.pool_classifier_web.postgres import connect as postgres_connect
 from worker_health.pool_classifier_web.registry import detect_os
 from worker_health.pool_classifier_web.scripts.migrate import MIGRATIONS_DIR
@@ -611,12 +616,36 @@ def _dashboard_snapshot_reads_disabled() -> bool:
     return os.environ.get("POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS") == "1"
 
 
+def _replace_detail_navigation(detail_html: str, navigation_html: str) -> str:
+    """Replace a stored detail page's header with request-specific navigation."""
+    return re.sub(
+        r'<header class="site-header">.*?</header>',
+        lambda _match: navigation_html,
+        detail_html,
+        count=1,
+        flags=re.DOTALL,
+    )
+
+
 def create_app() -> Flask:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = Flask(__name__)
     app.jinja_env.filters["humanize_cron"] = _humanize_cron
     app.jinja_env.filters["format_lag"] = _format_lag
     app.jinja_env.filters["lag_color_class"] = _lag_color_class
+
+    @app.context_processor
+    def navigation_context() -> dict[str, bool]:
+        return {"show_admin_navigation": is_admin_iap_user_hint(request.headers)}
+
+    def navigation_html(current: str) -> str:
+        base_template = app.jinja_env.get_template("base.html")
+        return str(
+            base_template.module.navigation(
+                current,
+                show_admin_navigation=is_admin_iap_user_hint(request.headers),
+            ),
+        )
 
     def publish_pool_snapshot(pc: PoolClassifier, pool) -> None:
         """Build every fixed detail artifact before atomically publishing it."""
@@ -639,11 +668,10 @@ def create_app() -> Flask:
             DEFAULT_OBSERVED_START_LAG_SLO_SECONDS, DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES,
         )
         lag["api_version"] = 1
-        base_template = app.jinja_env.get_template("base.html")
         detail_html = pc.render_html(
             os_label=detect_os(pool),
-            navigation_html=str(base_template.module.navigation(f"{pool.provisioner}/{pool.worker_type}")),
-            navigation_styles=str(base_template.module.navigation_styles()),
+            navigation_html=navigation_html(f"{pool.provisioner}/{pool.worker_type}"),
+            navigation_styles=str(app.jinja_env.get_template("base.html").module.navigation_styles()),
         )
         write_snapshot(
             dsn,
@@ -1024,6 +1052,10 @@ def create_app() -> Flask:
         )
         if snapshot and (detail_html := snapshot["payload"].get("detail_html")):
             metadata = _snapshot_metadata(snapshot)
+            detail_html = _replace_detail_navigation(
+                detail_html,
+                navigation_html(f"{provisioner}/{worker_type}"),
+            )
             detail_html = detail_html.replace('<p class="footer">Generated: ', '<p class="footer">data from ', 1)
             detail_html = detail_html.replace('<p class="footer">generated on ', '<p class="footer">data from ', 1)
             if metadata["stale"]:
@@ -1040,12 +1072,11 @@ def create_app() -> Flask:
         if pc is None:
             abort(404)
         os_label = detect_os(pool)
-        base_template = app.jinja_env.get_template("base.html")
         return Response(
             pc.render_html(
                 os_label=os_label,
-                navigation_html=str(base_template.module.navigation(f"{provisioner}/{worker_type}")),
-                navigation_styles=str(base_template.module.navigation_styles()),
+                navigation_html=navigation_html(f"{provisioner}/{worker_type}"),
+                navigation_styles=str(app.jinja_env.get_template("base.html").module.navigation_styles()),
             ),
             content_type="text/html; charset=utf-8",
         )

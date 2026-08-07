@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import wraps
-from typing import Callable
+from typing import Callable, Mapping
 
 from flask import abort, request
 
@@ -46,6 +46,23 @@ def _verify_iap(token: str, audience: str) -> dict:
     if claims.get("iss") != "https://cloud.google.com/iap":
         raise ValueError("unexpected IAP JWT issuer")
     return claims
+
+
+def is_admin_iap_user_hint(headers: Mapping[str, str]) -> bool:
+    """Return whether IAP's browser-identity header names an administrator.
+
+    This is deliberately only a presentation hint for public dashboard pages.
+    The /admin route continues to validate the signed IAP assertion before
+    granting access, so an untrusted request header can never authorize a
+    request. The explicit local ``ADMIN_IAP_BYPASS=1`` also exposes the menu,
+    matching that route's local-development authorization behavior.
+    """
+    if os.environ.get("ADMIN_IAP_BYPASS") == "1":
+        return True
+    identity = headers.get("X-Goog-Authenticated-User-Email", "")
+    # IAP supplies values such as ``accounts.google.com:user@example.com``.
+    _, separator, email = identity.rpartition(":")
+    return bool(separator) and email in ADMIN_EMAILS
 
 
 def require_admin_iap(view: Callable) -> Callable:

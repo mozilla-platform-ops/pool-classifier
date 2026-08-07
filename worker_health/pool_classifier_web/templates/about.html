@@ -30,7 +30,7 @@
 </style>
 </head>
 <body>
-{{ navigation("About") }}
+{{ navigation("About", show_admin_navigation) }}
 <p class="intro">Pool Classifier’s goal is to make Taskcluster worker-pool health operationally legible.</p>
 <p class="intro">It collects recent task and worker signals, classifies failures into actionable categories, and presents per-pool evidence—availability, utilization, task volume/source, queue/start lag, recurring failures, and quarantine state—so operators can spot degraded pools, understand likely causes, and decide where to investigate or intervene.</p>
 <h2>Build information</h2>

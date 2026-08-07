@@ -46,3 +46,31 @@ def test_global_navigation_has_five_consistent_items():
     ):
         assert label in menu
         assert f'href="{path}"' in menu or label == "Overview"
+
+
+def test_global_navigation_shows_admin_only_for_iap_admin_hint():
+    app = create_app()
+    client = app.test_client()
+
+    response = client.get("/")
+
+    assert b'href="/admin">Admin</a>' not in response.data
+
+    response = client.get(
+        "/",
+        headers={"X-Goog-Authenticated-User-Email": "accounts.google.com:aerickson@mozilla.com"},
+    )
+
+    assert response.status_code == 200
+    assert b'href="/admin">Admin</a>' in response.data
+    assert response.data.index(b'href="/admin">Admin</a>') < response.data.index(b'href="/about">About</a>')
+
+
+def test_global_navigation_shows_admin_when_local_iap_bypass_is_enabled(monkeypatch):
+    monkeypatch.setenv("ADMIN_IAP_BYPASS", "1")
+    app = create_app()
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    assert b'href="/admin">Admin</a>' in response.data

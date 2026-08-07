@@ -25,7 +25,7 @@
 </style>
 </head>
 <body>
-{{ navigation("Admin") }}
+{{ navigation("Admin", show_admin_navigation) }}
 {% if database_error %}<p class="note">{{ generated }}</p><p class="error">{{ database_error }}</p>{% else %}
 <div class="dashboard-toolbar">
 <nav class="page-nav" aria-label="Admin sections">
