@@ -21,7 +21,10 @@ def test_count_only_reports_backlog_without_starting_pool_backfills(monkeypatch,
 
 
 def test_count_only_reports_an_empty_backlog(monkeypatch, capsys):
+    closed = []
     monkeypatch.setattr(backfill, "backlog_by_pool", lambda *_args: [])
+    monkeypatch.setattr(backfill, "close_postgres_pools", lambda: closed.append(True))
 
     assert backfill.main(["--database-url", "postgresql://example", "--count-only", "--lookback-days", "30"]) == 0
     assert capsys.readouterr().out.strip() == "No eligible job-source backlog found."
+    assert closed == [True]

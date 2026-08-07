@@ -13,7 +13,7 @@ from typing import Callable
 from worker_health.pool_classifier import PoolClassifier
 from worker_health.pool_classifier_web.postgres import connect as postgres_connect
 from worker_health.pool_classifier_web.scripts.backfill_start_lag_all_pools import parse_pool_id
-from worker_health.pool_classifier_web.storage import ClassifyLockBusy, PostgresStorage
+from worker_health.pool_classifier_web.storage import ClassifyLockBusy, PostgresStorage, close_postgres_pools
 
 
 class StopAfterCurrentBatch:
@@ -127,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     finally:
         signal.signal(signal.SIGINT, previous_handler)
+        close_postgres_pools()
 
 
 if __name__ == "__main__":
