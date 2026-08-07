@@ -48,6 +48,7 @@ def test_admin_iap_bypass_allows_local_development(monkeypatch):
     assert response.status_code == 200
     assert b"Database status is unavailable" in response.data
     assert b'<header class="site-header">' in response.data
+    assert b"a { color: inherit; text-decoration: none; }" in response.data
     assert b'<span class="site-title">Admin</span>' in response.data
     assert b'aria-label="Global navigation"' in response.data
     assert b'href="/patterns"' in response.data
