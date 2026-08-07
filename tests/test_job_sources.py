@@ -39,7 +39,7 @@ def test_source_volume_uses_cached_source_and_unknown(tmp_path):
     ]
 
 
-def test_task_source_chart_uses_accessible_colors_and_focus_cue(tmp_path):
+def test_task_source_chart_uses_accessible_colors_focus_cue_and_volume_order(tmp_path):
     storage = SqliteStorage("proj/worker", tmp_path)
     storage.init_schema()
     classifier = PoolClassifier("proj", "worker", results_dir=tmp_path, storage=storage, use_color=False)
@@ -51,6 +51,9 @@ def test_task_source_chart_uses_accessible_colors_and_focus_cue(tmp_path):
     assert "sourceColors=new Map(sources.map" in html
     assert ".source-segment:focus-visible" in html
     assert "tabindex='0'" in html
+    assert "sourceTotals=new Map(sources.map(s=>[s,0]))" in html
+    assert "displaySources=[...sources].sort((a,b)=>sourceTotals.get(b)-sourceTotals.get(a)||a.localeCompare(b))" in html
+    assert "${displaySources.map(s=>{const b=rowBySource.get(s);return b?`<div class='source-segment'" in html
     assert "let h=2166136261" not in html
 
 
