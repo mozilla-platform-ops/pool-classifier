@@ -71,6 +71,7 @@ DEBUG_INSTANCE_COLORS = (
     "#39c5cf",
 )
 DEBUG_INSTANCE_PORT_COLORS = {"8080": "#58a6ff"}
+DEBUG_INSTANCE_BADGE_COLOR = DEBUG_INSTANCE_PORT_COLORS["8080"]
 
 # Dashboard aggregates are intentionally process-local: metric definitions are
 # still evolving, so a short TTL is safer and simpler than persisted rollups.
@@ -163,7 +164,7 @@ def _add_debug_instance_identity(html: str, port: str, debug_enabled: bool) -> s
         "</style>"
     )
     marker = (
-        f'<div class="debug-instance-indicator" style="--debug-instance-color: {color}" '
+        f'<div class="debug-instance-indicator" style="--debug-instance-color: {DEBUG_INSTANCE_BADGE_COLOR}" '
         f'aria-label="Local debug instance: {escape(label)}">{escape(label)}</div>'
     )
     if "debug-instance-identity" in html:

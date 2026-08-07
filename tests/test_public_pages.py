@@ -87,7 +87,8 @@ def test_debug_instance_identity_uses_the_port_and_local_overrides(monkeypatch):
     assert response.status_code == 200
     assert b'debug-instance-identity' in response.data
     assert b"blue worktree" in response.data
-    assert b"--debug-instance-color: #123abc" in response.data
+    assert b"linear-gradient(#123abc20, #123abc20)" in response.data
+    assert b"--debug-instance-color: #58a6ff" in response.data
 
 
 def test_non_debug_responses_do_not_include_debug_instance_identity():
