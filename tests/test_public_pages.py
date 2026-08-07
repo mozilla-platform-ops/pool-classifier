@@ -102,8 +102,9 @@ def test_local_instance_identity_uses_a_port_only_badge_without_debug(monkeypatc
     monkeypatch.setenv("PC_INSTANCE_IDENTITY", "1")
     app = create_app()
 
-    response = app.test_client().get("/api", environ_overrides={"SERVER_PORT": "8181"})
+    response = app.test_client().get("/api", environ_overrides={"SERVER_PORT": "8080"})
 
     assert b"debug-instance-identity" in response.data
-    assert b">8181</div>" in response.data
-    assert b"DEBUG 8181" not in response.data
+    assert b">8080</div>" in response.data
+    assert b"DEBUG 8080" not in response.data
+    assert b"--debug-instance-color: #58a6ff" in response.data

@@ -70,6 +70,7 @@ DEBUG_INSTANCE_COLORS = (
     "#f85149",
     "#39c5cf",
 )
+DEBUG_INSTANCE_PORT_COLORS = {"8080": "#58a6ff"}
 
 # Dashboard aggregates are intentionally process-local: metric definitions are
 # still evolving, so a short TTL is safer and simpler than persisted rollups.
@@ -138,6 +139,8 @@ def _debug_instance_identity(port: str, debug_enabled: bool) -> tuple[str, str, 
     configured_color = os.environ.get("PC_INSTANCE_COLOR", "")
     if re.fullmatch(r"#[0-9a-fA-F]{6}", configured_color):
         color = configured_color.lower()
+    elif port in DEBUG_INSTANCE_PORT_COLORS:
+        color = DEBUG_INSTANCE_PORT_COLORS[port]
     else:
         try:
             color = DEBUG_INSTANCE_COLORS[int(port) % len(DEBUG_INSTANCE_COLORS)]
