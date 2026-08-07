@@ -60,6 +60,9 @@ def test_task_source_chart_uses_accessible_colors_order_and_custom_tooltip(tmp_p
     assert "aria-describedby='source-tooltip'" in html
     assert "segment.addEventListener('focus',show)" in html
     assert "if(event.key==='Escape')hideSourceTooltip()" in html
+    assert "SOURCE_DAYS_KEY='pc-task-source-days'" in html
+    assert "localStorage.getItem(SOURCE_DAYS_KEY)" in html
+    assert "localStorage.setItem(SOURCE_DAYS_KEY,String(sourceDays))" in html
     assert "let h=2166136261" not in html
 
 
