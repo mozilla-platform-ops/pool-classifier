@@ -88,7 +88,7 @@ def test_debug_instance_identity_uses_the_port_and_local_overrides(monkeypatch):
     assert b'debug-instance-identity' in response.data
     assert b"blue worktree" in response.data
     assert b"linear-gradient(#123abc20, #123abc20)" in response.data
-    assert b"--debug-instance-color: #58a6ff" in response.data
+    assert b"--debug-instance-color: #39c5cf" in response.data
 
 
 def test_non_debug_responses_do_not_include_debug_instance_identity():
@@ -108,4 +108,4 @@ def test_local_instance_identity_uses_a_port_only_badge_without_debug(monkeypatc
     assert b"debug-instance-identity" in response.data
     assert b">8080</div>" in response.data
     assert b"DEBUG 8080" not in response.data
-    assert b"--debug-instance-color: #58a6ff" in response.data
+    assert b"--debug-instance-color: #39c5cf" in response.data
