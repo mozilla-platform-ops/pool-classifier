@@ -119,6 +119,37 @@ def test_admin_shows_migration_and_snapshot_freshness(monkeypatch):
     assert b"2m 0s" in response.data
 
 
+def test_admin_shows_curated_runtime_mode(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setenv("POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS", "1")
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [])
+    monkeypatch.setattr(
+        app_module,
+        "_admin_dashboard_data",
+        lambda _dsn: {"migrations": [], "snapshots": {}, "overview": {}},
+    )
+    client = _admin_client(monkeypatch)
+    client.application.debug = True
+
+    response = client.get("/admin", headers={"X-Goog-IAP-JWT-Assertion": "signed"})
+
+    assert response.status_code == 200
+    assert b'href="#runtime-mode"' in response.data
+    assert b"Runtime mode" in response.data
+    assert b"Request host and port" in response.data
+    assert b"localhost" in response.data
+    assert b"Current setting" in response.data
+    assert b"Flask debug" in response.data
+    assert b"enabled" in response.data
+    assert "live rendering — snapshot reads disabled in this runtime".encode() in response.data
+    assert b"POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS" not in response.data
+
+    monkeypatch.delenv("POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS")
+    response = client.get("/admin", headers={"X-Goog-IAP-JWT-Assertion": "signed"})
+
+    assert b"stored dashboard snapshots enabled (used when available)" in response.data
+
+
 def test_relative_age_is_compact_and_handles_future_timestamps():
     now = datetime(2026, 8, 6, 12, 0, tzinfo=timezone.utc)
 

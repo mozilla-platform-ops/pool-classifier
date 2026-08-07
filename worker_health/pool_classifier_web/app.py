@@ -595,7 +595,7 @@ def _timestamp_label(prefix: str, timestamp: datetime) -> str:
 
 
 def _read_dashboard_snapshot(dsn: str | None, scope: str, pool_id: str = "") -> dict | None:
-    if os.environ.get("POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS") == "1":
+    if _dashboard_snapshot_reads_disabled():
         return None
     if not dsn:
         return None
@@ -604,6 +604,11 @@ def _read_dashboard_snapshot(dsn: str | None, scope: str, pool_id: str = "") -> 
     except Exception as exc:  # noqa: BLE001 - snapshot absence must not hide the dashboard
         logger.warning("dashboard snapshot read failed for %s/%s: %s", scope, pool_id, exc)
         return None
+
+
+def _dashboard_snapshot_reads_disabled() -> bool:
+    """Return whether dashboard requests must render live instead of reading snapshots."""
+    return os.environ.get("POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS") == "1"
 
 
 def create_app() -> Flask:
@@ -777,6 +782,11 @@ def create_app() -> Flask:
         pool_timings.sort(key=lambda timing: timing["duration_seconds"], reverse=True)
         return render_template(
             "admin.html",
+            runtime_mode={
+                "debug_enabled": app.debug,
+                "detail_pages_live": _dashboard_snapshot_reads_disabled(),
+                "request_host": request.host,
+            },
             migrations=migration_rows,
             snapshots=snapshot_rows,
             classify_all_duration=_format_runtime(overview_payload["classify_all_duration_seconds"])

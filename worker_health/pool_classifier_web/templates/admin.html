@@ -28,10 +28,16 @@
 {% if database_error %}<p class="note">{{ generated }}</p><p class="error">{{ database_error }}</p>{% else %}
 <div class="dashboard-toolbar">
 <nav class="page-nav" aria-label="Admin sections">
-  <a href="#database-migrations">Database migrations</a>{% if classify_all_duration %}<span class="sep">|</span><a href="#classify-all">Classify-all</a><span class="sep">|</span><a href="#pool-runtime">Per-pool runtime</a>{% endif %}<span class="sep">|</span><a href="#pool-snapshots">Pool snapshots</a>
+  <a href="#runtime-mode">Runtime mode</a><span class="sep">|</span><a href="#database-migrations">Database migrations</a>{% if classify_all_duration %}<span class="sep">|</span><a href="#classify-all">Classify-all</a><span class="sep">|</span><a href="#pool-runtime">Per-pool runtime</a>{% endif %}<span class="sep">|</span><a href="#pool-snapshots">Pool snapshots</a>
 </nav>
 </div>
 <p class="note">{{ generated }}</p>
+<h2 id="runtime-mode">Runtime mode</h2>
+<table><thead><tr><th>Setting</th><th>Current setting</th></tr></thead><tbody>
+<tr><td>Request host and port</td><td>{{ runtime_mode.request_host }}</td></tr>
+<tr><td>Flask debug</td><td class="{{ 'pending' if runtime_mode.debug_enabled else 'ok' }}">{{ 'enabled' if runtime_mode.debug_enabled else 'disabled' }}</td></tr>
+<tr><td>Detail-page rendering</td>{% if runtime_mode.detail_pages_live %}<td class="pending">live rendering — snapshot reads disabled in this runtime</td>{% else %}<td class="ok">stored dashboard snapshots enabled (used when available)</td>{% endif %}</tr>
+</tbody></table>
 <h2 id="database-migrations">Database migrations</h2>
 <table><thead><tr><th>Migration</th><th>Status</th><th>Applied (UTC)</th></tr></thead><tbody>
 {% for migration in migrations %}<tr><td>{{ migration.version }}</td>{% if migration.applied_at %}<td class="ok">applied</td><td><time datetime="{{ migration.applied_at.isoformat() }}">{{ migration.applied_at_utc }}</time></td>{% else %}<td class="pending">pending</td><td>—</td>{% endif %}</tr>{% endfor %}
