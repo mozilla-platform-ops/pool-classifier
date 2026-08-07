@@ -123,10 +123,10 @@ resource "google_cloud_run_v2_service" "pc" {
       }
 
       # Application-level authorization for /admin verifies IAP's signed
-      # assertion against the Cloud Run service audience.
+      # assertion against the IAP-protected HTTPS backend-service audience.
       env {
         name  = "IAP_JWT_AUDIENCE"
-        value = "/projects/${data.google_project.project.number}/locations/${var.region}/services/${local.service_name}"
+        value = var.iap_jwt_audience
       }
     }
   }

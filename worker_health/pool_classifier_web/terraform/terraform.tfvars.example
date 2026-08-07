@@ -14,4 +14,8 @@ db_password = "CHANGE_ME" # pragma: allowlist secret
 iap_oauth2_client_id     = "REPLACE_WITH_CLIENT_ID.apps.googleusercontent.com"
 iap_oauth2_client_secret = "REPLACE_WITH_CLIENT_SECRET" # pragma: allowlist secret
 
+# Read the backend service's generated ID after its initial creation. Its IAP
+# assertion audience is /projects/<project-number>/global/backendServices/<id>.
+iap_jwt_audience = "/projects/REPLACE_WITH_PROJECT_NUMBER/global/backendServices/REPLACE_WITH_BACKEND_SERVICE_ID"
+
 iap_authorized_members = ["domain:mozilla.com"]

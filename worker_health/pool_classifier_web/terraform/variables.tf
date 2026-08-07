@@ -50,6 +50,11 @@ variable "iap_authorized_members" {
   default     = ["domain:mozilla.com"]
 }
 
+variable "iap_jwt_audience" {
+  description = "IAP backend-service audience for application-level JWT validation (/projects/PROJECT_NUMBER/global/backendServices/BACKEND_SERVICE_ID)"
+  type        = string
+}
+
 variable "cloud_run_min_instances" {
   description = "Minimum Cloud Run instances. 0 is fine — Scheduler wakes the service."
   type        = number
