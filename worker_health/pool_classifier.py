@@ -275,12 +275,24 @@ class PoolClassifier:
 
     def _get_task_definition_with_retry(
         self, task_id: str, retries: int, rate_limiter: _RequestRateLimiter,
-    ) -> dict:
+    ) -> Optional[dict]:
         """Fetch one task definition with bounded retry/backoff."""
         for attempt in range(retries + 1):
             try:
                 rate_limiter.wait()
                 return self.tc_queue.task(task_id)
+            except taskcluster.exceptions.TaskclusterRestFailure as exc:
+                if exc.status_code in (400, 404):
+                    logger.warning(
+                        "%s: task definition is permanently unavailable (HTTP %s); recording unknown source",
+                        task_id, exc.status_code,
+                    )
+                    return None
+                if attempt == retries:
+                    raise
+                delay = 0.25 * (2**attempt)
+                logger.warning("%s: task-definition fetch failed; retrying in %.2fs", task_id, delay)
+                time.sleep(delay)
             except Exception:
                 if attempt == retries:
                     raise
@@ -307,7 +319,7 @@ class PoolClassifier:
                     stats["stop_requested"] = should_stop()
                 return stats
             rate_limiter = _RequestRateLimiter(requests_per_second)
-            fetched: Dict[str, dict] = {}
+            fetched: Dict[str, Optional[dict]] = {}
             with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="job-source-backfill") as executor:
                 futures = {
                     executor.submit(self._get_task_definition_with_retry, task_id, retries, rate_limiter): task_id
@@ -317,7 +329,8 @@ class PoolClassifier:
                     task_id = futures[future]
                     try:
                         fetched[task_id] = future.result()
-                        stats["fetched"] += 1
+                        if fetched[task_id] is not None:
+                            stats["fetched"] += 1
                     except Exception:
                         stats["errors"] += 1
                         logger.exception("%s: task-definition fetch failed after retries", task_id)

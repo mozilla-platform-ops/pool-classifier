@@ -77,7 +77,9 @@ gcloud run jobs execute pool-classifier-db-maintenance \
 
 The operation reports selected, fetched, classified, unknown, and error task
 counts for every pool. Re-run after an error: unsuccessful fetches remain
-unrecorded and therefore eligible for the next bounded execution.
+unrecorded and therefore eligible for the next bounded execution. Deterministic
+Taskcluster 400/404 responses are recorded as `unknown` rather than retried,
+so legacy rows with invalid or expired task IDs do not block a pool.
 
 ## Datastore summary
 

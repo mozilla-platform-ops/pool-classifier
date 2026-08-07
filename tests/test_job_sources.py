@@ -1,3 +1,5 @@
+import taskcluster
+
 from worker_health.pool_classifier import PoolClassifier
 from worker_health.pool_classifier_web.job_sources import AUDIT_WORKER_SOURCE, SourceMethod, classify_job_source
 from worker_health.pool_classifier_web.storage import SqliteStorage
@@ -90,6 +92,24 @@ def test_job_source_backfill_leaves_failed_fetches_eligible_for_resume(tmp_path,
 
     assert result["errors"] == 1
     assert storage.get_task_source("retry-me") is None
+
+
+def test_job_source_backfill_records_permanently_unavailable_tasks_as_unknown(tmp_path, monkeypatch):
+    storage = SqliteStorage("proj/worker", tmp_path)
+    storage.init_schema()
+    storage.record_task_result("legacy-invalid-id", "worker", 0, "completed", None, None, "2026-08-05T12:00:00+00:00", None, "2026-08-05T12:00:00+00:00")
+    storage.commit()
+    classifier = PoolClassifier("proj", "worker", results_dir=tmp_path, storage=storage, use_color=False)
+    monkeypatch.setattr(classifier, "_ensure_tc", lambda: None)
+    task_error = taskcluster.exceptions.TaskclusterRestFailure("invalid task ID", status_code=400, superExc=None)
+    classifier.tc_queue = type("Queue", (), {"task": lambda *_args: (_ for _ in ()).throw(task_error)})()
+
+    result = classifier.backfill_job_sources(batch_size=1, concurrency=1, retries=0, requests_per_second=1000)
+
+    assert result == {"selected_tasks": 1, "fetched": 0, "classified": 1, "unknown": 1, "errors": 0}
+    assert storage.get_task_source("legacy-invalid-id") == {
+        "source": "unknown", "source_method": int(SourceMethod.TASK_FETCH_FAILED),
+    }
 
 
 def test_job_source_backfill_rate_limits_each_task_definition_request(tmp_path, monkeypatch):
