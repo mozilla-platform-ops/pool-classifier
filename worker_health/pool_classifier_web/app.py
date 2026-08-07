@@ -128,8 +128,13 @@ def _application_version() -> str:
         return "unknown"
 
 
-def _debug_instance_identity(port: str) -> tuple[str, str, str]:
-    """Return the label, color, and translucent tint for a local debug instance."""
+def _instance_identity_enabled(debug_enabled: bool) -> bool:
+    """Return whether this local runtime should mark its HTML responses."""
+    return debug_enabled or os.environ.get("PC_INSTANCE_IDENTITY") == "1"
+
+
+def _debug_instance_identity(port: str, debug_enabled: bool) -> tuple[str, str, str]:
+    """Return the label, color, and translucent tint for a local instance."""
     configured_color = os.environ.get("PC_INSTANCE_COLOR", "")
     if re.fullmatch(r"#[0-9a-fA-F]{6}", configured_color):
         color = configured_color.lower()
@@ -138,13 +143,13 @@ def _debug_instance_identity(port: str) -> tuple[str, str, str]:
             color = DEBUG_INSTANCE_COLORS[int(port) % len(DEBUG_INSTANCE_COLORS)]
         except ValueError:
             color = DEBUG_INSTANCE_COLORS[sum(map(ord, port)) % len(DEBUG_INSTANCE_COLORS)]
-    label = os.environ.get("PC_INSTANCE_LABEL") or f"DEBUG {port}"
+    label = os.environ.get("PC_INSTANCE_LABEL") or (f"DEBUG {port}" if debug_enabled else port)
     return label, color, f"{color}20"
 
 
-def _add_debug_instance_identity(html: str, port: str) -> str:
-    """Add a request-specific debug marker without changing stored page artifacts."""
-    label, color, tint = _debug_instance_identity(port)
+def _add_debug_instance_identity(html: str, port: str, debug_enabled: bool) -> str:
+    """Add a request-specific local marker without changing stored page artifacts."""
+    label, color, tint = _debug_instance_identity(port, debug_enabled)
     styles = (
         '<style id="debug-instance-identity">'
         f"body {{ background-color: #111 !important; background-image: linear-gradient({tint}, {tint}) !important; }}"
@@ -685,9 +690,11 @@ def create_app() -> Flask:
 
     @app.after_request
     def add_debug_instance_identity(response: Response) -> Response:
-        """Mark locally debugged HTML so concurrent instances are distinguishable."""
-        if app.debug and response.mimetype == "text/html" and not response.is_streamed:
-            response.set_data(_add_debug_instance_identity(response.get_data(as_text=True), request.environ.get("SERVER_PORT", "?")))
+        """Mark local HTML so concurrent instances are distinguishable."""
+        if _instance_identity_enabled(app.debug) and response.mimetype == "text/html" and not response.is_streamed:
+            response.set_data(
+                _add_debug_instance_identity(response.get_data(as_text=True), request.environ.get("SERVER_PORT", "?"), app.debug),
+            )
         return response
 
     @app.context_processor

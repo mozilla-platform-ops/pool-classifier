@@ -96,3 +96,14 @@ def test_non_debug_responses_do_not_include_debug_instance_identity():
     response = app.test_client().get("/api")
 
     assert b"debug-instance-identity" not in response.data
+
+
+def test_local_instance_identity_uses_a_port_only_badge_without_debug(monkeypatch):
+    monkeypatch.setenv("PC_INSTANCE_IDENTITY", "1")
+    app = create_app()
+
+    response = app.test_client().get("/api", environ_overrides={"SERVER_PORT": "8181"})
+
+    assert b"debug-instance-identity" in response.data
+    assert b">8181</div>" in response.data
+    assert b"DEBUG 8181" not in response.data
