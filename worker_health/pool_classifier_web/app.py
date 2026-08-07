@@ -138,7 +138,7 @@ def _debug_instance_identity(port: str) -> tuple[str, str, str]:
             color = DEBUG_INSTANCE_COLORS[int(port) % len(DEBUG_INSTANCE_COLORS)]
         except ValueError:
             color = DEBUG_INSTANCE_COLORS[sum(map(ord, port)) % len(DEBUG_INSTANCE_COLORS)]
-    label = os.environ.get("PC_INSTANCE_LABEL") or f"DEBUG \u00b7 :{port}"
+    label = os.environ.get("PC_INSTANCE_LABEL") or f"DEBUG {port}"
     return label, color, f"{color}20"
 
 

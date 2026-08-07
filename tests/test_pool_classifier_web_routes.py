@@ -187,7 +187,7 @@ def test_pool_snapshot_adds_debug_identity_at_response_time(monkeypatch):
     assert response.status_code == 200
     assert b"saved detail" in response.data
     assert b"debug-instance-identity" in response.data
-    assert b"DEBUG \xc2\xb7 :8181" in response.data
+    assert b"DEBUG 8181" in response.data
 
 
 def test_standard_utilization_summary_uses_snapshot(monkeypatch, tmp_path):
