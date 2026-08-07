@@ -1,5 +1,8 @@
 <!doctype html>
 {% from "base.html" import navigation, navigation_styles %}
+<html lang="en">
+<head>
+<meta charset="utf-8">
 <title>Pool Classifier — Pool Discovery</title>
 <style>
   body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }
@@ -12,8 +15,12 @@
   table { border-collapse: collapse; width: 100%; table-layout: fixed; } th,td { padding:.5rem;border-bottom:1px solid #333;text-align:left;vertical-align:top }.pool-cell,.status-cell,.action-cell{white-space:nowrap}.covered{color:#4c4}.uncovered{color:#f90}.ignored{color:#b58cff}.excluded,.configured-inactive{color:#777}code{white-space:pre-wrap}.action-button{font:inherit;color:#58a6ff;background:#1a1a1a;border:1px solid #444;border-radius:3px;padding:.25rem .5rem;cursor:pointer}.action-button:hover{border-color:#58a6ff}.discovery-actions{display:flex;align-items:center;gap:.75rem;margin:0 0 .5rem}.fetched{color:#777;font-size:.85em}
   {{ navigation_styles() }}
 </style>
+</head>
+<body>
 {{ navigation("Pool Discovery", show_admin_navigation) }}
 <p>Discovers Taskcluster worker types for proj-autophone and releng-hardware, then compares them with the configured pool registry.</p>
 <div class="discovery-actions"><form method="post" action="/pool-discovery/refetch"><button class="action-button">Refetch Taskcluster</button></form><span class="fetched">Last fetched: {{ data.fetched_at }}.</span></div>
 <table><colgroup><col style="width:68%"><col style="width:16%"><col style="width:16%"></colgroup><tr><th>Pool</th><th>Status</th><th>Add to registry</th></tr>{% for row in data.rows %}<tr class="{{ row.status|replace(' ', '-') }}"><td class="pool-cell">{{ row.provisioner }}/{{ row.worker_type }}</td><td class="status-cell">{{ row.status }}{% if row.reason %}: {{ row.reason }}{% endif %}</td><td class="action-cell">{% if row.status == 'uncovered' %}<button class="action-button copy-yaml" data-provisioner="{{ row.provisioner }}" data-worker-type="{{ row.worker_type }}">Copy YAML</button>{% endif %}</td></tr>{% endfor %}</table>
 <script>document.querySelectorAll('.copy-yaml').forEach(button => button.addEventListener('click', () => { const yaml=`- provisioner: ${button.dataset.provisioner}\n  worker_type: ${button.dataset.workerType}\n`; navigator.clipboard.writeText(yaml).then(() => { button.textContent='Copied'; setTimeout(() => button.textContent='Copy YAML', 1500); }); }));</script>
+</body>
+</html>

@@ -589,6 +589,23 @@ def test_pool_discovery_page_and_refetch(monkeypatch):
     assert calls == [False, True]
 
 
+def test_pool_discovery_inherits_local_instance_background(monkeypatch):
+    monkeypatch.setenv("PC_INSTANCE_IDENTITY", "1")
+    monkeypatch.setenv("PC_INSTANCE_COLOR", "#123abc")
+    monkeypatch.setattr(
+        app_module.discovery,
+        "discover",
+        lambda force=False: {"fetched_at": "2026-07-30T00:00:00+00:00", "rows": []},
+    )
+    app = create_app()
+
+    response = app.test_client().get("/pool-discovery")
+
+    assert response.status_code == 200
+    assert b"debug-instance-identity" in response.data
+    assert b"linear-gradient(#123abc20, #123abc20)" in response.data
+
+
 def test_failures_api_groups_terminal_failure_categories(monkeypatch, tmp_path):
     storage = _api_storage(tmp_path)
     storage.record_task_result(
