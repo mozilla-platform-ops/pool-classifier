@@ -39,7 +39,7 @@ def test_source_volume_uses_cached_source_and_unknown(tmp_path):
     ]
 
 
-def test_task_source_chart_uses_accessible_colors_focus_cue_and_volume_order(tmp_path):
+def test_task_source_chart_uses_accessible_colors_order_and_custom_tooltip(tmp_path):
     storage = SqliteStorage("proj/worker", tmp_path)
     storage.init_schema()
     classifier = PoolClassifier("proj", "worker", results_dir=tmp_path, storage=storage, use_color=False)
@@ -53,7 +53,13 @@ def test_task_source_chart_uses_accessible_colors_focus_cue_and_volume_order(tmp
     assert "tabindex='0'" in html
     assert "sourceTotals=new Map(sources.map(s=>[s,0]))" in html
     assert "displaySources=[...sources].sort((a,b)=>sourceTotals.get(b)-sourceTotals.get(a)||a.localeCompare(b))" in html
-    assert "${displaySources.map(s=>{const b=rowBySource.get(s);return b?`<div class='source-segment'" in html
+    assert "rows.map(b=>{const key=encodeURIComponent(`${d}:${b.source}`);tooltipDetails.set" in html
+    assert 'id="source-tooltip" class="source-tooltip" role="tooltip"' in html
+    assert ".source-tooltip-row.active { font-weight:bold" in html
+    assert "fmtSourcePct=(tasks,total)" in html
+    assert "aria-describedby='source-tooltip'" in html
+    assert "segment.addEventListener('focus',show)" in html
+    assert "if(event.key==='Escape')hideSourceTooltip()" in html
     assert "let h=2166136261" not in html
 
 
