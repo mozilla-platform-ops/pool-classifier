@@ -39,6 +39,21 @@ def test_source_volume_uses_cached_source_and_unknown(tmp_path):
     ]
 
 
+def test_task_source_chart_uses_accessible_colors_and_focus_cue(tmp_path):
+    storage = SqliteStorage("proj/worker", tmp_path)
+    storage.init_schema()
+    classifier = PoolClassifier("proj", "worker", results_dir=tmp_path, storage=storage, use_color=False)
+
+    html = classifier.render_html()
+
+    assert "const SOURCE_COLORS=['#56b4e9','#e69f00','#009e73'" in html
+    assert "source==='unknown'?'#777'" in html
+    assert "sourceColors=new Map(sources.map" in html
+    assert ".source-segment:focus-visible" in html
+    assert "tabindex='0'" in html
+    assert "let h=2166136261" not in html
+
+
 def test_job_source_backfill_is_bounded_idempotent_and_preserves_no_inference_policy(tmp_path, monkeypatch):
     storage = SqliteStorage("proj/worker", tmp_path)
     storage.init_schema()
