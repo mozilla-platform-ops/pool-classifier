@@ -82,6 +82,11 @@ def test_job_source_backfill_is_bounded_idempotent_and_preserves_no_inference_po
     calls = []
     monkeypatch.setattr(classifier, "_ensure_tc", lambda: None)
     classifier.tc_queue = type("Queue", (), {"task": lambda _self, task_id: calls.append(task_id) or tasks[task_id]})()
+    monkeypatch.setattr(
+        storage,
+        "classify_lock",
+        lambda: (_ for _ in ()).throw(AssertionError("job-source backfill must not block classification")),
+    )
 
     first = classifier.backfill_job_sources(
         batch_size=2, concurrency=1, retries=0, requests_per_second=1000,

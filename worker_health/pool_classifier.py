@@ -311,39 +311,38 @@ class PoolClassifier:
             raise ValueError("batch_size, concurrency, and requests_per_second must be positive; retries must not be negative")
         self._ensure_tc()
         stats = {"selected_tasks": 0, "fetched": 0, "classified": 0, "unknown": 0, "errors": 0}
-        with self.storage.classify_lock():
-            task_ids = self.storage.list_task_ids_missing_source(batch_size, not_before=not_before)
-            stats["selected_tasks"] = len(task_ids)
-            if not task_ids:
-                if should_stop is not None:
-                    stats["stop_requested"] = should_stop()
-                return stats
-            rate_limiter = _RequestRateLimiter(requests_per_second)
-            fetched: Dict[str, Optional[dict]] = {}
-            with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="job-source-backfill") as executor:
-                futures = {
-                    executor.submit(self._get_task_definition_with_retry, task_id, retries, rate_limiter): task_id
-                    for task_id in task_ids
-                }
-                for future in as_completed(futures):
-                    task_id = futures[future]
-                    try:
-                        fetched[task_id] = future.result()
-                        if fetched[task_id] is not None:
-                            stats["fetched"] += 1
-                    except Exception:
-                        stats["errors"] += 1
-                        logger.exception("%s: task-definition fetch failed after retries", task_id)
-            classified_at = datetime.now(timezone.utc).isoformat()
-            for task_id, task in fetched.items():
-                source = classify_job_source(task)
-                self.storage.record_task_source(task_id, source.source, int(source.method), classified_at)
-                stats["classified"] += 1
-                if source.source == "unknown":
-                    stats["unknown"] += 1
-            self.storage.commit()
+        task_ids = self.storage.list_task_ids_missing_source(batch_size, not_before=not_before)
+        stats["selected_tasks"] = len(task_ids)
+        if not task_ids:
             if should_stop is not None:
                 stats["stop_requested"] = should_stop()
+            return stats
+        rate_limiter = _RequestRateLimiter(requests_per_second)
+        fetched: Dict[str, Optional[dict]] = {}
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="job-source-backfill") as executor:
+            futures = {
+                executor.submit(self._get_task_definition_with_retry, task_id, retries, rate_limiter): task_id
+                for task_id in task_ids
+            }
+            for future in as_completed(futures):
+                task_id = futures[future]
+                try:
+                    fetched[task_id] = future.result()
+                    if fetched[task_id] is not None:
+                        stats["fetched"] += 1
+                except Exception:
+                    stats["errors"] += 1
+                    logger.exception("%s: task-definition fetch failed after retries", task_id)
+        classified_at = datetime.now(timezone.utc).isoformat()
+        for task_id, task in fetched.items():
+            source = classify_job_source(task)
+            self.storage.record_task_source(task_id, source.source, int(source.method), classified_at)
+            stats["classified"] += 1
+            if source.source == "unknown":
+                stats["unknown"] += 1
+        self.storage.commit()
+        if should_stop is not None:
+            stats["stop_requested"] = should_stop()
         logger.info("job-source backfill: %s", stats)
         return stats
 
