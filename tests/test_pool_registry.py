@@ -51,6 +51,13 @@ def test_other_pools_keep_recent_contact_default():
     assert {pool.availability_mode for pool in other_pools} == {"recent_contact"}
 
 
+def test_reallocated_ipv6_mac_pool_is_not_covered():
+    assert (
+        "releng-hardware/gecko-t-osx-1500-m4-ipv6"
+        not in {f"{pool.provisioner}/{pool.worker_type}" for pool in registry.all_pools_including_disabled()}
+    )
+
+
 def test_all_pools_skips_vms_worker_types_by_default(monkeypatch):
     normal = registry.Pool("normal", "provisioner", "worker-type", "*/15 * * * *")
     vm = registry.Pool("vm", "provisioner", "worker-type-vms", "*/15 * * * *")
