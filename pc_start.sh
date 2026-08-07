@@ -3,6 +3,8 @@
 # pc_start.sh — start the pool_classifier Flask app
 # Set POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS=1 to render current page
 # code instead of stored dashboard snapshots (useful for local UI work).
+# With --debug, HTML pages show a port-derived color and DEBUG badge. Override
+# them with PC_INSTANCE_LABEL and PC_INSTANCE_COLOR (#RRGGBB) when desired.
 #
 
 set -e

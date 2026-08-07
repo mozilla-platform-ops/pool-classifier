@@ -167,6 +167,29 @@ def test_pool_snapshot_navigation_uses_current_iap_admin_hint(monkeypatch):
     assert b'href="/old"' not in response.data
 
 
+def test_pool_snapshot_adds_debug_identity_at_response_time(monkeypatch):
+    pool = Pool("display", "provisioner", "worker-type", "*/15 * * * *")
+    monkeypatch.setattr(app_module.registry, "get_pool", lambda *_args: pool)
+    monkeypatch.setattr(
+        app_module,
+        "_read_dashboard_snapshot",
+        lambda *_args: {
+            "source_at": "2026-07-31T12:00:00+00:00",
+            "generated_at": "2026-07-31T12:01:00+00:00",
+            "payload": {"detail_html": "<html><head></head><body>saved detail</body></html>"},
+        },
+    )
+    app = create_app()
+    app.debug = True
+
+    response = app.test_client().get("/pools/provisioner/worker-type", environ_overrides={"SERVER_PORT": "8181"})
+
+    assert response.status_code == 200
+    assert b"saved detail" in response.data
+    assert b"debug-instance-identity" in response.data
+    assert b"DEBUG \xc2\xb7 :8181" in response.data
+
+
 def test_standard_utilization_summary_uses_snapshot(monkeypatch, tmp_path):
     storage = _api_storage(tmp_path)
     monkeypatch.setattr(

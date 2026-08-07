@@ -74,3 +74,25 @@ def test_global_navigation_shows_admin_when_local_iap_bypass_is_enabled(monkeypa
 
     assert response.status_code == 200
     assert b'href="/admin">Admin</a>' in response.data
+
+
+def test_debug_instance_identity_uses_the_port_and_local_overrides(monkeypatch):
+    monkeypatch.setenv("PC_INSTANCE_LABEL", "blue worktree")
+    monkeypatch.setenv("PC_INSTANCE_COLOR", "#123abc")
+    app = create_app()
+    app.debug = True
+
+    response = app.test_client().get("/api", environ_overrides={"SERVER_PORT": "8181"})
+
+    assert response.status_code == 200
+    assert b'debug-instance-identity' in response.data
+    assert b"blue worktree" in response.data
+    assert b"--debug-instance-color: #123abc" in response.data
+
+
+def test_non_debug_responses_do_not_include_debug_instance_identity():
+    app = create_app()
+
+    response = app.test_client().get("/api")
+
+    assert b"debug-instance-identity" not in response.data

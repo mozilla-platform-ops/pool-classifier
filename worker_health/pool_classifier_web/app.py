@@ -7,6 +7,7 @@ import base64
 import binascii
 import copy
 from concurrent.futures import ThreadPoolExecutor
+from html import escape
 import json
 from importlib.metadata import PackageNotFoundError, version
 import logging
@@ -61,6 +62,14 @@ COVERAGE_STALE_AFTER = timedelta(hours=1)
 REPOSITORY_URL = "https://github.com/mozilla-platform-ops/pool-classifier"
 DEFAULT_OVERVIEW_CACHE_TTL_SECONDS = 30
 DEFAULT_OVERVIEW_UTILIZATION_CONCURRENCY = 4
+DEBUG_INSTANCE_COLORS = (
+    "#1f6feb",
+    "#a371f7",
+    "#d29922",
+    "#3fb950",
+    "#f85149",
+    "#39c5cf",
+)
 
 # Dashboard aggregates are intentionally process-local: metric definitions are
 # still evolving, so a short TTL is safer and simpler than persisted rollups.
@@ -117,6 +126,46 @@ def _application_version() -> str:
         return version("worker_health")
     except PackageNotFoundError:
         return "unknown"
+
+
+def _debug_instance_identity(port: str) -> tuple[str, str, str]:
+    """Return the label, color, and translucent tint for a local debug instance."""
+    configured_color = os.environ.get("PC_INSTANCE_COLOR", "")
+    if re.fullmatch(r"#[0-9a-fA-F]{6}", configured_color):
+        color = configured_color.lower()
+    else:
+        try:
+            color = DEBUG_INSTANCE_COLORS[int(port) % len(DEBUG_INSTANCE_COLORS)]
+        except ValueError:
+            color = DEBUG_INSTANCE_COLORS[sum(map(ord, port)) % len(DEBUG_INSTANCE_COLORS)]
+    label = os.environ.get("PC_INSTANCE_LABEL") or f"DEBUG \u00b7 :{port}"
+    return label, color, f"{color}20"
+
+
+def _add_debug_instance_identity(html: str, port: str) -> str:
+    """Add a request-specific debug marker without changing stored page artifacts."""
+    label, color, tint = _debug_instance_identity(port)
+    styles = (
+        '<style id="debug-instance-identity">'
+        f"body {{ background-color: #111 !important; background-image: linear-gradient({tint}, {tint}) !important; }}"
+        ".debug-instance-indicator { position: fixed; z-index: 9999; top: .65rem; right: .65rem; "
+        "padding: .28rem .5rem; border: 1px solid var(--debug-instance-color); border-radius: 3px; "
+        "background: #111e; color: var(--debug-instance-color); font: 700 .75rem/1 monospace; "
+        "letter-spacing: .04em; box-shadow: 0 .15rem .6rem #0008; }"
+        "</style>"
+    )
+    marker = (
+        f'<div class="debug-instance-indicator" style="--debug-instance-color: {color}" '
+        f'aria-label="Local debug instance: {escape(label)}">{escape(label)}</div>'
+    )
+    if "debug-instance-identity" in html:
+        return html
+    if "</head>" in html:
+        html = html.replace("</head>", f"{styles}</head>", 1)
+        injection = marker
+    else:
+        injection = f"{styles}{marker}"
+    return re.sub(r"(<body\b[^>]*>)", lambda match: f"{match.group(1)}{injection}", html, count=1, flags=re.IGNORECASE)
 
 
 def _parse_utilization_datetime(name: str, value: str | None) -> datetime:
@@ -633,6 +682,13 @@ def create_app() -> Flask:
     app.jinja_env.filters["humanize_cron"] = _humanize_cron
     app.jinja_env.filters["format_lag"] = _format_lag
     app.jinja_env.filters["lag_color_class"] = _lag_color_class
+
+    @app.after_request
+    def add_debug_instance_identity(response: Response) -> Response:
+        """Mark locally debugged HTML so concurrent instances are distinguishable."""
+        if app.debug and response.mimetype == "text/html" and not response.is_streamed:
+            response.set_data(_add_debug_instance_identity(response.get_data(as_text=True), request.environ.get("SERVER_PORT", "?")))
+        return response
 
     @app.context_processor
     def navigation_context() -> dict[str, bool]:
