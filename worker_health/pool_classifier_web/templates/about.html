@@ -31,7 +31,8 @@
 </head>
 <body>
 {{ navigation("About") }}
-<p class="intro">Pool Classifier monitors Taskcluster worker pools, classifies task failures, and surfaces pool health and capacity signals.</p>
+<p class="intro">Pool Classifier’s goal is to make Taskcluster worker-pool health operationally legible.</p>
+<p class="intro">It collects recent task and worker signals, classifies failures into actionable categories, and presents per-pool evidence—availability, utilization, task volume/source, queue/start lag, recurring failures, and quarantine state—so operators can spot degraded pools, understand likely causes, and decide where to investigate or intervene.</p>
 <h2>Build information</h2>
 <dl>
   <dt>Repository</dt><dd><a href="{{ repository_url }}">mozilla-platform-ops/pool-classifier</a></dd>

@@ -23,6 +23,8 @@ def test_about_renders_build_metadata(monkeypatch):
     assert b"abc1234" in response.data
     assert b"mozilla-platform-ops/pool-classifier" in response.data
     assert b'aria-current="page">About' in response.data
+    assert "Pool Classifier’s goal is to make Taskcluster worker-pool health operationally legible.".encode() in response.data
+    assert "It collects recent task and worker signals, classifies failures into actionable categories".encode() in response.data
 
 
 def test_global_navigation_has_five_consistent_items():
