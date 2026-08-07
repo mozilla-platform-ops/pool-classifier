@@ -3,6 +3,7 @@
 
 # Local Beads SQLite coordination files; issue JSONL remains tracked.
 .beads/beads.db-*
+.beads/.beads.db.*.vacuum-fsqlite-ns-*
 
 # Editable-install build metadata.
 *.egg-info/
