@@ -55,7 +55,10 @@ def test_task_source_chart_uses_accessible_colors_order_and_custom_tooltip(tmp_p
     assert "displaySources=[...sources].sort((a,b)=>sourceTotals.get(b)-sourceTotals.get(a)||a.localeCompare(b))" in html
     assert "rows.map(b=>{const key=encodeURIComponent(`${d}:${b.source}`);tooltipDetails.set" in html
     assert 'id="source-tooltip" class="source-tooltip" role="tooltip"' in html
-    assert ".source-tooltip-row.active { font-weight:bold" in html
+    assert ".source-tooltip-row.active { background:#2a3545" in html
+    assert "grid-template-columns:minmax(0,1fr) auto" in html
+    assert "font-variant-numeric:tabular-nums" in html
+    assert "max-height:calc(100vh - 1rem); overflow-y:auto" in html
     assert "fmtSourcePct=(tasks,total)" in html
     assert "aria-describedby='source-tooltip'" in html
     assert "segment.addEventListener('focus',show)" in html
