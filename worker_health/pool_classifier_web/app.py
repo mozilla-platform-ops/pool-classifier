@@ -735,6 +735,17 @@ def create_app() -> Flask:
             DEFAULT_OBSERVED_START_LAG_SLO_SECONDS, DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES,
         )
         lag["api_version"] = 1
+        job_sources_end = generated_at
+        job_sources_start = job_sources_end - timedelta(days=14)
+        job_sources = {
+            "api_version": 1,
+            "start_at": job_sources_start.isoformat(),
+            "end_at": job_sources_end.isoformat(),
+            "days": 14,
+            "buckets": pc.storage.get_job_source_volume(
+                job_sources_start.isoformat(), job_sources_end.isoformat(),
+            ),
+        }
         detail_html = pc.render_html(
             os_label=detect_os(pool),
             navigation_html=navigation_html(f"{pool.provisioner}/{pool.worker_type}"),
@@ -748,6 +759,7 @@ def create_app() -> Flask:
                 "utilization_summary": summary,
                 "utilization_timeline_24h": timeline,
                 "observed_start_lag_visualization_7d": lag,
+                "job_source_volume_14d": job_sources,
             },
             pool_id=f"{pool.provisioner}/{pool.worker_type}",
             source_at=generated_at,
@@ -1338,6 +1350,35 @@ def create_app() -> Flask:
             days = 0
         if days not in {7, 14}:
             return jsonify({"error": {"code": "invalid_parameter", "message": "days must be 7 or 14"}}), 400
+        snapshot = _read_dashboard_snapshot(
+            os.environ.get("DATABASE_URL"), POOL_SCOPE, f"{provisioner}/{worker_type}",
+        )
+        if snapshot and (stored := snapshot["payload"].get("job_source_volume_14d")):
+            try:
+                if stored["days"] != 14:
+                    raise ValueError("expected a 14-day payload")
+                start = _parse_utilization_datetime("start_at", stored["start_at"])
+                end = _parse_utilization_datetime("end_at", stored["end_at"])
+                if end - start != timedelta(days=14):
+                    raise ValueError("expected a 14-day range")
+                buckets = stored["buckets"]
+                if not isinstance(buckets, list):
+                    raise ValueError("buckets must be a list")
+                final_days = sorted({bucket["day"] for bucket in buckets})[-7:]
+            except (AttributeError, KeyError, TypeError, ValueError):
+                logger.warning("invalid job-source data in snapshot for %s/%s", provisioner, worker_type)
+            else:
+                if days == 7:
+                    buckets = [bucket for bucket in buckets if bucket["day"] in final_days]
+                    start = end - timedelta(days=7)
+                return jsonify({
+                    "api_version": 1,
+                    "start_at": start.isoformat(),
+                    "end_at": end.isoformat(),
+                    "days": days,
+                    "buckets": buckets,
+                    "snapshot": _snapshot_metadata(snapshot),
+                })
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:
             return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404

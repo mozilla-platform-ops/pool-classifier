@@ -249,6 +249,63 @@ def test_default_lag_visualization_falls_back_to_a_bounded_live_window(monkeypat
     assert "snapshot" not in response.json
 
 
+@pytest.mark.parametrize(
+    ("days", "expected_days"),
+    [(7, ["2026-07-25", "2026-07-26", "2026-07-27", "2026-07-28", "2026-07-29", "2026-07-30", "2026-07-31"]),
+     (14, ["2026-07-18", "2026-07-19", "2026-07-20", "2026-07-21", "2026-07-22", "2026-07-23", "2026-07-24", "2026-07-25", "2026-07-26", "2026-07-27", "2026-07-28", "2026-07-29", "2026-07-30", "2026-07-31"])],
+)
+def test_job_sources_uses_snapshot_without_constructing_a_classifier(monkeypatch, days, expected_days):
+    end = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    buckets = [
+        {"day": f"2026-07-{day:02d}", "source": "decision", "tasks": day}
+        for day in range(18, 32)
+    ]
+    monkeypatch.setattr(
+        app_module,
+        "_read_dashboard_snapshot",
+        lambda *_args: {
+            "source_at": end.isoformat(),
+            "generated_at": end.isoformat(),
+            "payload": {"job_source_volume_14d": {
+                "api_version": 1,
+                "start_at": (end - timedelta(days=14)).isoformat(),
+                "end_at": end.isoformat(),
+                "days": 14,
+                "buckets": buckets,
+            }},
+        },
+    )
+    monkeypatch.setattr(app_module, "_get_classifier", lambda *_args: pytest.fail("must use snapshot"))
+    app = create_app()
+    app.config["TESTING"] = True
+
+    response = app.test_client().get(f"/api/v1/pools/provisioner/worker-type/job-sources?days={days}")
+
+    assert response.status_code == 200
+    assert response.json["days"] == days
+    assert response.json["start_at"] == (end - timedelta(days=days)).isoformat()
+    assert response.json["end_at"] == end.isoformat()
+    assert [bucket["day"] for bucket in response.json["buckets"]] == expected_days
+    assert response.json["snapshot"]["source_at"] == end.isoformat()
+
+
+def test_job_sources_falls_back_to_live_query_without_snapshot(monkeypatch):
+    buckets = [{"day": "2026-08-01", "source": "unknown", "tasks": 3}]
+    storage = SimpleNamespace(get_job_source_volume=lambda *_args: buckets)
+    monkeypatch.setattr(app_module, "_read_dashboard_snapshot", lambda *_args: None)
+    monkeypatch.setattr(
+        app_module, "_get_classifier", lambda *_args: SimpleNamespace(storage=storage),
+    )
+    app = create_app()
+    app.config["TESTING"] = True
+
+    response = app.test_client().get("/api/v1/pools/provisioner/worker-type/job-sources?days=14")
+
+    assert response.status_code == 200
+    assert response.json["buckets"] == buckets
+    assert "snapshot" not in response.json
+
+
 def test_api_v1_discovery_lists_versioned_endpoints():
     app = create_app()
     app.config["TESTING"] = True
@@ -777,6 +834,9 @@ def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
         def get_observed_start_lag_visualization(self, *_args):
             return {}
 
+        def get_job_source_volume(self, *_args):
+            return []
+
     class Classifier:
         storage = Storage()
         availability_mode = "recent_contact"
@@ -811,6 +871,12 @@ def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
     assert pool_timing["total_workers"] == 7
     assert pool_timing["started_at"]
     assert pool_timing["completed_at"]
+    pool_payload = next(args[2] for args, _kwargs in writes if args[1] == app_module.POOL_SCOPE)
+    job_sources = pool_payload["job_source_volume_14d"]
+    assert job_sources["api_version"] == 1
+    assert job_sources["days"] == 14
+    assert job_sources["buckets"] == []
+    assert datetime.fromisoformat(job_sources["end_at"]) - datetime.fromisoformat(job_sources["start_at"]) == timedelta(days=14)
 
 
 def test_classify_all_orders_pools_by_prior_workers_per_second(monkeypatch):
