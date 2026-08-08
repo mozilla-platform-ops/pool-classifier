@@ -66,6 +66,13 @@ def test_task_source_chart_uses_accessible_colors_order_and_custom_tooltip(tmp_p
     assert "SOURCE_DAYS_KEY='pc-task-source-days'" in html
     assert "localStorage.getItem(SOURCE_DAYS_KEY)" in html
     assert "localStorage.setItem(SOURCE_DAYS_KEY,String(sourceDays))" in html
+    assert "grid-template-columns:3rem minmax(0,1fr)" in html
+    assert ".source-gridline" in html
+    assert "sourceAxis=max=>" in html
+    assert "ticks>=2&&ticks<=4" in html
+    assert "fmtSourceAxis=value=>value>=1000?`${value/1000}k`:String(value)" in html
+    assert "<div class='source-axis' aria-label='Task count axis'>" in html
+    assert "<div class='source-grid' aria-hidden='true'>" in html
     assert "let h=2166136261" not in html
 
 
