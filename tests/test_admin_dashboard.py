@@ -118,6 +118,13 @@ def test_admin_shows_migration_and_snapshot_freshness(monkeypatch):
     assert b"2m 14s" in response.data
     assert b"Per-pool runtime" in response.data
     assert b"2m 0s" in response.data
+    assert b'data-timezone="local"' in response.data
+    assert b'data-timezone="utc"' in response.data
+    assert b'Applied (<span data-timezone-heading>Local</span>)' in response.data
+    assert b'Completed (<span data-timezone-heading>Local</span>)' in response.data
+    assert response.data.count(b'class="utc-time"') == 5
+    assert b'class="utc-tooltip"' in response.data
+    assert b"element.title = formatTime(element.dataset.utc, mode)" in response.data
 
 
 def test_admin_shows_curated_runtime_mode(monkeypatch):

@@ -854,15 +854,7 @@ def create_app() -> Flask:
                 logger.warning("admin: status query failed: %s", exc)
                 database_error = "Database status is unavailable"
 
-        migration_rows = [
-            {
-                **migration,
-                "applied_at_utc": migration["applied_at"].astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-                if migration["applied_at"]
-                else None,
-            }
-            for migration in data["migrations"]
-        ]
+        migration_rows = data["migrations"]
         snapshot_rows = []
         for pool in registry.all_pools_including_disabled():
             pool_id = f"{pool.provisioner}/{pool.worker_type}"
@@ -873,7 +865,6 @@ def create_app() -> Flask:
                     "pool_id": pool_id,
                     "enabled": pool.enabled,
                     "source_at": source_at,
-                    "source_at_utc": source_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if source_at else None,
                     "age": _relative_age(source_at, now=now) if source_at else "never",
                     "stale": bool(source_at and now - source_at > COVERAGE_STALE_AFTER),
                 }
@@ -904,10 +895,9 @@ def create_app() -> Flask:
             if "classify_all_duration_seconds" in overview_payload
             else None,
             classify_all_completed_at=completed_at,
-            classify_all_completed_at_utc=completed_at.strftime("%Y-%m-%d %H:%M:%S UTC") if completed_at else None,
             pool_timings=pool_timings,
             database_error=database_error,
-            generated=_timestamp_label("generated on", now),
+            generated=now,
         )
 
     @app.get("/favicon.ico")
