@@ -1941,12 +1941,12 @@ class PoolClassifier:
             '<div class="dashboard-toolbar">',
             '<nav class="page-nav">',
             '  <a href="#summary-heading">Summary</a><span class="sep">|</span>',
-            '  <a href="#s-categories">Failure Categories</a><span class="sep">|</span>',
-            '  <a href="#s-attention">Consecutive Failures</a><span class="sep">|</span>',
-            '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
             '  <a href="#s-job-sources">Task Source</a><span class="sep">|</span>',
             '  <a href="#s-start-lag">Start Lag</a><span class="sep">|</span>',
             '  <a href="#s-utilization">Utilization</a><span class="sep">|</span>',
+            '  <a href="#s-attention">Consecutive Failures</a><span class="sep">|</span>',
+            '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
+            '  <a href="#s-categories">Failure Categories</a><span class="sep">|</span>',
             '  <a href="#s-heatmap">Worker Activity</a><span class="sep">|</span>',
             '  <a href="#s-offenders">Top Offenders</a><span class="sep">|</span>',
             '  <a href="#s-all">All Workers</a>',
@@ -1965,21 +1965,41 @@ class PoolClassifier:
         ]
         parts += pool_summary
 
-        if category_totals or alerting:
-            parts.append('<div class="summary-grid">')
-
-        if category_totals:
-            parts += ["<div>", '<h2 id="s-categories">Failure Categories</h2>', "<ul>"]
-            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                parts.append(f"  <li>{cat}: <strong>{count}</strong></li>")
-            parts += ["</ul>", "</div>"]
+        capacity_note_ref = (
+            '<a class="footnote-ref" href="#utilization-capacity-note" aria-label="See capacity method note">*</a>'
+            if self.availability_mode == "listed"
+            else ""
+        )
+        parts += [
+            '<h2 id="s-job-sources">Task Source</h2>',
+            '<p class="gen">Terminal task runs grouped by the Taskcluster project tag or an explicit reviewed source mapping.</p>',
+            '<p class="source-summary gen"><span id="source-freshness">Loading job sources…</span><span aria-hidden="true">·</span><span class="source-controls" role="group" aria-label="Task Source range"><button type="button" class="active" data-source-days="7">[7d]</button><button type="button" data-source-days="14">[14d]</button></span></p><div id="source-chart" class="source-chart" role="group" aria-label="Daily job volume by source"></div><div id="source-tooltip" class="source-tooltip" role="tooltip" aria-hidden="true"></div>',
+            '<h2 id="s-start-lag">Start Lag</h2>',
+            '<p class="gen">Observed scheduled-to-start time for terminal task runs. This excludes jobs that never started, so it is not a queue total, drop rate, or pool-health verdict.</p>',
+            '<p id="lag-freshness" class="gen">Loading observed start lag…</p>',
+            '<div class="lag-legend"><span><span class="lag-line" style="border-color:#5dd"></span>p50</span><span><span class="lag-line" style="border-color:#f90"></span>p95</span><span><span class="lag-line" style="border-color:#f44;border-top-style:dashed"></span>SLO</span><span>bars: sample count</span></div>',
+            '<div id="lag-chart-wrap" class="lag-chart-wrap"><svg id="lag-chart" class="lag-chart" viewBox="0 0 960 240" role="img" aria-label="Hourly observed start lag p50 and p95 trend"></svg></div>',
+            '<p class="gen">UTC weekday/hour p95. Striped cells have fewer than five observations.</p>',
+            '<div id="lag-heatmap-wrap" class="lag-heatmap-wrap"><div id="lag-heatmap" class="lag-heatmap"></div></div>',
+            '<h2 id="s-utilization">Utilization</h2>',
+            f'<p class="gen">Duration-weighted task time versus available worker capacity{capacity_note_ref}. <a href="{guide_url}">API guide</a></p>',
+            '<p id="util-freshness" class="gen">Loading utilization…</p>',
+            '<div id="util-cards" class="util-grid"></div>',
+            '<div class="util-timeline-controls"><span>Hourly timeline:</span><button type="button" data-hours="24">[24h]</button><button type="button" data-hours="48">[48h]</button></div>',
+            '<div class="util-timeline-legend"><span><span class="hm-swatch" style="width:3rem; background:linear-gradient(90deg,#16111d,#4c1d95)"></span>purple: 0% to 100% utilization</span><span><span class="hm-swatch" style="background:repeating-linear-gradient(135deg,#303030 0,#303030 4px,#202020 4px,#202020 8px)"></span>striped: no data</span><span><span class="hm-swatch" style="background:#6b1d1d"></span>dark red: no available capacity</span></div>',
+            '<div class="util-timeline-wrap"><div id="util-timeline" class="util-timeline"></div></div>',
+            *(
+                ['<p id="utilization-capacity-note" class="availability-note"><span class="footnote-marker" aria-hidden="true">*</span> <strong>Availability mode: listed.</strong> Rather than requiring a worker to have contacted Taskcluster recently, utilization treats every non-quarantined worker still listed by Taskcluster as eligible capacity. The Taskcluster listing does not confirm that the device is live or ready.</p>']
+                if self.availability_mode == "listed"
+                else []
+            ),
+        ]
 
         if alerting:
-            parts += [
-                "<div>",
-                '<h2 id="s-attention">Consecutive Failures</h2>',
-                "<ul>",
-            ]
+            parts.append('<div class="summary-grid">')
+
+        if alerting:
+            parts += ["<div>", '<h2 id="s-attention">Consecutive Failures</h2>', "<ul>"]
             for wid, w in sorted(alerting.items(), key=lambda x: -x[1].get("consecutive_failures", 0)):
                 sr_display = f'<span class="{sr_class(w)}">{sr_str(w)}</span>'
                 if quarantined and wid in quarantined:
@@ -2005,7 +2025,7 @@ class PoolClassifier:
                 )
             parts += ["</ul>", "</div>"]
 
-        if category_totals or alerting:
+        if alerting:
             parts.append("</div>")
 
         if quarantine_details:
@@ -2063,35 +2083,11 @@ class PoolClassifier:
                 )
             parts += ["  </tbody>", "</table>"]
 
-        capacity_note_ref = (
-            '<a class="footnote-ref" href="#utilization-capacity-note" aria-label="See capacity method note">*</a>'
-            if self.availability_mode == "listed"
-            else ""
-        )
-        parts += [
-            '<h2 id="s-job-sources">Task Source</h2>',
-            '<p class="gen">Terminal task runs grouped by the Taskcluster project tag or an explicit reviewed source mapping.</p>',
-            '<p class="source-summary gen"><span id="source-freshness">Loading job sources…</span><span aria-hidden="true">·</span><span class="source-controls" role="group" aria-label="Task Source range"><button type="button" class="active" data-source-days="7">[7d]</button><button type="button" data-source-days="14">[14d]</button></span></p><div id="source-chart" class="source-chart" role="group" aria-label="Daily job volume by source"></div><div id="source-tooltip" class="source-tooltip" role="tooltip" aria-hidden="true"></div>',
-            '<h2 id="s-start-lag">Start Lag</h2>',
-            '<p class="gen">Observed scheduled-to-start time for terminal task runs. This excludes jobs that never started, so it is not a queue total, drop rate, or pool-health verdict.</p>',
-            '<p id="lag-freshness" class="gen">Loading observed start lag…</p>',
-            '<div class="lag-legend"><span><span class="lag-line" style="border-color:#5dd"></span>p50</span><span><span class="lag-line" style="border-color:#f90"></span>p95</span><span><span class="lag-line" style="border-color:#f44;border-top-style:dashed"></span>SLO</span><span>bars: sample count</span></div>',
-            '<div id="lag-chart-wrap" class="lag-chart-wrap"><svg id="lag-chart" class="lag-chart" viewBox="0 0 960 240" role="img" aria-label="Hourly observed start lag p50 and p95 trend"></svg></div>',
-            '<p class="gen">UTC weekday/hour p95. Striped cells have fewer than five observations.</p>',
-            '<div id="lag-heatmap-wrap" class="lag-heatmap-wrap"><div id="lag-heatmap" class="lag-heatmap"></div></div>',
-            '<h2 id="s-utilization">Utilization</h2>',
-            f'<p class="gen">Duration-weighted task time versus available worker capacity{capacity_note_ref}. <a href="{guide_url}">API guide</a></p>',
-            '<p id="util-freshness" class="gen">Loading utilization…</p>',
-            '<div id="util-cards" class="util-grid"></div>',
-            '<div class="util-timeline-controls"><span>Hourly timeline:</span><button type="button" data-hours="24">[24h]</button><button type="button" data-hours="48">[48h]</button></div>',
-            '<div class="util-timeline-legend"><span><span class="hm-swatch" style="width:3rem; background:linear-gradient(90deg,#16111d,#4c1d95)"></span>purple: 0% to 100% utilization</span><span><span class="hm-swatch" style="background:repeating-linear-gradient(135deg,#303030 0,#303030 4px,#202020 4px,#202020 8px)"></span>striped: no data</span><span><span class="hm-swatch" style="background:#6b1d1d"></span>dark red: no available capacity</span></div>',
-            '<div class="util-timeline-wrap"><div id="util-timeline" class="util-timeline"></div></div>',
-            *(
-                ['<p id="utilization-capacity-note" class="availability-note"><span class="footnote-marker" aria-hidden="true">*</span> <strong>Availability mode: listed.</strong> Rather than requiring a worker to have contacted Taskcluster recently, utilization treats every non-quarantined worker still listed by Taskcluster as eligible capacity. The Taskcluster listing does not confirm that the device is live or ready.</p>']
-                if self.availability_mode == "listed"
-                else []
-            ),
-        ]
+        if category_totals:
+            parts += ["<div>", '<h2 id="s-categories">Failure Categories</h2>', "<ul>"]
+            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
+                parts.append(f"  <li>{cat}: <strong>{count}</strong></li>")
+            parts += ["</ul>", "</div>"]
 
         if heatmap:
             hour_period = ["< 1h ago"] + [f"{i}–{i + 1}h ago" for i in range(1, 12)]

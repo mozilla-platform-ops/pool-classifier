@@ -665,6 +665,43 @@ def test_quarantine_section_uses_a_plain_heading_with_supporting_count(tmp_path)
     assert "&#x1F512; Quarantined Workers" not in html
 
 
+def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+
+    html = classifier._write_html(
+        {
+            "worker-1": {
+                "successes": 1,
+                "failures": 2,
+                "failures_by_category": {"test": 2},
+                "consecutive_failures": 2,
+                "last_failure": "2026-08-07T12:00:00+00:00",
+                "last_failure_category": "test",
+            },
+        },
+        quarantined={"worker-1": "2026-08-08T12:00:00+00:00"},
+        heatmap={"worker-1": {0: {"s": 1, "critical": 0, "high": 0, "low": 0}}},
+        quarantine_details={"worker-1": {}},
+    )
+
+    headings = [
+        'id="summary-heading"',
+        'id="s-job-sources"',
+        'id="s-start-lag"',
+        'id="s-utilization"',
+        'id="s-attention"',
+        'id="s-quarantined"',
+        'id="s-categories"',
+        'id="s-heatmap"',
+        'id="s-offenders"',
+        'id="s-all"',
+    ]
+    positions = [html.index(heading) for heading in headings]
+    assert positions == sorted(positions)
+
+
 def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier(
