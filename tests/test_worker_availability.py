@@ -122,6 +122,8 @@ def test_detail_render_uses_quarantine_snapshot_without_taskcluster(tmp_path, mo
 
     assert "hardware repair" in html
     assert "Snapshot:" in html
+    assert 'id="source-legend"' not in html
+    assert "sourceLegend" not in html
 
 
 def test_configurable_threshold_and_missing_contact(tmp_path):

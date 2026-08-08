@@ -132,6 +132,8 @@ def test_pool_html(client):
     assert b"Availability mode: listed" in r.data
     assert b"listing does not confirm that the device is live" in r.data
     assert r.data.index(b'id="s-utilization"') < r.data.index(b"Availability mode: listed")
+    assert b'id="source-legend"' not in r.data
+    assert b"sourceLegend" not in r.data
 
 
 def test_pool_unknown_returns_404(client):
