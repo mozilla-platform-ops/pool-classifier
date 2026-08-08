@@ -124,6 +124,8 @@ def test_detail_render_uses_quarantine_snapshot_without_taskcluster(tmp_path, mo
     assert "Snapshot:" in html
     assert 'id="source-legend"' not in html
     assert "sourceLegend" not in html
+    assert '<p class="source-summary gen"><span id="source-freshness">' in html
+    assert '<span class="source-controls" role="group" aria-label="Task Source range">' in html
 
 
 def test_configurable_threshold_and_missing_contact(tmp_path):
