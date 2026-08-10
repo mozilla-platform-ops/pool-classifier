@@ -868,6 +868,7 @@ def create_app() -> Flask:
                     "pool": pool,
                     "enabled": pool.enabled,
                     "source_at": source_at,
+                    "source_at_seconds": source_at.timestamp() if source_at else None,
                     "age": _relative_age(source_at, now=now) if source_at else "never",
                     "stale": bool(source_at and now - source_at > COVERAGE_STALE_AFTER),
                 }
@@ -886,6 +887,9 @@ def create_app() -> Flask:
             for pool_id, timing in overview_payload.get("pool_timings", {}).items()
         ]
         pool_timings.sort(key=lambda timing: timing["duration_seconds"], reverse=True)
+        longest_pool_runtime = max((timing["duration_seconds"] for timing in pool_timings), default=0)
+        for timing in pool_timings:
+            timing["runtime_percent"] = 100 * timing["duration_seconds"] / longest_pool_runtime if longest_pool_runtime else 0
         return render_template(
             "admin.html",
             runtime_mode={

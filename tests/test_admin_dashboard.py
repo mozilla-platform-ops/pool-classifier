@@ -118,6 +118,11 @@ def test_admin_shows_migration_and_snapshot_freshness(monkeypatch):
     assert b"2m 14s" in response.data
     assert b"Per-pool runtime" in response.data
     assert b"2m 0s" in response.data
+    assert response.data.count(b'<table class="sortable-table">') == 2
+    assert b'data-sort-value="120"' in response.data
+    assert b'class="runtime-bar"' in response.data
+    assert b'style="width: 100.0%"' in response.data
+    assert b"document.querySelectorAll('.sortable-table th')" in response.data
     assert response.data.count(b'href="/pools/provisioner/worker-type"') == 2
     assert b'href="/pools/provisioner/disabled-type"' in response.data
     assert b'data-timezone="local"' in response.data
