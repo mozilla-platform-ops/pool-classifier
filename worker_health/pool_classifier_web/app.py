@@ -855,14 +855,17 @@ def create_app() -> Flask:
                 database_error = "Database status is unavailable"
 
         migration_rows = data["migrations"]
+        pools = registry.all_pools_including_disabled()
+        pools_by_id = {f"{pool.provisioner}/{pool.worker_type}": pool for pool in pools}
         snapshot_rows = []
-        for pool in registry.all_pools_including_disabled():
+        for pool in pools:
             pool_id = f"{pool.provisioner}/{pool.worker_type}"
             snapshot = data["snapshots"].get(pool_id)
             source_at = snapshot["source_at"] if snapshot else None
             snapshot_rows.append(
                 {
                     "pool_id": pool_id,
+                    "pool": pool,
                     "enabled": pool.enabled,
                     "source_at": source_at,
                     "age": _relative_age(source_at, now=now) if source_at else "never",
@@ -875,6 +878,7 @@ def create_app() -> Flask:
         pool_timings = [
             {
                 "pool_id": pool_id,
+                "pool": pools_by_id.get(pool_id),
                 "duration_seconds": timing["duration_seconds"],
                 "duration": _format_runtime(timing["duration_seconds"]),
                 "completed_at": _parse_utilization_datetime("pool completed_at", timing["completed_at"]),

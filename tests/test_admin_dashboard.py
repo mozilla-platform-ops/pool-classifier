@@ -118,6 +118,8 @@ def test_admin_shows_migration_and_snapshot_freshness(monkeypatch):
     assert b"2m 14s" in response.data
     assert b"Per-pool runtime" in response.data
     assert b"2m 0s" in response.data
+    assert response.data.count(b'href="/pools/provisioner/worker-type"') == 2
+    assert b'href="/pools/provisioner/disabled-type"' in response.data
     assert b'data-timezone="local"' in response.data
     assert b'data-timezone="utc"' in response.data
     assert b'Applied (<span data-timezone-heading>Local</span>)' in response.data

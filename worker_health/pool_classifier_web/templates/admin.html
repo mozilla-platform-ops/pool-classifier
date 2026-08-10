@@ -62,12 +62,12 @@
 </tbody></table>
 <h2 id="pool-runtime">Per-pool runtime</h2>
 <table><thead><tr><th>Pool</th><th>Runtime</th><th>Completed (<span data-timezone-heading>Local</span>)</th></tr></thead><tbody>
-{% for timing in pool_timings %}<tr><td>{{ timing.pool_id }}</td><td class="ok">{{ timing.duration }}</td><td><time class="utc-time" datetime="{{ timing.completed_at.isoformat() }}" data-utc="{{ timing.completed_at.isoformat() }}">{{ timing.completed_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</time></td></tr>{% endfor %}
+{% for timing in pool_timings %}<tr><td>{% if timing.pool %}<a href="/pools/{{ timing.pool.provisioner }}/{{ timing.pool.worker_type }}">{{ timing.pool_id }}</a>{% else %}{{ timing.pool_id }}{% endif %}</td><td class="ok">{{ timing.duration }}</td><td><time class="utc-time" datetime="{{ timing.completed_at.isoformat() }}" data-utc="{{ timing.completed_at.isoformat() }}">{{ timing.completed_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</time></td></tr>{% endfor %}
 </tbody></table>
 {% endif %}
 <h2 id="pool-snapshots">Pool dashboard snapshots</h2>
 <table><thead><tr><th>Pool</th><th>Snapshot source</th><th>Pool state</th></tr></thead><tbody>
-{% for snapshot in snapshots %}<tr><td>{{ snapshot.pool_id }}</td>{% if snapshot.source_at %}<td class="{{ 'stale' if snapshot.stale else 'ok' }}"><time datetime="{{ snapshot.source_at.isoformat() }}" class="utc-tooltip" data-utc="{{ snapshot.source_at.isoformat() }}" title="{{ snapshot.source_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}">{{ snapshot.age }}</time>{% if snapshot.stale %} (stale){% endif %}</td>{% else %}<td class="missing">never</td>{% endif %}<td>{{ 'enabled' if snapshot.enabled else 'disabled' }}</td></tr>{% endfor %}
+{% for snapshot in snapshots %}<tr><td><a href="/pools/{{ snapshot.pool.provisioner }}/{{ snapshot.pool.worker_type }}">{{ snapshot.pool_id }}</a></td>{% if snapshot.source_at %}<td class="{{ 'stale' if snapshot.stale else 'ok' }}"><time datetime="{{ snapshot.source_at.isoformat() }}" class="utc-tooltip" data-utc="{{ snapshot.source_at.isoformat() }}" title="{{ snapshot.source_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}">{{ snapshot.age }}</time>{% if snapshot.stale %} (stale){% endif %}</td>{% else %}<td class="missing">never</td>{% endif %}<td>{{ 'enabled' if snapshot.enabled else 'disabled' }}</td></tr>{% endfor %}
 </tbody></table>
 {% endif %}
 <script>
