@@ -1,24 +1,28 @@
-# Database
+# Personal Beads .gitignore reference
+#
+# Curated from the generated br init template, the beads_rust checkout's
+# .beads/.gitignore, and locally observed runtime artifacts. Review against
+# both sources when updating this file.
+
+# SQLite database family
 *.db
+*.db?*
 *.db-journal
-*.db-shm
 *.db-wal
+*.db-shm
+db.sqlite
+bd.db
 
 # Lock files
 *.lock
 
-# Temporary
+# Temporary and recovery state
 last-touched
 *.tmp
+.br_recovery/
 
 # Local history backups
 .br_history/
-
-# DB-family recovery artifacts (truncated WAL/SHM, quarantined sidecars)
-# — same lifecycle as .br_history/, written by recovery paths and
-# `br doctor --repair`. Filename suffix `.truncated-wal` slips past the
-# generic `*.db-wal` glob above, so it needs an explicit entry (#271).
-.br_recovery/
 
 # Sync state (local-only, per-machine)
 .sync.lock
@@ -39,7 +43,10 @@ daemon.pid
 bd.sock
 sync-state.json
 
-# Worktree redirect file
+# Local version tracking
+.local_version
+
+# Worktree redirect file (contains a clone-local path)
 redirect
 
 # bv (beads viewer) lock file
