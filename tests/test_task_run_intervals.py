@@ -415,6 +415,31 @@ def test_task_window_continuity_uses_stored_runs_without_snapshot_state(tmp_path
     assert (complete, continuity, window_observed) == (True, None, False)
 
 
+def test_direct_task_collection_treats_idle_to_active_as_continuous(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(classifier, "_get_task_status", lambda _task: {"status": {"runs": []}})
+    windows = iter([
+        [],
+        [{"taskId": "first", "runId": 0}],
+        [{"taskId": "first", "runId": 0}, {"taskId": "next", "runId": 0}],
+    ])
+    monkeypatch.setattr(classifier, "_get_recent_tasks", lambda _group, _worker: next(windows))
+
+    _tasks, complete, continuity, window_observed = classifier._new_terminal_tasks_with_continuity("worker-1", "group-1")
+    assert (complete, continuity, window_observed) == (True, None, False)
+    _tasks, complete, continuity, window_observed = classifier._new_terminal_tasks_with_continuity("worker-1", "group-1")
+    assert (complete, continuity, window_observed) == (False, True, True)
+    _tasks, complete, continuity, window_observed = classifier._new_terminal_tasks_with_continuity("worker-1", "group-1")
+    assert (complete, continuity, window_observed) == (False, True, True)
+    assert storage.list_task_run_coverage_events(
+        "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00",
+    ) == []
+
+
 def test_start_lag_backfill_enriches_existing_runs_once_per_task(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)

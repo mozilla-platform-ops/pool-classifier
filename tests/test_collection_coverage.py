@@ -230,6 +230,32 @@ def test_classifier_starts_new_coverage_interval_for_unbridged_window(tmp_path, 
     assert events[0]["current_recent_tasks"] == [["task-2", 0]]
 
 
+@pytest.mark.parametrize("current_window", [
+    [{"taskId": "task-1", "runId": 0}],
+    [{"taskId": "task-1", "runId": 0}, {"taskId": "task-2", "runId": 0}],
+])
+def test_classifier_keeps_coverage_when_an_idle_worker_receives_work(tmp_path, monkeypatch, current_window):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(classifier, "_update_reports", lambda: None)
+    windows = iter([[], current_window, current_window])
+    monkeypatch.setattr(classifier, "_get_recent_tasks", lambda _group, _worker: next(windows))
+    monkeypatch.setattr(classifier, "_get_task_status", lambda _task: {"status": {"runs": []}})
+    worker = [{"workerId": "worker-1", "workerGroup": "group-1"}]
+
+    classifier.classify_cycle(workers=worker)
+    classifier.classify_cycle(workers=worker)
+    classifier.classify_cycle(workers=worker)
+
+    assert len(storage.get_collection_coverage("task_runs")["intervals"]) == 1
+    assert storage.list_task_run_coverage_events(
+        "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00",
+    ) == []
+
+
 def test_threaded_polling_persists_a_baseline_task_window(tmp_path, monkeypatch):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     classifier = PoolClassifier(

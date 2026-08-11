@@ -94,6 +94,24 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
+def _recent_task_window_continuity(
+    previous_window: Optional[dict],
+    current_window: List[Tuple[str, Optional[int]]],
+) -> Tuple[Optional[bool], int]:
+    """Classify recent-task continuity without mistaking an idle worker for a gap.
+
+    An empty prior window means the worker had no retained task references at
+    the preceding observation.  A later nonempty window is therefore the
+    normal idle-to-active transition, not evidence that a retained window was
+    skipped.  Only disjoint *nonempty* windows are an unprovable gap.
+    """
+    if previous_window is None:
+        return None, 0
+    previous_runs = set(map(tuple, previous_window["recent_tasks"]))
+    overlap_count = len(previous_runs.intersection(current_window))
+    return (True if not previous_runs else bool(overlap_count)), overlap_count
+
+
 class _RequestRateLimiter:
     """Thread-safe spacing for a bounded stream of Queue requests."""
 
@@ -665,9 +683,9 @@ class PoolClassifier:
                 self.storage.record_recent_task_window(worker_id, worker_group, window, observed_at)
                 continue
             window_observed = True
-            previous_runs = set(map(tuple, previous_window["recent_tasks"])) if previous_window else set()
-            overlap_count = len(previous_runs.intersection(window))
-            continuity_by_worker[worker_id] = None if previous_window is None else bool(overlap_count)
+            continuity_by_worker[worker_id], overlap_count = _recent_task_window_continuity(
+                previous_window, window,
+            )
             if continuity_by_worker[worker_id] is False:
                 self.storage.record_task_run_coverage_event(
                     observed_at, "recent_tasks_no_overlap", worker_id, worker_group,
@@ -800,14 +818,24 @@ class PoolClassifier:
         return terminal_by_worker, complete
 
     def _process_recent_task_window(
-        self, worker_id: str, recent: List[dict],
+        self, worker_id: str, worker_group: str, recent: List[dict],
     ) -> Tuple[List[Tuple], bool, Optional[bool], bool]:
         """Persist and resolve one worker's already-fetched recent-task window."""
         seen = self.seen_task_runs.setdefault(worker_id, set())
         window = [(task.get("taskId"), task.get("runId")) for task in recent if task.get("taskId")]
-        continuity = self.storage.task_run_window_continuity(worker_id, window)
         references = []
         observed_at = datetime.now(timezone.utc).isoformat()
+        previous_window = self.storage.get_recent_task_window(worker_id)
+        if window:
+            continuity, overlap_count = _recent_task_window_continuity(previous_window, window)
+            if continuity is False:
+                self.storage.record_task_run_coverage_event(
+                    observed_at, "recent_tasks_no_overlap", worker_id, worker_group,
+                    previous_window, window, overlap_count,
+                )
+        else:
+            continuity = None
+        self.storage.record_recent_task_window(worker_id, worker_group, window, observed_at)
         for task in recent:
             task_id = task.get("taskId")
             run_id = task.get("runId")
@@ -830,7 +858,7 @@ class PoolClassifier:
         except Exception as exc:
             logger.warning("%s: failed to fetch recent tasks: %s", worker_id, exc)
             return [], False, False, True
-        return self._process_recent_task_window(worker_id, recent)
+        return self._process_recent_task_window(worker_id, worker_group, recent)
 
     def _new_terminal_tasks(self, worker_id: str, worker_group: str) -> Tuple[List[Tuple], bool]:
         """Return newly terminal task runs, retaining the legacy private API."""
