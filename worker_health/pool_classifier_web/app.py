@@ -58,6 +58,8 @@ MAX_WORKERS_LIMIT = 200
 UTILIZATION_WINDOWS = {"1h": 60 * 60, "24h": 24 * 60 * 60, "7d": 7 * 24 * 60 * 60, "30d": 30 * 24 * 60 * 60}
 DEFAULT_OBSERVED_START_LAG_SLO_SECONDS = 4 * 60 * 60
 DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES = 5
+DEFAULT_CAPACITY_SCENARIO_ADDITIONAL_HOSTS = (0, 1, 2, 4, 8, 12)
+MAX_CAPACITY_SCENARIO_ADDITIONAL_HOSTS = 100
 COVERAGE_STALE_AFTER = timedelta(hours=1)
 REPOSITORY_URL = "https://github.com/mozilla-platform-ops/pool-classifier"
 DEFAULT_OVERVIEW_CACHE_TTL_SECONDS = 30
@@ -267,6 +269,36 @@ def _observed_start_lag_min_samples() -> int:
     if min_samples <= 0:
         raise ValueError("min_samples must be greater than zero")
     return min_samples
+
+
+def _capacity_scenario_parameters() -> tuple[str, str, int, list[int]]:
+    start = _parse_utilization_datetime("start", request.args.get("start"))
+    end = _parse_utilization_datetime("end", request.args.get("end"))
+    if end <= start:
+        raise ValueError("end must be after start")
+    if (end - start).total_seconds() > MAX_UTILIZATION_RANGE_SECONDS:
+        raise ValueError("time range must not exceed 90 days")
+    try:
+        target_p95_seconds = int(request.args.get("target_p95_seconds", DEFAULT_OBSERVED_START_LAG_SLO_SECONDS))
+    except ValueError as exc:
+        raise ValueError("target_p95_seconds must be an integer") from exc
+    if target_p95_seconds <= 0:
+        raise ValueError("target_p95_seconds must be greater than zero")
+    raw_additions = request.args.get("additional_hosts")
+    if raw_additions is None:
+        additional_hosts = list(DEFAULT_CAPACITY_SCENARIO_ADDITIONAL_HOSTS)
+    else:
+        try:
+            additional_hosts = [int(value) for value in raw_additions.split(",")]
+        except ValueError as exc:
+            raise ValueError("additional_hosts must be comma-separated integers") from exc
+        if not additional_hosts:
+            raise ValueError("additional_hosts must include at least one value")
+    if any(value < 0 for value in additional_hosts):
+        raise ValueError("additional_hosts must not contain negative values")
+    if any(value > MAX_CAPACITY_SCENARIO_ADDITIONAL_HOSTS for value in additional_hosts):
+        raise ValueError(f"additional_hosts values must not exceed {MAX_CAPACITY_SCENARIO_ADDITIONAL_HOSTS}")
+    return start.isoformat(), end.isoformat(), target_p95_seconds, sorted(set(additional_hosts))
 
 
 def _bounded_failure_window(default_seconds: int | None = None) -> tuple[str, str]:
@@ -1067,6 +1099,7 @@ def create_app() -> Flask:
                     {"path": "/api/v1/overview/utilization", "description": "Batched overview utilization summaries."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/observed-start-lag", "description": "Observed task-run start lag."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/observed-start-lag/visualization", "description": "Chart-ready observed start lag."},
+                    {"path": "/api/v1/pools/{provisioner}/{worker_type}/capacity-scenarios", "description": "Modeled start-lag outcomes for additional healthy hosts."},
                 ],
             },
         )
@@ -1337,6 +1370,19 @@ def create_app() -> Flask:
         if pc is None:
             return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
         result = pc.storage.get_observed_start_lag(start, end, slo_seconds)
+        result["api_version"] = 1
+        return jsonify(result)
+
+    @app.get("/api/v1/pools/<provisioner>/<worker_type>/capacity-scenarios")
+    def pool_capacity_scenarios(provisioner: str, worker_type: str):
+        try:
+            start, end, target_p95_seconds, additional_hosts = _capacity_scenario_parameters()
+        except ValueError as exc:
+            return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
+        pc = _get_classifier(provisioner, worker_type)
+        if pc is None:
+            return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
+        result = pc.storage.get_capacity_scenarios(start, end, target_p95_seconds, additional_hosts)
         result["api_version"] = 1
         return jsonify(result)
 

@@ -38,10 +38,11 @@ collection-coverage definitions.
 
 ## Existing endpoints
 
-The discovery document also lists the utilization and observed-start-lag
+The discovery document also lists the utilization, observed-start-lag, and capacity-scenarios
 endpoints. Their request parameters and response schemas remain documented in
-[`utilization-api.md`](utilization-api.md) and
-[`observed-start-lag-api.md`](observed-start-lag-api.md).
+[`utilization-api.md`](utilization-api.md),
+[`observed-start-lag-api.md`](observed-start-lag-api.md), and
+[`capacity-scenarios-api.md`](capacity-scenarios-api.md).
 
 ## Failures
 

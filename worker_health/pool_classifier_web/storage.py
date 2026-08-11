@@ -843,6 +843,34 @@ class SqliteStorage:
         ]
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
 
+    def get_capacity_scenarios(
+        self, range_start: str, range_end: str, target_p95_seconds: int, additional_hosts: list[int],
+    ) -> dict:
+        from worker_health.pool_classifier_web.capacity_scenarios import calculate_capacity_scenarios
+
+        runs = [dict(row) for row in self.db.execute(
+            "SELECT run_scheduled AS scheduled, run_started AS started, run_resolved AS resolved FROM task_results"
+            " WHERE run_scheduled IS NOT NULL AND julianday(run_scheduled) >= julianday(?)"
+            " AND julianday(run_scheduled) < julianday(?)",
+            (range_start, range_end),
+        )]
+        result = calculate_capacity_scenarios(
+            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, runs,
+            self._availability_transitions_for_window(range_start, range_end),
+        )
+        result["coverage"] = {
+            source: self.get_collection_coverage(source, range_start, range_end)
+            for source in COLLECTION_SOURCES
+        }
+        result["warnings"] = [
+            "Model outputs are experimental until calibrated against a known capacity change.",
+            *[
+                f"{source} collection coverage is incomplete for the selected window."
+                for source, coverage in result["coverage"].items() if not coverage["complete"]
+            ],
+        ]
+        return result
+
     def get_job_source_volume(self, range_start: str, range_end: str) -> list[dict]:
         return [dict(row) for row in self.db.execute(
             "SELECT substr(r.run_started, 1, 10) AS day, COALESCE(s.source, 'unknown') AS source, COUNT(*) AS tasks"
@@ -2028,6 +2056,39 @@ class PostgresStorage:
                 for row in cur.fetchall()
             ]
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
+
+    def get_capacity_scenarios(
+        self, range_start: str, range_end: str, target_p95_seconds: int, additional_hosts: list[int],
+    ) -> dict:
+        from worker_health.pool_classifier_web.capacity_scenarios import calculate_capacity_scenarios
+
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT run_scheduled AS scheduled, run_started AS started, run_resolved AS resolved FROM task_results"
+                " WHERE pool_id = %s AND run_scheduled IS NOT NULL AND run_scheduled >= %s::timestamptz"
+                " AND run_scheduled < %s::timestamptz",
+                (self.pool_id, range_start, range_end),
+            )
+            runs = [
+                {key: _to_iso(row[key]) if row[key] is not None else None for key in ("scheduled", "started", "resolved")}
+                for row in cur.fetchall()
+            ]
+            transitions = self._availability_transitions_for_window(cur, range_start, range_end)
+        result = calculate_capacity_scenarios(
+            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, runs, transitions,
+        )
+        result["coverage"] = {
+            source: self.get_collection_coverage(source, range_start, range_end)
+            for source in COLLECTION_SOURCES
+        }
+        result["warnings"] = [
+            "Model outputs are experimental until calibrated against a known capacity change.",
+            *[
+                f"{source} collection coverage is incomplete for the selected window."
+                for source, coverage in result["coverage"].items() if not coverage["complete"]
+            ],
+        ]
+        return result
 
     def get_job_source_volume(self, range_start: str, range_end: str) -> list[dict]:
         with self._cursor() as cur:
