@@ -65,7 +65,8 @@ def _availability_by_time(
 
 
 def _scenario(
-    arrivals: list[tuple[datetime, float]], capacity_changes: list[tuple[datetime, int]], additional_hosts: int, slo_seconds: int,
+    arrivals: list[tuple[datetime, float]], capacity_changes: list[tuple[datetime, int]], additional_hosts: int,
+    slo_seconds: int, turnaround_seconds: int,
 ) -> dict:
     queued: deque[tuple[datetime, float]] = deque()
     completions: list[datetime] = []
@@ -94,7 +95,7 @@ def _scenario(
         while queued and len(completions) < current_capacity:
             scheduled, duration = queued.popleft()
             lags.append((now - scheduled).total_seconds())
-            heapq.heappush(completions, now + timedelta(seconds=duration))
+            heapq.heappush(completions, now + timedelta(seconds=duration + turnaround_seconds))
         max_queue_depth = max(max_queue_depth, len(queued))
         if queued and not completions and capacity_index >= len(capacity_changes):
             break
@@ -114,13 +115,15 @@ def _scenario(
 
 def calculate_capacity_scenarios(
     pool_id: str, range_start: str, range_end: str, target_p95_seconds: int,
-    additional_hosts: Iterable[int], runs: Iterable[dict], availability_transitions: Iterable[dict],
+    additional_hosts: Iterable[int], turnaround_seconds: int, runs: Iterable[dict], availability_transitions: Iterable[dict],
 ) -> dict:
     start, end = _parse(range_start), _parse(range_end)
     if end <= start:
         raise ValueError("end must be after start")
     if target_p95_seconds <= 0:
         raise ValueError("target_p95_seconds must be greater than zero")
+    if turnaround_seconds < 0:
+        raise ValueError("turnaround_seconds must be non-negative")
     additions = sorted({0, *additional_hosts})
     if not additions or additions[0] < 0:
         raise ValueError("additional_hosts must contain non-negative integers")
@@ -141,7 +144,10 @@ def calculate_capacity_scenarios(
         observed_lags.append((started - scheduled).total_seconds())
     arrivals.sort()
     capacity_changes = _availability_by_time(availability_transitions, start, end)
-    scenarios = [_scenario(arrivals, capacity_changes, addition, target_p95_seconds) for addition in additions]
+    scenarios = [
+        _scenario(arrivals, capacity_changes, addition, target_p95_seconds, turnaround_seconds)
+        for addition in additions
+    ]
     modeled_baseline = scenarios[0]
     observed_p95 = _percentile(observed_lags, 0.95)
     modeled_p95 = modeled_baseline["modeled_p95_seconds"]
@@ -153,6 +159,7 @@ def calculate_capacity_scenarios(
             "status": "uncalibrated",
             "scope": SCOPE,
             "capacity_basis": "observed healthy workers plus additional hosts",
+            "assumptions": {"turnaround_seconds": turnaround_seconds},
         },
         "pool_id": pool_id,
         "start_at": start.isoformat(),

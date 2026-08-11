@@ -32,7 +32,7 @@ def _transitions():
 
 def test_capacity_scenarios_replays_observed_durations_against_added_capacity():
     result = calculate_capacity_scenarios(
-        "provisioner/worker-type", START.isoformat(), END.isoformat(), 5, [0, 1, 2], _runs(), _transitions(),
+        "provisioner/worker-type", START.isoformat(), END.isoformat(), 5, [0, 1, 2], 0, _runs(), _transitions(),
     )
 
     baseline, plus_one, plus_two = result["scenarios"]
@@ -50,12 +50,22 @@ def test_capacity_scenarios_replays_observed_durations_against_added_capacity():
 
 def test_capacity_scenarios_excludes_invalid_observed_runs():
     result = calculate_capacity_scenarios(
-        "pool", START.isoformat(), END.isoformat(), 5, [0],
+        "pool", START.isoformat(), END.isoformat(), 5, [0], 0,
         _runs() + [{"scheduled": _iso(1), "started": None, "resolved": None}], _transitions(),
     )
 
     assert result["observed_run_count"] == 2
     assert result["excluded_run_count"] == 1
+
+
+def test_capacity_scenarios_applies_turnaround_before_releasing_a_host():
+    result = calculate_capacity_scenarios(
+        "pool", START.isoformat(), END.isoformat(), 120, [0], 120, _runs(), _transitions(),
+    )
+
+    assert result["model"]["assumptions"]["turnaround_seconds"] == 120
+    assert result["scenarios"][0]["modeled_p95_seconds"] == 130
+    assert result["scenarios"][0]["started_within_target_pct"] == 50.0
 
 
 def _storage(tmp_path):
@@ -98,6 +108,7 @@ def test_capacity_scenarios_api_returns_model_and_coverage(monkeypatch, tmp_path
     assert response.json["minimum_additional_hosts_meeting_target"] == 1
     assert response.json["observed_baseline"]["p95_seconds"] == 10
     assert response.json["warnings"] == ["Model outputs are experimental until calibrated against a known capacity change."]
+    assert response.json["model"]["assumptions"]["turnaround_seconds"] == 120
     assert response.json["coverage"]["task_runs"]["complete"] is True
     assert [row["additional_hosts"] for row in response.json["scenarios"]] == [0, 1]
 
@@ -108,6 +119,8 @@ def test_capacity_scenarios_api_returns_model_and_coverage(monkeypatch, tmp_path
         ({}, "start is required"),
         ({"start": START.isoformat(), "end": END.isoformat(), "additional_hosts": "one"}, "additional_hosts must be comma-separated integers"),
         ({"start": START.isoformat(), "end": END.isoformat(), "additional_hosts": "-1"}, "additional_hosts must not contain negative values"),
+        ({"start": START.isoformat(), "end": END.isoformat(), "turnaround_seconds": "fast"}, "turnaround_seconds must be an integer"),
+        ({"start": START.isoformat(), "end": END.isoformat(), "turnaround_seconds": "1801"}, "turnaround_seconds must be between 0 and 1800"),
     ],
 )
 def test_capacity_scenarios_api_validates_parameters(monkeypatch, tmp_path, query, message):

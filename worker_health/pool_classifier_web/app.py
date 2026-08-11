@@ -60,6 +60,8 @@ DEFAULT_OBSERVED_START_LAG_SLO_SECONDS = 4 * 60 * 60
 DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES = 5
 DEFAULT_CAPACITY_SCENARIO_ADDITIONAL_HOSTS = (0, 1, 2, 4, 8, 12)
 MAX_CAPACITY_SCENARIO_ADDITIONAL_HOSTS = 100
+DEFAULT_CAPACITY_SCENARIO_TURNAROUND_SECONDS = 120
+MAX_CAPACITY_SCENARIO_TURNAROUND_SECONDS = 30 * 60
 COVERAGE_STALE_AFTER = timedelta(hours=1)
 REPOSITORY_URL = "https://github.com/mozilla-platform-ops/pool-classifier"
 DEFAULT_OVERVIEW_CACHE_TTL_SECONDS = 30
@@ -271,7 +273,7 @@ def _observed_start_lag_min_samples() -> int:
     return min_samples
 
 
-def _capacity_scenario_parameters() -> tuple[str, str, int, list[int]]:
+def _capacity_scenario_parameters() -> tuple[str, str, int, list[int], int]:
     start = _parse_utilization_datetime("start", request.args.get("start"))
     end = _parse_utilization_datetime("end", request.args.get("end"))
     if end <= start:
@@ -284,6 +286,12 @@ def _capacity_scenario_parameters() -> tuple[str, str, int, list[int]]:
         raise ValueError("target_p95_seconds must be an integer") from exc
     if target_p95_seconds <= 0:
         raise ValueError("target_p95_seconds must be greater than zero")
+    try:
+        turnaround_seconds = int(request.args.get("turnaround_seconds", DEFAULT_CAPACITY_SCENARIO_TURNAROUND_SECONDS))
+    except ValueError as exc:
+        raise ValueError("turnaround_seconds must be an integer") from exc
+    if not 0 <= turnaround_seconds <= MAX_CAPACITY_SCENARIO_TURNAROUND_SECONDS:
+        raise ValueError(f"turnaround_seconds must be between 0 and {MAX_CAPACITY_SCENARIO_TURNAROUND_SECONDS}")
     raw_additions = request.args.get("additional_hosts")
     if raw_additions is None:
         additional_hosts = list(DEFAULT_CAPACITY_SCENARIO_ADDITIONAL_HOSTS)
@@ -298,7 +306,7 @@ def _capacity_scenario_parameters() -> tuple[str, str, int, list[int]]:
         raise ValueError("additional_hosts must not contain negative values")
     if any(value > MAX_CAPACITY_SCENARIO_ADDITIONAL_HOSTS for value in additional_hosts):
         raise ValueError(f"additional_hosts values must not exceed {MAX_CAPACITY_SCENARIO_ADDITIONAL_HOSTS}")
-    return start.isoformat(), end.isoformat(), target_p95_seconds, sorted(set(additional_hosts))
+    return start.isoformat(), end.isoformat(), target_p95_seconds, sorted(set(additional_hosts)), turnaround_seconds
 
 
 def _bounded_failure_window(default_seconds: int | None = None) -> tuple[str, str]:
@@ -1376,13 +1384,15 @@ def create_app() -> Flask:
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/capacity-scenarios")
     def pool_capacity_scenarios(provisioner: str, worker_type: str):
         try:
-            start, end, target_p95_seconds, additional_hosts = _capacity_scenario_parameters()
+            start, end, target_p95_seconds, additional_hosts, turnaround_seconds = _capacity_scenario_parameters()
         except ValueError as exc:
             return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:
             return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
-        result = pc.storage.get_capacity_scenarios(start, end, target_p95_seconds, additional_hosts)
+        result = pc.storage.get_capacity_scenarios(
+            start, end, target_p95_seconds, additional_hosts, turnaround_seconds,
+        )
         result["api_version"] = 1
         return jsonify(result)
 

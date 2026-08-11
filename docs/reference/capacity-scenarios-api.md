@@ -10,6 +10,9 @@ The interval is start-inclusive and end-exclusive and may be at most 90 days.
 `target_p95_seconds` is optional and defaults to 14,400 seconds (four hours).
 `additional_hosts` is an optional comma-separated list of non-negative
 integers, defaulting to `0,1,2,4,8,12`; each value is capped at 100.
+`turnaround_seconds` is an optional non-negative post-run host turnaround
+assumption, defaulting to 120 seconds and capped at 1,800 seconds. It is added
+to every observed run duration before its modeled host becomes available.
 
 For every requested increment, the result reports modeled p50/p95 start lag,
 the share of modeled tasks within the selected target, peak waiting queue

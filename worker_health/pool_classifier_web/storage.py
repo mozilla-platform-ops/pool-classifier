@@ -844,7 +844,7 @@ class SqliteStorage:
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
 
     def get_capacity_scenarios(
-        self, range_start: str, range_end: str, target_p95_seconds: int, additional_hosts: list[int],
+        self, range_start: str, range_end: str, target_p95_seconds: int, additional_hosts: list[int], turnaround_seconds: int,
     ) -> dict:
         from worker_health.pool_classifier_web.capacity_scenarios import calculate_capacity_scenarios
 
@@ -855,7 +855,7 @@ class SqliteStorage:
             (range_start, range_end),
         )]
         result = calculate_capacity_scenarios(
-            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, runs,
+            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, turnaround_seconds, runs,
             self._availability_transitions_for_window(range_start, range_end),
         )
         result["coverage"] = {
@@ -2058,7 +2058,7 @@ class PostgresStorage:
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
 
     def get_capacity_scenarios(
-        self, range_start: str, range_end: str, target_p95_seconds: int, additional_hosts: list[int],
+        self, range_start: str, range_end: str, target_p95_seconds: int, additional_hosts: list[int], turnaround_seconds: int,
     ) -> dict:
         from worker_health.pool_classifier_web.capacity_scenarios import calculate_capacity_scenarios
 
@@ -2075,7 +2075,7 @@ class PostgresStorage:
             ]
             transitions = self._availability_transitions_for_window(cur, range_start, range_end)
         result = calculate_capacity_scenarios(
-            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, runs, transitions,
+            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, turnaround_seconds, runs, transitions,
         )
         result["coverage"] = {
             source: self.get_collection_coverage(source, range_start, range_end)
