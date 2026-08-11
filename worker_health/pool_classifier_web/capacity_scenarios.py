@@ -16,6 +16,7 @@ from typing import Iterable
 
 
 MODEL_VERSION = "fifo-observed-runs-v1"
+MIN_BUSY_TURNAROUND_SAMPLES = 30
 SCOPE = (
     "FIFO counterfactual replay of observed terminal task runs. It excludes "
     "tasks that never started and does not model Taskcluster routing, worker "
@@ -35,6 +36,35 @@ def _percentile(values: list[float], fraction: float) -> float | None:
         return None
     values.sort()
     return values[max(0, ceil(len(values) * fraction) - 1)]
+
+
+def busy_turnaround_summary(runs: Iterable[dict], range_start: str, range_end: str) -> dict:
+    """Summarize host turnaround only where the next observed run was already waiting."""
+    start, end = _parse(range_start), _parse(range_end)
+    by_worker: dict[str, list[tuple[datetime, datetime, datetime]]] = {}
+    for row in runs:
+        try:
+            worker_id = str(row["worker_id"])
+            scheduled, started, resolved = (_parse(row[key]) for key in ("scheduled", "started", "resolved"))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        if start <= scheduled < end and scheduled <= started <= resolved:
+            by_worker.setdefault(worker_id, []).append((scheduled, started, resolved))
+    gaps = []
+    for worker_runs in by_worker.values():
+        worker_runs.sort(key=lambda item: item[1])
+        for (_scheduled, _started, resolved), (next_scheduled, next_started, _next_resolved) in zip(worker_runs, worker_runs[1:]):
+            if next_scheduled <= resolved <= next_started:
+                gaps.append((next_started - resolved).total_seconds())
+    return {
+        "source": "busy_worker_cycles",
+        "sample_count": len(gaps),
+        "p50_seconds": _percentile(gaps, 0.50),
+        "p90_seconds": _percentile(gaps, 0.90),
+        "p95_seconds": _percentile(gaps, 0.95),
+        "available": len(gaps) >= MIN_BUSY_TURNAROUND_SAMPLES,
+        "minimum_samples": MIN_BUSY_TURNAROUND_SAMPLES,
+    }
 
 
 def _availability_by_time(
@@ -183,3 +213,30 @@ def calculate_capacity_scenarios(
         "scenarios": scenarios,
         "minimum_additional_hosts_meeting_target": minimum,
     }
+
+
+def calculate_turnaround_sensitivity(
+    pool_id: str, range_start: str, range_end: str, target_p95_seconds: int,
+    additional_hosts: Iterable[int], runs: list[dict], availability_transitions: list[dict],
+) -> dict:
+    """Return comparable fixed and per-pool turnaround scenario results."""
+    summary = busy_turnaround_summary(runs, range_start, range_end)
+    variants = []
+    for identifier, label, seconds, source in (
+        ("fixed_120_seconds", "Fixed 2-minute turnaround", 120, "configured_constant"),
+        ("busy_cycle_median", "Per-pool busy-cycle median", summary["p50_seconds"], summary["source"]),
+    ):
+        if seconds is None or (identifier == "busy_cycle_median" and not summary["available"]):
+            continue
+        result = calculate_capacity_scenarios(
+            pool_id, range_start, range_end, target_p95_seconds, additional_hosts, int(seconds), runs, availability_transitions,
+        )
+        variants.append({
+            "id": identifier,
+            "label": label,
+            "turnaround": {"seconds": int(seconds), "source": source},
+            "calibration": result["calibration"],
+            "scenarios": result["scenarios"],
+            "minimum_additional_hosts_meeting_target": result["minimum_additional_hosts_meeting_target"],
+        })
+    return {"busy_turnaround": summary, "variants": variants}

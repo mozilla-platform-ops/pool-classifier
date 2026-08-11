@@ -26,6 +26,13 @@ observed period before relying on other scenarios.
 explicitly `uncalibrated`; its host-count result must not be used as a sizing
 recommendation until it has been validated against a known capacity change.
 
+`turnaround_sensitivity` compares a fixed two-minute turnaround with the
+per-pool busy-worker-cycle median when at least 30 eligible consecutive worker
+cycles are available. A cycle is eligible only if its following observed task
+was already scheduled when the prior task resolved. Variants include their own
+calibration and host-count results; the distribution is evidence about normal
+turnaround, not a model of long reboot or readiness failures.
+
 The model replays task runs in scheduled-time FIFO order using their observed
 started-to-resolved duration. Its capacity at each point is the number of
 historically observed healthy workers plus the requested additional hosts.

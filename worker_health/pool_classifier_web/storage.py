@@ -846,16 +846,20 @@ class SqliteStorage:
     def get_capacity_scenarios(
         self, range_start: str, range_end: str, target_p95_seconds: int, additional_hosts: list[int], turnaround_seconds: int,
     ) -> dict:
-        from worker_health.pool_classifier_web.capacity_scenarios import calculate_capacity_scenarios
+        from worker_health.pool_classifier_web.capacity_scenarios import calculate_capacity_scenarios, calculate_turnaround_sensitivity
 
         runs = [dict(row) for row in self.db.execute(
-            "SELECT run_scheduled AS scheduled, run_started AS started, run_resolved AS resolved FROM task_results"
+            "SELECT worker_id, run_scheduled AS scheduled, run_started AS started, run_resolved AS resolved FROM task_results"
             " WHERE run_scheduled IS NOT NULL AND julianday(run_scheduled) >= julianday(?)"
             " AND julianday(run_scheduled) < julianday(?)",
             (range_start, range_end),
         )]
         result = calculate_capacity_scenarios(
             self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, turnaround_seconds, runs,
+            self._availability_transitions_for_window(range_start, range_end),
+        )
+        result["turnaround_sensitivity"] = calculate_turnaround_sensitivity(
+            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, runs,
             self._availability_transitions_for_window(range_start, range_end),
         )
         result["coverage"] = {
@@ -2060,22 +2064,25 @@ class PostgresStorage:
     def get_capacity_scenarios(
         self, range_start: str, range_end: str, target_p95_seconds: int, additional_hosts: list[int], turnaround_seconds: int,
     ) -> dict:
-        from worker_health.pool_classifier_web.capacity_scenarios import calculate_capacity_scenarios
+        from worker_health.pool_classifier_web.capacity_scenarios import calculate_capacity_scenarios, calculate_turnaround_sensitivity
 
         with self._cursor() as cur:
             cur.execute(
-                "SELECT run_scheduled AS scheduled, run_started AS started, run_resolved AS resolved FROM task_results"
+                "SELECT worker_id, run_scheduled AS scheduled, run_started AS started, run_resolved AS resolved FROM task_results"
                 " WHERE pool_id = %s AND run_scheduled IS NOT NULL AND run_scheduled >= %s::timestamptz"
                 " AND run_scheduled < %s::timestamptz",
                 (self.pool_id, range_start, range_end),
             )
             runs = [
-                {key: _to_iso(row[key]) if row[key] is not None else None for key in ("scheduled", "started", "resolved")}
+                {"worker_id": row["worker_id"], **{key: _to_iso(row[key]) if row[key] is not None else None for key in ("scheduled", "started", "resolved")}}
                 for row in cur.fetchall()
             ]
             transitions = self._availability_transitions_for_window(cur, range_start, range_end)
         result = calculate_capacity_scenarios(
             self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, turnaround_seconds, runs, transitions,
+        )
+        result["turnaround_sensitivity"] = calculate_turnaround_sensitivity(
+            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, runs, transitions,
         )
         result["coverage"] = {
             source: self.get_collection_coverage(source, range_start, range_end)

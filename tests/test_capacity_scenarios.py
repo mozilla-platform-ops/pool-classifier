@@ -6,7 +6,7 @@ import pytest
 
 from worker_health.pool_classifier_web import app as app_module
 from worker_health.pool_classifier_web.app import create_app
-from worker_health.pool_classifier_web.capacity_scenarios import calculate_capacity_scenarios
+from worker_health.pool_classifier_web.capacity_scenarios import busy_turnaround_summary, calculate_capacity_scenarios
 from worker_health.pool_classifier_web.storage import SqliteStorage
 
 
@@ -68,6 +68,20 @@ def test_capacity_scenarios_applies_turnaround_before_releasing_a_host():
     assert result["scenarios"][0]["started_within_target_pct"] == 50.0
 
 
+def test_busy_turnaround_uses_only_a_following_task_that_was_already_waiting():
+    runs = [
+        {"worker_id": "worker-1", "scheduled": _iso(0), "started": _iso(0), "resolved": _iso(10)},
+        {"worker_id": "worker-1", "scheduled": _iso(5), "started": _iso(70), "resolved": _iso(80)},
+        {"worker_id": "worker-1", "scheduled": _iso(90), "started": _iso(100), "resolved": _iso(110)},
+    ]
+
+    summary = busy_turnaround_summary(runs, START.isoformat(), END.isoformat())
+
+    assert summary["sample_count"] == 1
+    assert summary["p50_seconds"] == 60
+    assert summary["available"] is False
+
+
 def _storage(tmp_path):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     storage.init_schema()
@@ -109,6 +123,9 @@ def test_capacity_scenarios_api_returns_model_and_coverage(monkeypatch, tmp_path
     assert response.json["observed_baseline"]["p95_seconds"] == 10
     assert response.json["warnings"] == ["Model outputs are experimental until calibrated against a known capacity change."]
     assert response.json["model"]["assumptions"]["turnaround_seconds"] == 120
+    sensitivity = response.json["turnaround_sensitivity"]
+    assert sensitivity["busy_turnaround"]["sample_count"] == 1
+    assert [variant["id"] for variant in sensitivity["variants"]] == ["fixed_120_seconds"]
     assert response.json["coverage"]["task_runs"]["complete"] is True
     assert [row["additional_hosts"] for row in response.json["scenarios"]] == [0, 1]
 
