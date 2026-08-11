@@ -48,6 +48,15 @@ def test_capacity_scenarios_replays_observed_durations_against_added_capacity():
     assert "never started" in result["model"]["scope"]
 
 
+def test_capacity_scenarios_refines_the_first_passing_displayed_bracket():
+    result = calculate_capacity_scenarios(
+        "pool", START.isoformat(), END.isoformat(), 5, [0, 2], 0, _runs(), _transitions(),
+    )
+
+    assert [scenario["additional_hosts"] for scenario in result["scenarios"]] == [0, 2]
+    assert result["minimum_additional_hosts_meeting_target"] == 1
+
+
 def test_capacity_scenarios_excludes_invalid_observed_runs():
     result = calculate_capacity_scenarios(
         "pool", START.isoformat(), END.isoformat(), 5, [0], 0,

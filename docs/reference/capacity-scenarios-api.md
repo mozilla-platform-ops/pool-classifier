@@ -18,7 +18,9 @@ For every requested increment, the result reports modeled p50/p95 start lag,
 the share of modeled tasks within the selected target, peak waiting queue
 depth, and whether every modeled task starts and the p95 meets the target.
 `minimum_additional_hosts_meeting_target` is the first requested increment
-that meets the target, not an interpolation between the requested values.
+that meets the target, refined to the smallest integer host count between the
+previous failing displayed increment and that first passing increment. It is
+`null` if none of the displayed increments meets the target.
 `observed_baseline` reports the actual p50/p95 lag of the replay input, so a
 consumer can judge how closely the zero-added-host scenario reproduces the
 observed period before relying on other scenarios.

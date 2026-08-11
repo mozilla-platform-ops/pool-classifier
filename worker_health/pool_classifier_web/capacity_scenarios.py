@@ -143,6 +143,24 @@ def _scenario(
     }
 
 
+def _minimum_passing_addition(display_scenarios: list[dict], run_scenario) -> int | None:
+    """Find the exact first passing integer inside the first displayed passing bracket."""
+    passing_index = next((index for index, scenario in enumerate(display_scenarios) if scenario["meets_target"]), None)
+    if passing_index is None:
+        return None
+    upper = display_scenarios[passing_index]["additional_hosts"]
+    if passing_index == 0:
+        return upper
+    lower = display_scenarios[passing_index - 1]["additional_hosts"] + 1
+    while lower < upper:
+        middle = (lower + upper) // 2
+        if run_scenario(middle)["meets_target"]:
+            upper = middle
+        else:
+            lower = middle + 1
+    return lower
+
+
 def calculate_capacity_scenarios(
     pool_id: str, range_start: str, range_end: str, target_p95_seconds: int,
     additional_hosts: Iterable[int], turnaround_seconds: int, runs: Iterable[dict], availability_transitions: Iterable[dict],
@@ -174,14 +192,14 @@ def calculate_capacity_scenarios(
         observed_lags.append((started - scheduled).total_seconds())
     arrivals.sort()
     capacity_changes = _availability_by_time(availability_transitions, start, end)
-    scenarios = [
-        _scenario(arrivals, capacity_changes, addition, target_p95_seconds, turnaround_seconds)
-        for addition in additions
-    ]
+    def run_scenario(addition: int) -> dict:
+        return _scenario(arrivals, capacity_changes, addition, target_p95_seconds, turnaround_seconds)
+
+    scenarios = [run_scenario(addition) for addition in additions]
     modeled_baseline = scenarios[0]
     observed_p95 = _percentile(observed_lags, 0.95)
     modeled_p95 = modeled_baseline["modeled_p95_seconds"]
-    minimum = next((scenario["additional_hosts"] for scenario in scenarios if scenario["meets_target"]), None)
+    minimum = _minimum_passing_addition(scenarios, run_scenario)
     return {
         "metric": "modeled_capacity_scenario",
         "model": {
