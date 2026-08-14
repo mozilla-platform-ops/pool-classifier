@@ -20,6 +20,10 @@ Release versions have three matching identities: the version in `pyproject.toml`
 an annotated Git tag, and the deployed image tag. Follow the release workflow
 in [`AGENTS.md`](../../AGENTS.md), then use the checked build wrapper:
 
+Before creating the release commit, add a concise, Slack-ready summary at
+`docs/release-notes/vVERSION.md`. Review it with the release diff; after the
+production traffic gate succeeds, post that summary to the release channel.
+
 ```sh
 VERSION=VERSION
 scripts/run_local_postgres_tests.sh
