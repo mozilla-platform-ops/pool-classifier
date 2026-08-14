@@ -114,12 +114,7 @@ is required before submitting the build:
 
 ```bash
 scripts/run_local_postgres_tests.sh
-SOURCE_COMMIT="$(git rev-parse HEAD)"
-SOURCE_TAG="sha-$SOURCE_COMMIT"
-test -z "$(git status --porcelain)"
-gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_TAG="$SOURCE_TAG",COMMIT_SHA="$SOURCE_COMMIT" \
-  --project=relops-pool-classifier .
+scripts/build_ad_hoc_image.sh
 ```
 
 Deploy the resulting `app:$SOURCE_TAG` through the same migration, candidate,

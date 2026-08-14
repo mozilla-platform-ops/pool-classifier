@@ -25,14 +25,15 @@ Before creating the release commit, add a concise, Slack-ready summary at
 production traffic gate succeeds, post that summary to the release channel.
 
 ```sh
-VERSION=VERSION
 scripts/run_local_postgres_tests.sh
-scripts/build_release_image.sh "$VERSION"
+scripts/build_release_image.sh
 ```
 
-The wrapper derives the commit from the annotated tag and rejects an unclean
-checkout, a tag not at `HEAD`, or a package-version mismatch. It does not
-change production traffic.
+The wrapper derives the version from `pyproject.toml` and the commit from its
+matching annotated tag. It rejects an unclean checkout or a tag not at `HEAD`.
+It requests confirmation before submitting Cloud Build; use `--yes` only for
+an explicitly approved non-interactive submission. It does not change
+production traffic.
 
 ## Ad-hoc deployment
 
@@ -41,14 +42,12 @@ tag. Do not create or reuse a semantic version tag:
 
 ```sh
 scripts/run_local_postgres_tests.sh
-SOURCE_COMMIT="$(git rev-parse HEAD)"
-SOURCE_TAG="sha-$SOURCE_COMMIT"
-test -z "$(git status --porcelain)"
-
-gcloud builds submit --config cloudbuild.yaml \
-  --substitutions=_TAG="$SOURCE_TAG",COMMIT_SHA="$SOURCE_COMMIT" \
-  --project=relops-pool-classifier .
+scripts/build_ad_hoc_image.sh
 ```
+
+The wrapper derives both the image tag and embedded commit from the same clean
+`HEAD`, and requests confirmation before submitting Cloud Build. Use `--yes`
+only for an explicitly approved non-interactive submission.
 
 ## Production gate
 

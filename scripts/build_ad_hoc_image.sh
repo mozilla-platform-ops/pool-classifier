@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a tagged release image with provenance derived from the annotated tag.
+# Build a commit-derived operational image with immutable provenance from HEAD.
 
 set -euo pipefail
 
@@ -23,17 +23,12 @@ done
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-project_version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' pyproject.toml)"
-[[ "$project_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage
-tag="v$project_version"
-release_commit="$(git rev-parse "${tag}^{commit}")"
-head_commit="$(git rev-parse HEAD)"
-
-test "$head_commit" = "$release_commit"
+source_commit="$(git rev-parse HEAD)"
+source_tag="sha-$source_commit"
 test -z "$(git status --porcelain)"
 
 if "$dry_run"; then
-  printf 'tag=%s\ncommit=%s\nimage_tag=%s\n' "$tag" "$release_commit" "$tag"
+  printf 'commit=%s\nimage_tag=%s\n' "$source_commit" "$source_tag"
   exit 0
 fi
 
@@ -42,10 +37,10 @@ if ! "$approved"; then
     echo "Refusing non-interactive build submission without --yes." >&2
     exit 2
   fi
-  read -r -p "Submit release build $tag from $release_commit? [y/N] " response
+  read -r -p "Submit operational build $source_tag from $source_commit? [y/N] " response
   [[ "$response" =~ ^[Yy]([Ee][Ss])?$ ]] || exit 0
 fi
 
 exec gcloud builds submit --config cloudbuild.yaml \
-  --substitutions="_TAG=$tag,COMMIT_SHA=$release_commit" \
+  --substitutions="_TAG=$source_tag,COMMIT_SHA=$source_commit" \
   --project=relops-pool-classifier .
