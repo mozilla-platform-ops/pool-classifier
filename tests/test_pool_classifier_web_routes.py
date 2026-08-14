@@ -1072,7 +1072,7 @@ def test_utilization_api_zero_availability(monkeypatch, tmp_path):
     assert bucket["utilization_pct"] is None
 
 
-def test_utilization_api_incomplete_data(monkeypatch, tmp_path):
+def test_utilization_api_partial_data(monkeypatch, tmp_path):
     client = _api_client(monkeypatch, _api_storage(tmp_path, coverage_minutes=30))
     response = client.get(
         API_PATH,
@@ -1086,11 +1086,11 @@ def test_utilization_api_incomplete_data(monkeypatch, tmp_path):
     assert response.json["coverage_pct"] == 50
     assert response.json["complete"] is False
     bucket = response.json["buckets"][0]
-    assert bucket["status"] == "incomplete"
-    assert bucket["busy_worker_hours"] is None
-    assert bucket["available_worker_hours"] is None
-    assert bucket["worker_equivalents"] is None
-    assert bucket["utilization_pct"] is None
+    assert bucket["status"] == "partial"
+    assert bucket["busy_worker_hours"] == 0.25
+    assert bucket["available_worker_hours"] == 0.5
+    assert bucket["worker_equivalents"] == 0.5
+    assert bucket["utilization_pct"] == 50
 
 
 def test_utilization_summary_uses_one_common_freshness_boundary(monkeypatch, tmp_path):
