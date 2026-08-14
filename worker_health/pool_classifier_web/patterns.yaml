@@ -154,9 +154,10 @@ patterns:
     tags: [android]
 
   - name: task-aborted-max-run-time
-    regex: "Task aborted - max run time exceeded"
+    regex: "(?:Task aborted - max run time exceeded|\\[taskcluster [^\\]]+\\] Command ABORTED after [^\\n]+: process aborted)"
     severity: high
-    tags: [android]
+    tags: [taskcluster]
+    description: Taskcluster terminated the command at its configured maximum runtime.
 
   - name: build-commands-failed
     regex: "The following build commands failed"

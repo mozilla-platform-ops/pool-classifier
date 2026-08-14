@@ -81,6 +81,21 @@ def test_raptor_browsertime_failure_is_a_low_severity_fallback():
     assert pattern.severity == "low"
 
 
+def test_taskcluster_command_abort_at_max_runtime_beats_test_outcome():
+    category, pattern = classify_patterns(
+        all_patterns(),
+        "raptor-browsertime Error: Browsertime failed to run\n"
+        "[taskcluster 2026-08-14T15:46:41.804Z] Command ABORTED after "
+        "34m59.7774463s: process aborted",
+        "failed",
+        None,
+    )
+
+    assert category == "task-aborted-max-run-time"
+    assert pattern is not None
+    assert pattern.severity == "high"
+
+
 def test_test_outcomes_are_low_priority_but_max_runtime_remains_high():
     severity_by_name = {pattern.name: pattern.severity for pattern in all_patterns()}
 

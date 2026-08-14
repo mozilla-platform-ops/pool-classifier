@@ -604,8 +604,6 @@ class PoolClassifier:
         tail_str = bytes(tail_buf).decode("utf-8", errors="replace")
         if aborted and self._fetch_wpt_error_summary_marker(task_id, run_id):
             tail_str += "\nWPT_ERROR_SUMMARY_UNEXPECTED_RESULT\n"
-        if aborted and "raptor-browsertime" in (head_str + tail_str):
-            tail_str += self._fetch_browsertime_log(task_id, run_id)
         return head_str + tail_str, "ok"
 
     @staticmethod
@@ -648,31 +646,6 @@ class PoolClassifier:
             logger.info(f"fetch_wpt_error_summary {task_id}/{run_id} failed: {exc}")
             return False
         return self._wpt_error_summary_has_unexpected_result(summary.decode("utf-8", errors="replace"))
-
-    def _fetch_browsertime_log(self, task_id: str, run_id: int) -> str:
-        """Fetch a bounded Browsertime artifact for an incomplete Raptor live log."""
-        url = (
-            f"{self.queue_base}/task/{task_id}/runs/{run_id}/artifacts/"
-            "public/test_info/browsertime.log"
-        )
-        log = bytearray()
-        start = time.monotonic()
-        try:
-            with requests.get(url, stream=True, timeout=(10, 10)) as response:
-                if response.status_code != 200:
-                    return ""
-                for chunk in response.iter_content(chunk_size=16384):
-                    if not chunk:
-                        continue
-                    log.extend(chunk)
-                    if len(log) >= WPT_ERROR_SUMMARY_MAX_BYTES:
-                        break
-                    if time.monotonic() - start > WPT_ERROR_SUMMARY_MAX_SECONDS:
-                        break
-        except requests.RequestException as exc:
-            logger.info(f"fetch_browsertime_log {task_id}/{run_id} failed: {exc}")
-            return ""
-        return "\n" + log.decode("utf-8", errors="replace")
 
     def _classify(self, log_text: str, run_state: str, reason_resolved: Optional[str]) -> str:
         return classify_patterns(all_patterns(), log_text, run_state, reason_resolved)[0]
