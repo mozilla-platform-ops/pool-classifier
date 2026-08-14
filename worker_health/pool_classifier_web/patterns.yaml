@@ -158,6 +158,12 @@ patterns:
     severity: high
     description: One or more build commands in the task exited non-zero.
 
+  - name: raptor-benchmark-timeout
+    regex: "CRITICAL -  raptor-browsertime Critical: Benchmark timed out\\. Aborting\\.\\.\\."
+    severity: high
+    tags: [performance-test, raptor, browsertime, test]
+    description: Raptor aborted after its Browsertime benchmark exceeded the configured timeout.
+
   - name: raptor-test-failure
     regex: "raptor-main Critical: TEST-UNEXPECTED-FAIL"
     severity: high

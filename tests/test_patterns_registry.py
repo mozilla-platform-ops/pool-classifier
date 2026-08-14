@@ -54,6 +54,20 @@ def test_raptor_test_failure_is_a_high_severity_fallback():
     assert pattern.severity == "high"
 
 
+def test_raptor_benchmark_timeout_beats_generic_raptor_failure():
+    category, pattern = classify_patterns(
+        all_patterns(),
+        "CRITICAL -  raptor-browsertime Critical: Benchmark timed out. Aborting...\n"
+        "raptor-main Critical: TEST-UNEXPECTED-FAIL",
+        "failed",
+        None,
+    )
+
+    assert category == "raptor-benchmark-timeout"
+    assert pattern is not None
+    assert pattern.severity == "high"
+
+
 def test_wpt_terminal_summary_classifies_bounded_log_without_specific_failure_line():
     category, pattern = classify_patterns(
         all_patterns(),
