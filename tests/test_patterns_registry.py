@@ -41,6 +41,19 @@ def test_mozperftest_missing_results_is_a_high_severity_test_failure():
     assert pattern.severity == "high"
 
 
+def test_raptor_test_failure_is_a_high_severity_fallback():
+    category, pattern = classify_patterns(
+        all_patterns(),
+        "raptor-main Critical: TEST-UNEXPECTED-FAIL | Some visual metrics have an erroneous value of 0.",
+        "failed",
+        None,
+    )
+
+    assert category == "raptor-test-failure"
+    assert pattern is not None
+    assert pattern.severity == "high"
+
+
 def test_wpt_terminal_summary_classifies_bounded_log_without_specific_failure_line():
     category, pattern = classify_patterns(
         all_patterns(),

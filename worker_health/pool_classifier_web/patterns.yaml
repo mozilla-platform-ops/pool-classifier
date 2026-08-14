@@ -157,3 +157,9 @@ patterns:
     regex: "The following build commands failed"
     severity: high
     description: One or more build commands in the task exited non-zero.
+
+  - name: raptor-test-failure
+    regex: "raptor-main Critical: TEST-UNEXPECTED-FAIL"
+    severity: high
+    tags: [performance-test, raptor, test]
+    description: Raptor reported a test failure without a more-specific matching failure signature.
