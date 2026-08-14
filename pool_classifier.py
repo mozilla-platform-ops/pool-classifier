@@ -115,7 +115,10 @@ if __name__ == "__main__":
     parser.add_argument("--backfill-retries", type=int, default=2, metavar="COUNT", help="retries per transient status request (default: 2)")
     parser.add_argument("--backfill-requests-per-second", type=float, default=5.0, metavar="RATE", help="maximum Queue status requests per second for --backfill-start-lag (default: 5)")
     parser.add_argument("--backfill-state-file", type=Path, default=Path(".backfill-start-lag-state.json"), metavar="FILE", help="persist Queue 404 and unmatched-run skips here (default: .backfill-start-lag-state.json)")
-    parser.add_argument("--preview-task", metavar="TASK_ID", help="read-only: compare this task against committed and working-tree patterns")
+    parser.add_argument(
+        "--preview-task", metavar="TASK_ID",
+        help="read-only: compare worker_health/pool_classifier_web/patterns.yaml at a Git ref and in the working tree",
+    )
     parser.add_argument("--preview-run", type=int, metavar="RUN_ID", help="run ID to preview (default: newest terminal run)")
     parser.add_argument("--base-ref", default="HEAD", metavar="REF", help="Git ref for preview baseline patterns (default: HEAD)")
     args = parser.parse_args()
@@ -126,11 +129,12 @@ if __name__ == "__main__":
     if args.no_color:
         _use_color = False
 
-    # font: smbraille
-    print()
-    print(CYAN(" ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀"))
-    print(CYAN(" ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ "))
-    print()
+    if not args.preview_task:
+        # font: smbraille
+        print()
+        print(CYAN(" ⣀⡀ ⢀⡀ ⢀⡀ ⡇   ⢀⣀ ⡇ ⢀⣀ ⢀⣀ ⢀⣀ ⠄ ⣰⡁ ⠄ ⢀⡀ ⡀⣀"))
+        print(CYAN(" ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ "))
+        print()
 
     handler = logging.StreamHandler()
     handler.setFormatter(
@@ -140,7 +144,7 @@ if __name__ == "__main__":
         ),
     )
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=(logging.WARNING if args.preview_task else (logging.DEBUG if args.verbose else logging.INFO)),
         handlers=[handler],
     )
 
@@ -179,11 +183,13 @@ if __name__ == "__main__":
             severity = result.severity or "n/a"
             print(f"{label}: {result.category} (severity: {severity}; rule: {rule})")
 
-        print(f"Task {args.preview_task} run {run['runId']} ({run['state']})")
-        describe(f"Before ({args.base_ref})", comparison.before)
-        describe("Proposed (working tree)", comparison.proposed)
+        print("Classification preview (read-only)")
+        print("Rules: worker_health/pool_classifier_web/patterns.yaml")
+        print(f"Task: {args.preview_task} run {run['runId']} ({run['state']})")
+        describe(f"Baseline ({args.base_ref})", comparison.before)
+        describe("Working tree", comparison.proposed)
         if before_patterns == proposed_patterns:
-            print("Patterns are unchanged; both results use identical rules.")
+            print("Rule file is unchanged; both results use identical rules.")
         elif comparison.before == comparison.proposed:
             print("Classification is unchanged by the proposed rules.")
         elif comparison.proposed_shadows_before:
