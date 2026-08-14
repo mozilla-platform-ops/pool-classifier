@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from psycopg_pool import PoolTimeout
 
 from worker_health.pool_classifier_web import app as app_module
 from worker_health.pool_classifier_web.app import create_app
@@ -102,6 +103,30 @@ def test_not_found_page_uses_shared_header_and_overview_link():
     assert "404 — Page not found".encode() in response.data
     assert b"The page may have moved, or the URL may be incomplete." in response.data
     assert b'<a href="/">Return to overview</a>' in response.data
+
+
+def test_pool_html_returns_service_unavailable_when_database_pool_times_out(monkeypatch, caplog):
+    pool = Pool("display", "provisioner", "worker-type", "*/15 * * * *")
+    monkeypatch.setattr(app_module.registry, "get_pool", lambda *_args: pool)
+    monkeypatch.setattr(app_module, "_read_dashboard_snapshot", lambda *_args: None)
+    monkeypatch.setattr(
+        app_module,
+        "_get_classifier",
+        lambda *_args: SimpleNamespace(
+            render_html=lambda **_kwargs: (_ for _ in ()).throw(PoolTimeout("connection timed out")),
+        ),
+    )
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with caplog.at_level(logging.WARNING, logger="worker_health.pool_classifier_web.app"):
+        with app.test_client() as client:
+            response = client.get("/pools/provisioner/worker-type")
+
+    assert response.status_code == 503
+    assert b"Database temporarily unavailable" in response.data
+    assert b"Please try again shortly" in response.data
+    assert "database request failed: connection timed out" in caplog.text
 
 
 def test_pool_html_serves_complete_snapshot_without_constructing_a_classifier(monkeypatch):

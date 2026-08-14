@@ -19,6 +19,8 @@ from time import monotonic
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask, Response, abort, jsonify, render_template, request
+from psycopg import OperationalError
+from psycopg_pool import PoolTimeout
 
 from worker_health.pool_classifier import CONSECUTIVE_FAILURE_ALERT, PoolClassifier
 from worker_health.pool_classifier_web import registry
@@ -877,6 +879,21 @@ def create_app() -> Flask:
     @app.errorhandler(404)
     def not_found(_error):
         return render_template("not_found.html"), 404
+
+    @app.errorhandler(PoolTimeout)
+    @app.errorhandler(OperationalError)
+    def database_unavailable(error):
+        """Return a useful response when PostgreSQL cannot serve a request."""
+        logger.warning("database request failed: %s", error)
+        message = "The dashboard database is temporarily unavailable. Please try again shortly."
+        if request.path.startswith("/api/"):
+            return jsonify({"error": {"code": "database_unavailable", "message": message}}), 503
+        return render_template(
+            "access_error.html",
+            title="Database temporarily unavailable",
+            heading="Database temporarily unavailable",
+            message=message,
+        ), 503
 
     @app.get("/admin")
     @require_admin_iap
