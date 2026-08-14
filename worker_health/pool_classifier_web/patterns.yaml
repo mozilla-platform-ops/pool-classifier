@@ -56,6 +56,12 @@ patterns:
     severity: high
     tags: [android]
 
+  - name: mozperftest-missing-results
+    regex: "MetricsMissingResultsError: Could not find any results to process\\."
+    severity: high
+    tags: [performance-test, test]
+    description: MozPerftest completed without measurements to process.
+
   - name: mozinfo-import-error
     regex: "FileNotFoundError:.*mozinfo/android_os_to_api_map\\.yaml"
     severity: low

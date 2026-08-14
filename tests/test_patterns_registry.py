@@ -28,6 +28,19 @@ def test_payload_validation_text_alone_is_unclassified():
     assert pattern is None
 
 
+def test_mozperftest_missing_results_is_a_high_severity_test_failure():
+    category, pattern = classify_patterns(
+        all_patterns(),
+        "mozperftest.metrics.exceptions.MetricsMissingResultsError: Could not find any results to process.",
+        "failed",
+        None,
+    )
+
+    assert category == "mozperftest-missing-results"
+    assert pattern is not None
+    assert pattern.severity == "high"
+
+
 def test_wpt_terminal_summary_classifies_bounded_log_without_specific_failure_line():
     category, pattern = classify_patterns(
         all_patterns(),
