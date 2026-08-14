@@ -126,11 +126,6 @@ patterns:
     severity: high
     tags: [android]
 
-  - name: tc-task-payload-invalid-missing-value
-    regex: "task payload does not declare a required value, so content authenticity cannot be verified"
-    severity: low
-    tags: [android]
-
   - name: macos_refresh_rate_mismatch
     regex: "ERROR: expected refresh rate = 60\\.00, instead got [0-9]+(?:\\.[0-9]+)?\\."
     severity: high

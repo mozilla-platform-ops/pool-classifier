@@ -2,7 +2,7 @@ from worker_health.pool_classifier import PoolClassifier
 from worker_health.pool_classifier_web.patterns_registry import all_patterns, classify_patterns
 
 
-def test_macos_refresh_rate_mismatch_beats_incidental_low_severity_payload_text():
+def test_macos_refresh_rate_mismatch_ignores_incidental_payload_validation_text():
     category, pattern = classify_patterns(
         all_patterns(),
         "task payload does not declare a required value, so content authenticity cannot be verified\n"
@@ -14,6 +14,18 @@ def test_macos_refresh_rate_mismatch_beats_incidental_low_severity_payload_text(
     assert category == "macos_refresh_rate_mismatch"
     assert pattern is not None
     assert pattern.severity == "high"
+
+
+def test_payload_validation_text_alone_is_unclassified():
+    category, pattern = classify_patterns(
+        all_patterns(),
+        "task payload does not declare a required value, so content authenticity cannot be verified",
+        "failed",
+        None,
+    )
+
+    assert category == "unclassified"
+    assert pattern is None
 
 
 def test_wpt_terminal_summary_classifies_bounded_log_without_specific_failure_line():
