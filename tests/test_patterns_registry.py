@@ -68,6 +68,19 @@ def test_raptor_benchmark_timeout_beats_generic_raptor_failure():
     assert pattern.severity == "low"
 
 
+def test_raptor_browsertime_failure_is_a_low_severity_fallback():
+    category, pattern = classify_patterns(
+        all_patterns(),
+        "raptor-browsertime Error: Browsertime failed to run",
+        "failed",
+        None,
+    )
+
+    assert category == "raptor-browsertime-failure"
+    assert pattern is not None
+    assert pattern.severity == "low"
+
+
 def test_test_outcomes_are_low_priority_but_max_runtime_remains_high():
     severity_by_name = {pattern.name: pattern.severity for pattern in all_patterns()}
 
@@ -87,6 +100,7 @@ def test_test_outcomes_are_low_priority_but_max_runtime_remains_high():
         "app-crashed-minidump",
         "build-commands-failed",
         "raptor-benchmark-timeout",
+        "raptor-browsertime-failure",
         "raptor-test-failure",
     } <= {name for name, severity in severity_by_name.items() if severity == "low"}
     assert severity_by_name["task-aborted-max-run-time"] == "high"

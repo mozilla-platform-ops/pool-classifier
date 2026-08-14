@@ -169,6 +169,12 @@ patterns:
     tags: [performance-test, raptor, browsertime, test]
     description: Raptor aborted after its Browsertime benchmark exceeded the configured timeout.
 
+  - name: raptor-browsertime-failure
+    regex: "raptor-browsertime Error: Browsertime failed to run"
+    severity: low
+    tags: [performance-test, raptor, browsertime, test]
+    description: Raptor's Browsertime harness failed without a more-specific matching signature.
+
   - name: raptor-test-failure
     regex: "raptor-main Critical: TEST-UNEXPECTED-FAIL"
     severity: low
