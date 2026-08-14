@@ -20,7 +20,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import requests
 import taskcluster
 
-from worker_health.pool_classifier_web.patterns_registry import all_patterns, categories_by_severity
+from worker_health.pool_classifier_web.patterns_registry import all_patterns, categories_by_severity, classify_patterns
 from worker_health.pool_classifier_web.job_sources import SourceMethod, classify_job_source
 from worker_health.pool_classifier_web.registry import AVAILABILITY_MODES
 from worker_health.pool_classifier_web.storage import SqliteStorage
@@ -603,12 +603,7 @@ class PoolClassifier:
         return head_str + tail_str, "ok"
 
     def _classify(self, log_text: str, run_state: str, reason_resolved: Optional[str]) -> str:
-        for pattern in all_patterns():
-            if pattern.search(log_text):
-                return pattern.name
-        if run_state == "exception" and reason_resolved:
-            return f"exception_{reason_resolved}"
-        return "unclassified"
+        return classify_patterns(all_patterns(), log_text, run_state, reason_resolved)[0]
 
     # --- polling ---
 

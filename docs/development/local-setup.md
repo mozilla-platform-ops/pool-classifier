@@ -85,6 +85,21 @@ pools remain visible but are not classified. Enabled worker types ending in
 `patterns.yaml` defines failure categories. Patterns are ordered by severity
 (`critical`, `high`, then `low`) and file order; the first match wins.
 
+## Preview a task classification
+
+After editing the normal `patterns.yaml`, compare its proposed result for one
+Taskcluster task with the checked-in rules. This fetches one terminal run and
+its log, but does not write to the database or modify the worktree:
+
+```sh
+uv run pool_classifier.py --preview-task <task-id>
+```
+
+The default baseline is `HEAD`; the proposed rules are the working-tree copy
+of `worker_health/pool_classifier_web/patterns.yaml`. Use `--preview-run` to
+choose a run rather than the newest terminal one, or `--base-ref origin/main`
+to compare with another committed baseline.
+
 | Variable | Purpose | Default |
 |---|---|---|
 | `DATABASE_URL` | Postgres DSN | required |

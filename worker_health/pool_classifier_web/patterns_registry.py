@@ -40,9 +40,13 @@ class Pattern:
         return bool(self._compiled.search(text))
 
 
-def _load_patterns() -> tuple[List[Pattern], Dict[str, str]]:
-    patterns_file = Path(os.environ.get("PATTERNS_FILE", str(_DEFAULT_PATTERNS_FILE)))
-    with open(patterns_file) as f:
+def load_patterns(patterns_file: Path) -> tuple[List[Pattern], Dict[str, str]]:
+    """Load and validate a patterns YAML file.
+
+    This is public so read-only tools can compare an arbitrary revision with
+    the working-tree rules without changing the process-wide registry.
+    """
+    with open(patterns_file, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     patterns = []
     severity_map: Dict[str, str] = {}
@@ -61,6 +65,11 @@ def _load_patterns() -> tuple[List[Pattern], Dict[str, str]]:
     return patterns, severity_map
 
 
+def _load_patterns() -> tuple[List[Pattern], Dict[str, str]]:
+    patterns_file = Path(os.environ.get("PATTERNS_FILE", str(_DEFAULT_PATTERNS_FILE)))
+    return load_patterns(patterns_file)
+
+
 _patterns, _severity_map = _load_patterns()
 
 
@@ -72,6 +81,23 @@ def all_patterns() -> List[Pattern]:
     """
     enabled = [p for p in _patterns if p.enabled]
     return sorted(enabled, key=lambda p: _SEVERITY_RANK[p.severity])
+
+
+def ordered_patterns(patterns: List[Pattern]) -> List[Pattern]:
+    """Return a supplied pattern set in the same order used by the classifier."""
+    return sorted((pattern for pattern in patterns if pattern.enabled), key=lambda pattern: _SEVERITY_RANK[pattern.severity])
+
+
+def classify_patterns(
+    patterns: List[Pattern], log_text: str, run_state: str, reason_resolved: Optional[str],
+) -> tuple[str, Optional[Pattern]]:
+    """Classify inputs with an explicit pattern set and return its winning rule."""
+    for pattern in ordered_patterns(patterns):
+        if pattern.search(log_text):
+            return pattern.name, pattern
+    if run_state == "exception" and reason_resolved:
+        return f"exception_{reason_resolved}", None
+    return "unclassified", None
 
 
 def severity_of(category_name: str) -> Optional[str]:
