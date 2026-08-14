@@ -181,3 +181,15 @@ patterns:
     severity: low
     tags: [performance-test, raptor, test]
     description: Raptor reported a test failure without a more-specific matching failure signature.
+
+  - name: mozperftest-traceback
+    regex: "Traceback \\(most recent call last\\):[\\s\\S]{0,4096}mozperftest/"
+    severity: low
+    tags: [mozperftest]
+    description: MozPerftest emitted a Python traceback.
+
+  - name: mozharness-nonzero-exit
+    regex: "WARNING - returning nonzero exit status \\d+"
+    severity: low
+    tags: [mozharness]
+    description: Mozharness reported a nonzero exit status; no infrastructure failure was identified.
