@@ -4,6 +4,7 @@ import collections
 import json
 import logging
 import os
+import resource
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import re
@@ -26,6 +27,20 @@ from worker_health.pool_classifier_web.storage import SqliteStorage
 from worker_health.utils import human_delta
 
 TC_REQUEST_TIMEOUT = 30  # seconds; SDK has no built-in timeout
+
+
+def process_memory_bytes() -> dict[str, int | None]:
+    """Return current RSS (Linux) and process-lifetime peak RSS in bytes."""
+    rss_bytes = None
+    try:
+        with open("/proc/self/statm", encoding="ascii") as statm:
+            rss_pages = int(statm.read().split()[1])
+        rss_bytes = rss_pages * os.sysconf("SC_PAGE_SIZE")
+    except (FileNotFoundError, IndexError, OSError, ValueError):
+        pass
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    peak_rss_bytes = peak if sys.platform == "darwin" else peak * 1024
+    return {"rss_bytes": rss_bytes, "peak_rss_bytes": peak_rss_bytes}
 
 
 class _TimeoutSession(requests.Session):
@@ -1100,6 +1115,8 @@ class PoolClassifier:
             task_coverage_continuous = True
             task_window_fetch_failed = False
             fetched_windows = []
+            phase_metrics = {}
+            poll_started = time.monotonic()
             thread_pool = ThreadPool(WORKER_THREAD_COUNT)
             terminated = False
             try:
@@ -1135,6 +1152,12 @@ class PoolClassifier:
                 if not terminated:
                     thread_pool.close()
                 thread_pool.join()
+            phase_metrics["worker_poll"] = {
+                "duration_seconds": time.monotonic() - poll_started,
+                "workers": total_workers,
+                "scanned": scanned,
+                **process_memory_bytes(),
+            }
 
             # getWorker requests are parallel, but all storage state changes
             # happen here on the classify thread.  PostgresStorage deliberately
@@ -1148,10 +1171,16 @@ class PoolClassifier:
                     continuity is not False for continuity in continuity_by_worker.values()
                 )
 
+            status_started = time.monotonic()
             status_results = self._fetch_prepared_task_statuses(prepared_by_task)
             resolved, _complete = self._apply_prepared_task_statuses(
                 prepared_by_task, status_results,
             )
+            phase_metrics["task_status"] = {
+                "duration_seconds": time.monotonic() - status_started,
+                "tasks": len(prepared_by_task),
+                **process_memory_bytes(),
+            }
             prepared_references = [
                 reference for references in prepared_by_task.values() for reference in references
             ]
@@ -1176,6 +1205,7 @@ class PoolClassifier:
 
             new_total = sum(len(tasks) for _, _wg, tasks in poll_results if tasks)
 
+            terminal_started = time.monotonic()
             if new_total > 0 and not self._interrupted:
                 with alive_bar(new_total, title="processing tasks", enrich_print=False) as bar:
                     for worker_id, worker_group, terminal_tasks in poll_results:
@@ -1190,6 +1220,12 @@ class PoolClassifier:
                     if terminal_tasks:
                         self._process_results(worker_id, terminal_tasks, worker_group=worker_group)
 
+            phase_metrics["terminal_task_processing"] = {
+                "duration_seconds": time.monotonic() - terminal_started,
+                "terminal_tasks": new_total,
+                **process_memory_bytes(),
+            }
+
             self._update_reports()
 
             alerting_count = self.storage.count_alerting(CONSECUTIVE_FAILURE_ALERT)
@@ -1202,12 +1238,14 @@ class PoolClassifier:
                 f"{availability_transitions} availability transitions, "
                 f"{alert_str} workers with ≥{CONSECUTIVE_FAILURE_ALERT} consecutive failures.",
             )
+            logger.info("classify memory phases: %s", phase_metrics)
             return {
                 "scanned": scanned,
                 "total_workers": total_workers,
                 "new_terminal": new_total,
                 "alerting": alerting_count,
                 "availability_transitions": availability_transitions,
+                "memory_phases": phase_metrics,
             }
 
     def run(self):

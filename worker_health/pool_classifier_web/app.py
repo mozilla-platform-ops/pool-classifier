@@ -22,7 +22,7 @@ from flask import Flask, Response, abort, jsonify, render_template, request
 from psycopg import OperationalError
 from psycopg_pool import PoolTimeout
 
-from worker_health.pool_classifier import CONSECUTIVE_FAILURE_ALERT, PoolClassifier
+from worker_health.pool_classifier import CONSECUTIVE_FAILURE_ALERT, PoolClassifier, process_memory_bytes
 from worker_health.pool_classifier_web import registry
 from worker_health.pool_classifier_web import discovery
 from worker_health.pool_classifier_web.auth import (
@@ -1545,6 +1545,8 @@ def create_app() -> Flask:
                 }
                 if isinstance(summary.get("total_workers"), int) and not isinstance(summary["total_workers"], bool):
                     timing["total_workers"] = summary["total_workers"]
+                if isinstance(summary.get("memory_phases"), dict):
+                    timing["memory_phases"] = summary["memory_phases"]
                 pool_timings[label] = timing
                 results.append({"pool": label, "status": "ok", "summary": summary})
             except ClassifyLockBusy:
@@ -1569,10 +1571,15 @@ def create_app() -> Flask:
             logger.info(log_msg, *log_args)
         if counts["ok"] == len(pools):
             try:
+                snapshot_started = monotonic()
                 publish_overview_snapshot(
                     classify_all_started_at=classify_all_started_at,
                     classify_all_started_monotonic=classify_all_started_monotonic,
                     pool_timings=pool_timings,
+                )
+                logger.info(
+                    "classify-all overview snapshot memory: %s",
+                    {"duration_seconds": monotonic() - snapshot_started, **process_memory_bytes()},
                 )
             except Exception:  # noqa: BLE001 - retain the previous aggregate snapshot
                 logger.exception("classify-all: overview snapshot build failed")

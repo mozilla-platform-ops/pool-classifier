@@ -867,7 +867,11 @@ def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
         availability_mode = "recent_contact"
 
         def classify_cycle(self):
-            return {"scanned": 1, "total_workers": 7}
+            return {
+                "scanned": 1,
+                "total_workers": 7,
+                "memory_phases": {"worker_poll": {"workers": 7, "peak_rss_bytes": 100}},
+            }
 
         def render_html(self, **_kwargs):
             return "<html></html>"
@@ -894,6 +898,7 @@ def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
     pool_timing = overview_payload["pool_timings"]["proj/timed"]
     assert pool_timing["duration_seconds"] >= 0
     assert pool_timing["total_workers"] == 7
+    assert pool_timing["memory_phases"]["worker_poll"]["peak_rss_bytes"] == 100
     assert pool_timing["started_at"]
     assert pool_timing["completed_at"]
     pool_payload = next(args[2] for args, _kwargs in writes if args[1] == app_module.POOL_SCOPE)
