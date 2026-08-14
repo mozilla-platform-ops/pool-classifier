@@ -116,12 +116,22 @@ def _availability_intervals_by_worker(
     return available_by_worker
 
 
-def _sum_worker_seconds(
-    intervals_by_worker: Dict[str, List[Tuple[datetime, datetime]]],
+def _covered_seconds(
+    intervals: Iterable[Tuple[datetime, datetime]],
+    coverage: Iterable[Tuple[datetime, datetime]],
     start: datetime,
     end: datetime,
 ) -> float:
-    return sum(_clip_seconds(intervals, start, end) for intervals in intervals_by_worker.values())
+    """Return interval duration observed inside the shared coverage periods.
+
+    Task intervals intentionally remain separate here: overlapping task runs are
+    additive worker time.  Availability intervals are already merged per worker.
+    """
+    return sum(
+        _clip_seconds(coverage, max(start, interval_start), min(end, interval_end))
+        for interval_start, interval_end in intervals
+        if interval_end > start and interval_start < end
+    )
 
 
 def calculate_utilization(
@@ -182,19 +192,22 @@ def calculate_utilization(
             "worker_equivalents": None,
             "utilization_pct": None,
         }
-        if complete:
-            busy_seconds = _clip_seconds(task_intervals, bucket_start, bucket_end)
-            available_seconds = _sum_worker_seconds(
-                availability_intervals,
-                bucket_start,
-                bucket_end,
+        if bucket_coverage_seconds > 0:
+            busy_seconds = _covered_seconds(
+                task_intervals, combined_coverage, bucket_start, bucket_end,
+            )
+            available_seconds = sum(
+                _covered_seconds(intervals, combined_coverage, bucket_start, bucket_end)
+                for intervals in availability_intervals.values()
             )
             bucket.update(
                 {
-                    "status": "available" if available_seconds > 0 else "unavailable",
+                    "status": (
+                        "available" if available_seconds > 0 else "unavailable"
+                    ) if complete else "partial",
                     "busy_worker_hours": busy_seconds / 3600,
                     "available_worker_hours": available_seconds / 3600,
-                    "worker_equivalents": busy_seconds / bucket_duration,
+                    "worker_equivalents": busy_seconds / bucket_coverage_seconds,
                     "utilization_pct": (
                         busy_seconds / available_seconds * 100
                         if available_seconds > 0

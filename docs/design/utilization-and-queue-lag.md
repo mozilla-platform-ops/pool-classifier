@@ -76,9 +76,11 @@ The current API is duration-weighted and never averages bucket percentages:
 utilization_pct = busy_worker_seconds / available_worker_seconds * 100
 ```
 
-It only publishes an authoritative percentage for a window with complete
-task-run and availability coverage. This is intentional: partial collection
-must not be presented as a sizing result.
+It publishes an authoritative percentage only for a window with complete
+task-run and availability coverage. Partially covered windows also publish a
+percentage calculated solely from their observed periods, together with
+`coverage_pct`, `complete: false`, and `status: "partial"`; they are useful
+context, but not sizing results.
 
 There is an important freshness limitation. The current numerator is built
 from terminal task runs with both `run_started` and `run_resolved` recorded.

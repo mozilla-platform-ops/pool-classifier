@@ -84,15 +84,18 @@ clipped before their durations are calculated.
   worker-hours.
 - `busy_worker_hours = busy_worker_seconds / 3600`.
 - `available_worker_hours = available_worker_seconds / 3600`.
-- `worker_equivalents = busy_worker_seconds / bucket_duration_seconds`. This is
-  the average number of concurrently busy workers during the bucket.
+- `worker_equivalents = busy_worker_seconds / observed_coverage_seconds`. This
+  is the average number of concurrently busy workers during the observed part
+  of the bucket.
 - `utilization_pct = busy_worker_seconds / available_worker_seconds * 100`.
 
 A complete bucket with no available worker time has `status: "unavailable"`
 and `utilization_pct: null`; this avoids dividing by zero. Its other duration
-metrics remain numeric. An incomplete bucket has `status: "incomplete"` and all
-four utilization metrics are `null`, so partial collection is not presented as
-authoritative rightsizing data.
+metrics remain numeric. A bucket with some shared task-run and availability
+coverage has `status: "partial"` when it is not complete. Its metrics are
+calculated only over the observed portions of the bucket; `coverage_pct` and
+`complete: false` make clear that it is not decision-ready for rightsizing. A
+bucket with no shared coverage has `status: "incomplete"` and null metrics.
 
 ## Availability semantics
 

@@ -162,7 +162,7 @@ def test_utilization_summary_uses_a_window_start_baseline(tmp_path):
     assert bucket["available_worker_hours"] == pytest.approx(0.5)
 
 
-def test_incomplete_coverage_suppresses_metrics(tmp_path):
+def test_partial_coverage_returns_metrics_limited_to_observed_period(tmp_path):
     storage = _storage(tmp_path)
     for source in ("task_runs", "worker_availability"):
         storage.record_collection_coverage(source, _iso(), True, 3600)
@@ -175,6 +175,21 @@ def test_incomplete_coverage_suppresses_metrics(tmp_path):
     bucket = result["buckets"][0]
     assert result["coverage_pct"] == 50
     assert result["complete"] is False
+    assert bucket["status"] == "partial"
+    assert bucket["busy_worker_hours"] == pytest.approx(0.5)
+    assert bucket["available_worker_hours"] == pytest.approx(0.5)
+    assert bucket["worker_equivalents"] == pytest.approx(1)
+    assert bucket["utilization_pct"] == pytest.approx(100)
+
+
+def test_no_coverage_keeps_metrics_unavailable(tmp_path):
+    storage = _storage(tmp_path)
+    _transition(storage, "w1", True, "online", _iso(), _iso())
+    _task(storage, "task", "w1", _iso(), _iso(hours=1))
+    storage.commit()
+
+    bucket = storage.get_utilization(_iso(), _iso(hours=1), 3600)["buckets"][0]
+
     assert bucket["status"] == "incomplete"
     assert bucket["busy_worker_hours"] is None
     assert bucket["available_worker_hours"] is None
