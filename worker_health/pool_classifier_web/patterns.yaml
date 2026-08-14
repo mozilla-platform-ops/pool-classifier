@@ -69,7 +69,20 @@ patterns:
   - name: test-failure-unexpected-statuses
     regex: "WARNING - Got \\d+ unexpected statuses"
     severity: high
-    tags: [android]
+    tags: [test]
+    description: A test runner reported unexpected statuses.
+
+  - name: wpt-unexpected-results
+    regex: "INFO - Got \\d+ unexpected results, with \\d+ unexpected passes"
+    severity: high
+    tags: [test, wpt]
+    description: Web Platform Tests finished with unexpected results.
+
+  - name: wpt-errorsummary-unexpected-result
+    regex: "WPT_ERROR_SUMMARY_UNEXPECTED_RESULT"
+    severity: high
+    tags: [test, wpt]
+    description: The bounded log fetch was supplemented by WPT's compact error summary, which recorded an unexpected result.
 
   - name: hg_error
     regex: "Could not fetch from url https://hg\\.[^ ]+ into file .* due to \\(Permanent\\) HTTP response code"

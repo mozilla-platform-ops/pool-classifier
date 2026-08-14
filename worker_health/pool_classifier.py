@@ -73,6 +73,8 @@ LOG_TAIL_BYTES = 51200  # 50 KB
 LOG_MAX_GZIP_BYTES = 20 * 1024 * 1024  # 20 MB compressed (~100+ MB uncompressed)
 LOG_FETCH_MAX_SECONDS = 30  # hard wall-clock cap for the streamed read
 LOG_FETCH_MAX_BYTES = 5 * 1024 * 1024  # hard byte cap for the streamed read
+WPT_ERROR_SUMMARY_MAX_BYTES = 256 * 1024
+WPT_ERROR_SUMMARY_MAX_SECONDS = 10
 
 DEFAULT_PROVISIONER = "proj-autophone"
 DEFAULT_WORKER_TYPE = "gecko-t-lambda-perf-a55"
@@ -600,7 +602,50 @@ class PoolClassifier:
             return "", "empty"
         head_str = bytes(head_buf).decode("utf-8", errors="replace")
         tail_str = bytes(tail_buf).decode("utf-8", errors="replace")
+        if aborted and self._fetch_wpt_error_summary_marker(task_id, run_id):
+            tail_str += "\nWPT_ERROR_SUMMARY_UNEXPECTED_RESULT\n"
         return head_str + tail_str, "ok"
+
+    @staticmethod
+    def _wpt_error_summary_has_unexpected_result(summary_text: str) -> bool:
+        """Return whether WPT's compact error summary records an unexpected result."""
+        for line in summary_text.splitlines():
+            try:
+                result = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                result.get("action") == "test_result"
+                and not result.get("known_intermittent")
+                and result.get("status") != result.get("expected")
+            ):
+                return True
+        return False
+
+    def _fetch_wpt_error_summary_marker(self, task_id: str, run_id: int) -> bool:
+        """Use WPT's compact result artifact after a bounded live-log fetch was cut short."""
+        url = (
+            f"{self.queue_base}/task/{task_id}/runs/{run_id}/artifacts/"
+            "public/test_info/wpt_errorsummary.log"
+        )
+        summary = bytearray()
+        start = time.monotonic()
+        try:
+            with requests.get(url, stream=True, timeout=(10, 10)) as response:
+                if response.status_code != 200:
+                    return False
+                for chunk in response.iter_content(chunk_size=16384):
+                    if not chunk:
+                        continue
+                    summary.extend(chunk)
+                    if len(summary) >= WPT_ERROR_SUMMARY_MAX_BYTES:
+                        break
+                    if time.monotonic() - start > WPT_ERROR_SUMMARY_MAX_SECONDS:
+                        break
+        except requests.RequestException as exc:
+            logger.info(f"fetch_wpt_error_summary {task_id}/{run_id} failed: {exc}")
+            return False
+        return self._wpt_error_summary_has_unexpected_result(summary.decode("utf-8", errors="replace"))
 
     def _classify(self, log_text: str, run_state: str, reason_resolved: Optional[str]) -> str:
         return classify_patterns(all_patterns(), log_text, run_state, reason_resolved)[0]
