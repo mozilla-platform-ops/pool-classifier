@@ -66,6 +66,8 @@ git push                # Push to remote
 - Use descriptive titles and set appropriate priority/type
 - Always sync before ending session
 
+<!-- end-br-agent-instructions -->
+
 ---
 
 ## Release Workflow
@@ -122,4 +124,3 @@ verification, and traffic-promotion gates. The package version can remain the
 most recent release version, but the image tag and embedded commit identify the
 actual deployed revision.
 
-<!-- end-br-agent-instructions -->
