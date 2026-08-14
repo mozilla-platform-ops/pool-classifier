@@ -3,7 +3,12 @@
 #   - Patterns are sorted by severity (critical > high > low), then file order
 #     within a tier; the first match wins. A critical pattern always beats a
 #     high pattern even if the high pattern appears earlier in this file.
-#   - `severity` controls heatmap cell color: critical (red) > high (orange) > low (blue).
+#   - `severity` is operational priority, not how conclusively a task failed:
+#       critical = direct evidence of worker/device or host infrastructure failure;
+#       high = likely infrastructure or harness failure that merits prompt review;
+#       low = normal product/test outcome, retained for attribution but not host-health alerting.
+#     Repeated low-severity failures can still be escalated by recurrence policy.
+#     It controls heatmap cell color: critical (red) > high (orange) > low (blue).
 #   - `enabled` defaults to true; set false to mute a pattern without deleting it.
 #   - `tags` are informational only (not used for filtering yet).
 #   - `description` is optional human-readable context shown in the UI.
@@ -11,7 +16,7 @@
 patterns:
   - name: browsertime_samples
     regex: "TypeError: Cannot read properties of undefined \\(reading 'samples'\\)"
-    severity: high
+    severity: low
     tags: [android]
     description: Browsertime returned no samples; benchmark output was empty.
 
@@ -43,22 +48,22 @@ patterns:
 
   - name: test-unexpected-timeout
     regex: "TEST-UNEXPECTED-TIMEOUT \\|.+\\| Test timed out"
-    severity: high
+    severity: low
     tags: [android]
 
   - name: browsertime-device-timeout
     regex: "CRITICAL -  raptor-browsertime Critical: Browsertime process timed out after waiting \\d+ seconds for output"
-    severity: critical
+    severity: low
     tags: [android]
 
   - name: raptor-no-data-to-collect
     regex: "raptor-browsertime Critical: No data to collect"
-    severity: high
+    severity: low
     tags: [android]
 
   - name: mozperftest-missing-results
     regex: "MetricsMissingResultsError: Could not find any results to process\\."
-    severity: high
+    severity: low
     tags: [performance-test, test]
     description: MozPerftest completed without measurements to process.
 
@@ -69,24 +74,24 @@ patterns:
 
   - name: test-failure-unexpected-crashes
     regex: "WARNING - Got \\d+ unexpected crashes"
-    severity: high
+    severity: low
     tags: [android]
 
   - name: test-failure-unexpected-statuses
     regex: "WARNING - Got \\d+ unexpected statuses"
-    severity: high
+    severity: low
     tags: [test]
     description: A test runner reported unexpected statuses.
 
   - name: wpt-unexpected-results
     regex: "INFO - Got \\d+ unexpected results, with \\d+ unexpected passes"
-    severity: high
+    severity: low
     tags: [test, wpt]
     description: Web Platform Tests finished with unexpected results.
 
   - name: wpt-errorsummary-unexpected-result
     regex: "WPT_ERROR_SUMMARY_UNEXPECTED_RESULT"
-    severity: high
+    severity: low
     tags: [test, wpt]
     description: The bounded log fetch was supplemented by WPT's compact error summary, which recorded an unexpected result.
 
@@ -108,22 +113,22 @@ patterns:
 
   - name: test-failure-unexpected-server-start-timeout
     regex: "TEST-UNEXPECTED-FAIL \\| runtests\\.py \\| Timed out while waiting for server startup\\."
-    severity: high
+    severity: low
     tags: [android]
 
   - name: test-exception-image-difference-too-high
     regex: "Exception: Difference in Images is too high, suspected faulty run"
-    severity: high
+    severity: low
     tags: [android]
 
   - name: tests-failed
     regex: "WARNING -  One or more unittests failed\\."
-    severity: high
+    severity: low
     tags: [android]
 
   - name: app-crashed-minidump
     regex: "Unimplemented streams encountered:"
-    severity: critical
+    severity: low
     tags: [android]
     description: App crashed and produced a minidump with unimplemented streams.
 
@@ -155,17 +160,17 @@ patterns:
 
   - name: build-commands-failed
     regex: "The following build commands failed"
-    severity: high
+    severity: low
     description: One or more build commands in the task exited non-zero.
 
   - name: raptor-benchmark-timeout
     regex: "CRITICAL -  raptor-browsertime Critical: Benchmark timed out\\. Aborting\\.\\.\\."
-    severity: high
+    severity: low
     tags: [performance-test, raptor, browsertime, test]
     description: Raptor aborted after its Browsertime benchmark exceeded the configured timeout.
 
   - name: raptor-test-failure
     regex: "raptor-main Critical: TEST-UNEXPECTED-FAIL"
-    severity: high
+    severity: low
     tags: [performance-test, raptor, test]
     description: Raptor reported a test failure without a more-specific matching failure signature.

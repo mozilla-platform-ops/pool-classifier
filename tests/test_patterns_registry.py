@@ -28,7 +28,7 @@ def test_payload_validation_text_alone_is_unclassified():
     assert pattern is None
 
 
-def test_mozperftest_missing_results_is_a_high_severity_test_failure():
+def test_mozperftest_missing_results_is_a_low_severity_test_outcome():
     category, pattern = classify_patterns(
         all_patterns(),
         "mozperftest.metrics.exceptions.MetricsMissingResultsError: Could not find any results to process.",
@@ -38,10 +38,10 @@ def test_mozperftest_missing_results_is_a_high_severity_test_failure():
 
     assert category == "mozperftest-missing-results"
     assert pattern is not None
-    assert pattern.severity == "high"
+    assert pattern.severity == "low"
 
 
-def test_raptor_test_failure_is_a_high_severity_fallback():
+def test_raptor_test_failure_is_a_low_severity_fallback():
     category, pattern = classify_patterns(
         all_patterns(),
         "raptor-main Critical: TEST-UNEXPECTED-FAIL | Some visual metrics have an erroneous value of 0.",
@@ -51,7 +51,7 @@ def test_raptor_test_failure_is_a_high_severity_fallback():
 
     assert category == "raptor-test-failure"
     assert pattern is not None
-    assert pattern.severity == "high"
+    assert pattern.severity == "low"
 
 
 def test_raptor_benchmark_timeout_beats_generic_raptor_failure():
@@ -65,7 +65,31 @@ def test_raptor_benchmark_timeout_beats_generic_raptor_failure():
 
     assert category == "raptor-benchmark-timeout"
     assert pattern is not None
-    assert pattern.severity == "high"
+    assert pattern.severity == "low"
+
+
+def test_test_outcomes_are_low_priority_but_max_runtime_remains_high():
+    severity_by_name = {pattern.name: pattern.severity for pattern in all_patterns()}
+
+    assert {
+        "browsertime_samples",
+        "test-unexpected-timeout",
+        "browsertime-device-timeout",
+        "raptor-no-data-to-collect",
+        "mozperftest-missing-results",
+        "test-failure-unexpected-crashes",
+        "test-failure-unexpected-statuses",
+        "wpt-unexpected-results",
+        "wpt-errorsummary-unexpected-result",
+        "test-failure-unexpected-server-start-timeout",
+        "test-exception-image-difference-too-high",
+        "tests-failed",
+        "app-crashed-minidump",
+        "build-commands-failed",
+        "raptor-benchmark-timeout",
+        "raptor-test-failure",
+    } <= {name for name, severity in severity_by_name.items() if severity == "low"}
+    assert severity_by_name["task-aborted-max-run-time"] == "high"
 
 
 def test_wpt_terminal_summary_classifies_bounded_log_without_specific_failure_line():
@@ -78,7 +102,7 @@ def test_wpt_terminal_summary_classifies_bounded_log_without_specific_failure_li
 
     assert category == "wpt-unexpected-results"
     assert pattern is not None
-    assert pattern.severity == "high"
+    assert pattern.severity == "low"
 
 
 def test_unexpected_statuses_is_platform_neutral_test_runner_rule():
