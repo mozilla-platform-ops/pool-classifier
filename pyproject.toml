@@ -43,6 +43,9 @@ dependencies = [
 requires = ["uv_build>=0.12.5,<0.13.0"]
 build-backend = "uv_build"
 
+[project.scripts]
+task-classifier = "worker_health.task_classifier:main"
+
 [tool.uv.build-backend]
 module-root = ""
 

@@ -31,6 +31,23 @@ It binds to `0.0.0.0:8080` by default. `PORT`, `POOL_CLASSIFIER_HOST`,
 `GUNICORN_WORKERS`, `GUNICORN_THREADS`, and `GUNICORN_TIMEOUT` configure the
 same defaults as the Cloud Run container; command-line options take precedence.
 
+### Preview a task classification
+
+Use the read-only `task-classifier` command to compare the current working-tree
+patterns with patterns at a Git ref for one Taskcluster task:
+
+```sh
+uv run task-classifier TASK_ID
+uv run task-classifier TASK_ID --run 0 --base-ref origin/main
+```
+
+`TASK_ID` is required. `--run` selects a terminal run (the newest terminal run
+is the default); `--base-ref` selects the baseline pattern revision (default:
+`HEAD`). `--provisioner`, `--worker-type`, and `--poll-interval` use the same
+defaults as the polling classifier, and `--no-color` disables terminal colors.
+The command only fetches task data and prints a comparison; it does not update
+classification storage or patterns.
+
 To inspect current detail-page code without waiting for a classifier to replace
 a cached dashboard snapshot, start a separate local listener with snapshots
 disabled:
