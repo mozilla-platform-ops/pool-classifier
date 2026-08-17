@@ -69,8 +69,8 @@
 </tbody></table>
 {% endif %}
 <h2 id="pool-snapshots">Pool dashboard snapshots</h2>
-<table class="sortable-table"><thead><tr><th data-default-direction="desc">Pool</th><th data-default-direction="desc">Snapshot source</th><th data-default-direction="desc">Pool state</th></tr></thead><tbody>
-{% for snapshot in snapshots %}<tr><td><a href="/pools/{{ snapshot.pool.provisioner }}/{{ snapshot.pool.worker_type }}">{{ snapshot.pool_id }}</a></td>{% if snapshot.source_at %}<td class="{{ 'stale' if snapshot.stale else 'ok' }}" data-sort-value="{{ snapshot.source_at_seconds }}"><time datetime="{{ snapshot.source_at.isoformat() }}" class="utc-tooltip" data-utc="{{ snapshot.source_at.isoformat() }}" title="{{ snapshot.source_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}">{{ snapshot.age }}</time>{% if snapshot.stale %} (stale){% endif %}</td>{% else %}<td class="missing" data-sort-value="">never</td>{% endif %}<td>{{ 'enabled' if snapshot.enabled else 'disabled' }}</td></tr>{% endfor %}
+<table class="sortable-table"><thead><tr><th data-default-direction="desc">Pool</th><th data-default-direction="desc">Snapshot source</th><th data-default-direction="desc">Duration</th><th data-default-direction="desc">Pool state</th></tr></thead><tbody>
+{% for snapshot in snapshots %}<tr><td><a href="/pools/{{ snapshot.pool.provisioner }}/{{ snapshot.pool.worker_type }}">{{ snapshot.pool_id }}</a></td>{% if snapshot.source_at %}<td class="{{ 'stale' if snapshot.stale else 'ok' }}" data-sort-value="{{ snapshot.source_at_seconds }}"><time datetime="{{ snapshot.source_at.isoformat() }}" class="utc-tooltip" data-utc="{{ snapshot.source_at.isoformat() }}" title="{{ snapshot.source_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}">{{ snapshot.age }}</time>{% if snapshot.stale %} (stale){% endif %}</td>{% else %}<td class="missing" data-sort-value="">never</td>{% endif %}{% if snapshot.duration is not none %}<td class="ok" data-sort-value="{{ snapshot.duration_seconds }}"><span class="runtime">{{ snapshot.duration }}<span class="runtime-bar" aria-hidden="true"><span style="width: {{ snapshot.duration_percent }}%"></span></span></span></td>{% else %}<td class="missing" data-sort-value="">—</td>{% endif %}<td>{{ 'enabled' if snapshot.enabled else 'disabled' }}</td></tr>{% endfor %}
 </tbody></table>
 {% endif %}
 <script type="module">
@@ -113,8 +113,8 @@
     const snapshotTable = table.querySelector('th:nth-child(2)')?.textContent.includes('Snapshot source');
     const runtimeTable = table.previousElementSibling?.id === 'pool-runtime';
     initSortableTable(table, {
-      numericColumns: snapshotTable ? [1] : runtimeTable ? [1, 2] : [],
-      missingLast: snapshotTable ? [1] : [],
+      numericColumns: snapshotTable ? [1, 2] : runtimeTable ? [1, 2] : [],
+      missingLast: snapshotTable ? [1, 2] : [],
       storageKey: `pool-classifier:admin:table:${table.previousElementSibling?.id || tableIndex}`,
     });
   });

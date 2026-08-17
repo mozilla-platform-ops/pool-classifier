@@ -969,6 +969,12 @@ def create_app() -> Flask:
             pool_id = f"{pool.provisioner}/{pool.worker_type}"
             snapshot = data["snapshots"].get(pool_id)
             source_at = snapshot["source_at"] if snapshot else None
+            generated_at = snapshot["generated_at"] if snapshot else None
+            duration_seconds = (
+                (generated_at - source_at).total_seconds()
+                if source_at is not None and generated_at is not None
+                else None
+            )
             snapshot_rows.append(
                 {
                     "pool_id": pool_id,
@@ -976,6 +982,8 @@ def create_app() -> Flask:
                     "enabled": pool.enabled,
                     "source_at": source_at,
                     "source_at_seconds": source_at.timestamp() if source_at else None,
+                    "duration_seconds": duration_seconds,
+                    "duration": _format_runtime(duration_seconds) if duration_seconds is not None else None,
                     "age": _relative_age(source_at, now=now) if source_at else "never",
                     "stale": bool(source_at and now - source_at > COVERAGE_STALE_AFTER),
                 }
@@ -997,6 +1005,13 @@ def create_app() -> Flask:
         longest_pool_runtime = max((timing["duration_seconds"] for timing in pool_timings), default=0)
         for timing in pool_timings:
             timing["runtime_percent"] = 100 * timing["duration_seconds"] / longest_pool_runtime if longest_pool_runtime else 0
+        longest_snapshot_duration = max(
+            (snapshot["duration_seconds"] for snapshot in snapshot_rows if snapshot["duration_seconds"] is not None),
+            default=0,
+        )
+        for snapshot in snapshot_rows:
+            duration = snapshot["duration_seconds"]
+            snapshot["duration_percent"] = 100 * duration / longest_snapshot_duration if duration is not None and longest_snapshot_duration else 0
         return render_template(
             "admin.html",
             runtime_mode={

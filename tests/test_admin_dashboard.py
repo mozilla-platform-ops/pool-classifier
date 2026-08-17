@@ -111,8 +111,11 @@ def test_admin_shows_migration_and_snapshot_freshness(monkeypatch):
     assert b"pending" in response.data
     assert b"provisioner/worker-type" in response.data
     assert b"20m ago" in response.data
+    assert b"Duration" in response.data
+    assert b"1m 0s" in response.data
     assert b"provisioner/disabled-type" in response.data
     assert b"never" in response.data
+    assert b'data-sort-value="60.0"' in response.data
     assert b"disabled" in response.data
     assert b"Last successful classify-all" in response.data
     assert b"2m 14s" in response.data
