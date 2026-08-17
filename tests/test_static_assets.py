@@ -8,3 +8,6 @@ def test_table_sort_helper_supports_numeric_keys_and_stable_ties():
     assert "numericColumns = []" in script
     assert "missingLast = []" in script
     assert "Number(left.dataset.sortIndex) - Number(right.dataset.sortIndex)" in script
+    assert "storageKey" in script
+    assert "localStorage.setItem(storageKey" in script
+    assert "restoreSort()" in script

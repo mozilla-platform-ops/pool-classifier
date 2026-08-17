@@ -118,7 +118,7 @@ def test_admin_shows_migration_and_snapshot_freshness(monkeypatch):
     assert b"2m 14s" in response.data
     assert b"Per-pool runtime" in response.data
     assert b"2m 0s" in response.data
-    assert response.data.count(b'<table class="sortable-table">') == 2
+    assert response.data.count(b'<table class="sortable-table">') == 5
     assert b'data-sort-value="120"' in response.data
     assert b'class="runtime-bar"' in response.data
     assert b'style="width: 100.0%"' in response.data
@@ -132,6 +132,10 @@ def test_admin_shows_migration_and_snapshot_freshness(monkeypatch):
     assert response.data.count(b'class="utc-time"') == 5
     assert b'class="utc-tooltip"' in response.data
     assert b"element.title = formatTime(element.dataset.utc, mode)" in response.data
+    assert b"pool-classifier:admin:timezone" in response.data
+    assert b"localStorage.setItem(timezoneStorageKey, mode)" in response.data
+    assert b"document.querySelectorAll('table')" in response.data
+    assert b"storageKey: `pool-classifier:admin:table:${table.previousElementSibling?.id || tableIndex}`" in response.data
 
 
 def test_admin_shows_curated_runtime_mode(monkeypatch):

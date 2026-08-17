@@ -1,4 +1,4 @@
-export function initSortableTable(table, {numericColumns = [], missingLast = [], initialColumn, initialDirection} = {}) {
+export function initSortableTable(table, {numericColumns = [], missingLast = [], initialColumn, initialDirection, storageKey} = {}) {
   const headers = [...table.querySelectorAll('th')];
   const rows = [...table.tBodies[0].rows];
   const numeric = new Set(numericColumns);
@@ -27,12 +27,35 @@ export function initSortableTable(table, {numericColumns = [], missingLast = [],
     rows.forEach(row => table.tBodies[0].append(row));
   }
 
+  function saveSort(index, ascending) {
+    if (!storageKey) return;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({index, direction: ascending ? 'asc' : 'desc'}));
+    } catch (_error) {
+      // Sorting still works when browser storage is unavailable.
+    }
+  }
+
+  function restoreSort() {
+    if (!storageKey) return false;
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey));
+      if (!Number.isInteger(saved?.index) || saved.index < 0 || saved.index >= headers.length) return false;
+      if (saved.direction !== 'asc' && saved.direction !== 'desc') return false;
+      applySort(saved.index, saved.direction === 'asc');
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   headers.forEach((header, index) => header.addEventListener('click', () => {
     const ascending = header.dataset.sort
       ? header.dataset.sort === 'desc'
       : header.dataset.defaultDirection === 'asc';
     applySort(index, ascending);
+    saveSort(index, ascending);
   }));
 
-  if (initialColumn !== undefined) applySort(initialColumn, initialDirection === 'asc');
+  if (!restoreSort() && initialColumn !== undefined) applySort(initialColumn, initialDirection === 'asc');
 }

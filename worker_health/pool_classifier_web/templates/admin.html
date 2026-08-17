@@ -49,18 +49,18 @@
 <p class="note">generated on <time class="utc-time" datetime="{{ generated.isoformat() }}" data-utc="{{ generated.isoformat() }}">{{ generated.strftime('%Y-%m-%d %H:%M:%S UTC') }}</time></p>
 {% if database_error %}<p class="error">{{ database_error }}</p>{% else %}
 <h2 id="runtime-mode">Runtime mode</h2>
-<table><thead><tr><th>Setting</th><th>Current setting</th></tr></thead><tbody>
+<table class="sortable-table"><thead><tr><th>Setting</th><th>Current setting</th></tr></thead><tbody>
 <tr><td>Request host and port</td><td>{{ runtime_mode.request_host }}</td></tr>
 <tr><td>Flask debug</td><td class="{{ 'pending' if runtime_mode.debug_enabled else 'ok' }}">{{ 'enabled' if runtime_mode.debug_enabled else 'disabled' }}</td></tr>
 <tr><td>Detail-page rendering</td>{% if runtime_mode.detail_pages_live %}<td class="pending">live rendering — snapshot reads disabled in this runtime</td>{% else %}<td class="ok">stored dashboard snapshots enabled (used when available)</td>{% endif %}</tr>
 </tbody></table>
 <h2 id="database-migrations">Database migrations</h2>
-<table><thead><tr><th>Migration</th><th>Status</th><th>Applied (<span data-timezone-heading>Local</span>)</th></tr></thead><tbody>
+<table class="sortable-table"><thead><tr><th>Migration</th><th>Status</th><th>Applied (<span data-timezone-heading>Local</span>)</th></tr></thead><tbody>
 {% for migration in migrations %}<tr><td>{{ migration.version }}</td>{% if migration.applied_at %}<td class="ok">applied</td><td><time class="utc-time" datetime="{{ migration.applied_at.isoformat() }}" data-utc="{{ migration.applied_at.isoformat() }}">{{ migration.applied_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</time></td>{% else %}<td class="pending">pending</td><td>—</td>{% endif %}</tr>{% endfor %}
 </tbody></table>
 {% if classify_all_duration %}
 <h2 id="classify-all">Last successful classify-all</h2>
-<table><thead><tr><th>Total runtime</th><th>Completed (<span data-timezone-heading>Local</span>)</th></tr></thead><tbody>
+<table class="sortable-table"><thead><tr><th>Total runtime</th><th>Completed (<span data-timezone-heading>Local</span>)</th></tr></thead><tbody>
 <tr><td class="ok">{{ classify_all_duration }}</td><td><time class="utc-time" datetime="{{ classify_all_completed_at.isoformat() }}" data-utc="{{ classify_all_completed_at.isoformat() }}">{{ classify_all_completed_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</time></td></tr>
 </tbody></table>
 <h2 id="pool-runtime">Per-pool runtime</h2>
@@ -80,6 +80,7 @@
     return new Date(iso).toLocaleString(undefined, {year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'});
   }
   const timezoneButtons = [...document.querySelectorAll('[data-timezone]')];
+  const timezoneStorageKey = 'pool-classifier:admin:timezone';
   function setTimezone(mode) {
     timezoneButtons.forEach(button => {
       const active = button.dataset.timezone === mode;
@@ -90,14 +91,31 @@
     document.querySelectorAll('.utc-tooltip').forEach(element => element.title = formatTime(element.dataset.utc, mode));
     document.querySelectorAll('[data-timezone-heading]').forEach(element => element.textContent = mode === 'utc' ? 'UTC' : 'Local');
   }
-  timezoneButtons.forEach(button => button.addEventListener('click', () => setTimezone(button.dataset.timezone)));
-  setTimezone('local');
+  timezoneButtons.forEach(button => button.addEventListener('click', () => {
+    const mode = button.dataset.timezone;
+    setTimezone(mode);
+    try {
+      localStorage.setItem(timezoneStorageKey, mode);
+    } catch (_error) {
+      // Time display still works when browser storage is unavailable.
+    }
+  }));
+  let initialTimezone = 'local';
+  try {
+    const savedTimezone = localStorage.getItem(timezoneStorageKey);
+    if (savedTimezone === 'local' || savedTimezone === 'utc') initialTimezone = savedTimezone;
+  } catch (_error) {
+    // Use the default local display when browser storage is unavailable.
+  }
+  setTimezone(initialTimezone);
 
-  document.querySelectorAll('.sortable-table').forEach(table => {
+  document.querySelectorAll('table').forEach((table, tableIndex) => {
     const snapshotTable = table.querySelector('th:nth-child(2)')?.textContent.includes('Snapshot source');
+    const runtimeTable = table.previousElementSibling?.id === 'pool-runtime';
     initSortableTable(table, {
-      numericColumns: snapshotTable ? [1] : [1, 2],
+      numericColumns: snapshotTable ? [1] : runtimeTable ? [1, 2] : [],
       missingLast: snapshotTable ? [1] : [],
+      storageKey: `pool-classifier:admin:table:${table.previousElementSibling?.id || tableIndex}`,
     });
   });
 </script>
