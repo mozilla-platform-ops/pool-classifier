@@ -33,7 +33,17 @@ hypothesis, not a guarantee.
 
 ## Host inventory
 
-- Host IDs: <!-- fill before quarantine -->
+- Host IDs:
+  - `t-linux64-ms-229.test.releng.mdc1.mozilla.com`
+  - `t-linux64-ms-230.test.releng.mdc1.mozilla.com`
+  - `t-linux64-ms-231.test.releng.mdc1.mozilla.com`
+  - `t-linux64-ms-232.test.releng.mdc1.mozilla.com`
+  - `t-linux64-ms-233.test.releng.mdc1.mozilla.com`
+  - `t-linux64-ms-234.test.releng.mdc1.mozilla.com`
+  - `t-linux64-ms-235.test.releng.mdc1.mozilla.com`
+  - `t-linux64-ms-236.test.releng.mdc1.mozilla.com`
+  - `t-linux64-ms-237.test.releng.mdc1.mozilla.com`
+  - `t-linux64-ms-238.test.releng.mdc1.mozilla.com`
 - Operator: <!-- fill -->
 - Change reference: <!-- fill -->
 
