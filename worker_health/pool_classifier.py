@@ -2281,8 +2281,13 @@ class PoolClassifier:
                         dur_str = f" ({dur})" if dur and dur != "expired" else ""
                         q_badge = f' <span class="quarantine">&#x1F512;{dur_str}</span>'
                     offender_items += f"<li>{tc_link(wid)}{q_badge}: {n}</li>"
+                category_label = cat
+                if cat == "unclassified":
+                    category_label = (
+                        f'<a href="/pools/{self.provisioner}/{self.worker_type}/unclassified">{cat}</a>'
+                    )
                 parts.append(
-                    f'<div><h3 class="cat-header">{cat} <span class="cat-total">({count} total all-time)</span></h3>'
+                    f'<div><h3 class="cat-header">{category_label} <span class="cat-total">({count} total all-time)</span></h3>'
                     f'<ul class="offenders">{offender_items}</ul></div>',
                 )
             parts.append("</div>")

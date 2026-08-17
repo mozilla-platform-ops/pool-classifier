@@ -592,6 +592,35 @@ class SqliteStorage:
         query += " GROUP BY COALESCE(category, 'unclassified') ORDER BY count DESC, category ASC"
         return [dict(row) for row in self.db.execute(query, params)]
 
+    def get_unclassified_tasks(
+        self, start: str, end: str, limit: int, after: Optional[Tuple[str, str, int]] = None,
+    ) -> List[dict]:
+        query = """
+            SELECT t.task_id, t.run_id, t.worker_id, t.run_state, t.reason_resolved,
+                   t.run_resolved, t.classified_at
+            FROM task_results t
+            WHERE t.category = 'unclassified'
+              AND t.run_state IN ('failed', 'exception', 'expired')
+              AND COALESCE(t.run_resolved, t.classified_at) >= ?
+              AND COALESCE(t.run_resolved, t.classified_at) < ?
+        """
+        params: list = [start, end]
+        if after:
+            at, task_id, run_id = after
+            query += """ AND (
+                COALESCE(t.run_resolved, t.classified_at) < ?
+                OR (COALESCE(t.run_resolved, t.classified_at) = ? AND t.task_id < ?)
+                OR (COALESCE(t.run_resolved, t.classified_at) = ? AND t.task_id = ? AND COALESCE(t.run_id, -1) < ?)
+            )"""
+            params.extend([at, at, task_id, at, task_id, run_id])
+        query += " ORDER BY COALESCE(t.run_resolved, t.classified_at) DESC, t.task_id DESC, COALESCE(t.run_id, -1) DESC LIMIT ?"
+        params.append(limit)
+        result = [dict(row) for row in self.db.execute(query, params)]
+        unclassified_dir = self.results_dir / "unclassified"
+        for task in result:
+            task["has_saved_log"] = (unclassified_dir / f"{task['task_id']}.log").is_file()
+        return result
+
     def get_public_workers(
         self,
         start: str,
@@ -1292,6 +1321,21 @@ def count_category_hits_global(dsn: str, since_iso: str) -> Dict[str, int]:
                 (since_iso,),
             )
             return {row[0]: row[1] for row in cur.fetchall()}
+
+
+def unclassified_pool_counts_global(dsn: str, since_iso: str, limit: int = 5) -> List[dict]:
+    """Return the busiest pools for unclassified runs since ``since_iso``."""
+    if psycopg is None:
+        raise ImportError("psycopg (psycopg[binary]) is required")
+    with postgres_connect(dsn, "web") as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pool_id, COUNT(*) AS count FROM task_results"
+                " WHERE classified_at > %s AND category = 'unclassified'"
+                " GROUP BY pool_id ORDER BY count DESC, pool_id ASC LIMIT %s",
+                (since_iso, limit),
+            )
+            return [{"pool_id": row[0], "count": row[1]} for row in cur.fetchall()]
 
 
 def team_activity_summary(
@@ -2529,6 +2573,44 @@ class PostgresStorage:
         with self._cursor() as cur:
             cur.execute(query, params)
             return [dict(row) for row in cur.fetchall()]
+
+    def get_unclassified_tasks(
+        self, start: str, end: str, limit: int, after: Optional[Tuple[str, str, int]] = None,
+    ) -> List[dict]:
+        query = """
+            SELECT t.task_id, t.run_id, t.worker_id, t.run_state, t.reason_resolved,
+                   t.run_resolved, t.classified_at,
+                   EXISTS(
+                       SELECT 1 FROM unclassified_logs u
+                       WHERE u.pool_id = t.pool_id AND u.task_id = t.task_id
+                   ) AS has_saved_log
+            FROM task_results t
+            WHERE t.pool_id = %s AND t.category = 'unclassified'
+              AND t.run_state IN ('failed', 'exception', 'expired')
+              AND COALESCE(t.run_resolved, t.classified_at) >= %s::timestamptz
+              AND COALESCE(t.run_resolved, t.classified_at) < %s::timestamptz
+        """
+        params: list = [self.pool_id, start, end]
+        if after:
+            at, task_id, run_id = after
+            query += """ AND (
+                COALESCE(t.run_resolved, t.classified_at) < %s::timestamptz
+                OR (COALESCE(t.run_resolved, t.classified_at) = %s::timestamptz AND t.task_id < %s)
+                OR (COALESCE(t.run_resolved, t.classified_at) = %s::timestamptz AND t.task_id = %s AND COALESCE(t.run_id, -1) < %s)
+            )"""
+            params.extend([at, at, task_id, at, task_id, run_id])
+        query += " ORDER BY COALESCE(t.run_resolved, t.classified_at) DESC, t.task_id DESC, COALESCE(t.run_id, -1) DESC LIMIT %s"
+        params.append(limit)
+        with self._cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["run_resolved"] = _to_iso(item["run_resolved"])
+            item["classified_at"] = _to_iso(item["classified_at"])
+            result.append(item)
+        return result
 
     def get_public_workers(
         self,

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+{% from "base.html" import navigation, navigation_styles %}
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<title>Pool Classifier — Unclassified runs</title>
+<style>
+  body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }
+  h1 { color: #fff; } a { color: #58a6ff; } table { border-collapse: collapse; width: 100%; }
+  th { color: #aaa; background: #222; text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #444; }
+  td { padding: .4rem .8rem; border-bottom: 1px solid #2a2a2a; vertical-align: top; }
+  .note { color: #888; max-width: 80rem; } .missing { color: #666; } .pager { margin-top: 1rem; }
+  code { color: #f90; } {{ navigation_styles() }}
+</style>
+</head>
+<body>
+{{ navigation(provisioner ~ '/' ~ worker_type, show_admin_navigation) }}
+<p><a href="/pools/{{ provisioner }}/{{ worker_type }}">← {{ provisioner }}/{{ worker_type }}</a></p>
+<h1>Unclassified task runs</h1>
+<p class="note">Failed runs with no enabled matching pattern. This page covers {{ start_at }} through {{ end_at }}; a saved log is available only when the classifier captured non-empty log text.</p>
+{% if tasks %}
+<table><thead><tr><th>Resolved</th><th>Task</th><th>Run</th><th>State</th><th>Worker</th><th>Reason</th><th>Saved log</th></tr></thead><tbody>
+{% for task in tasks %}
+<tr>
+  <td>{{ task.run_resolved or task.classified_at }}</td>
+  <td><a href="https://firefox-ci-tc.services.mozilla.com/tasks/{{ task.task_id }}">{{ task.task_id }}</a></td>
+  <td>{{ task.run_id if task.run_id is not none else '—' }}</td><td>{{ task.run_state }}</td><td>{{ task.worker_id }}</td>
+  <td>{{ task.reason_resolved or '—' }}</td>
+  <td>{% if task.log_url %}<a href="{{ task.log_url }}">View log</a>{% else %}<span class="missing">Not captured</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</tbody></table>
+{% else %}
+<p class="note">No unclassified task runs in this window.</p>
+{% endif %}
+{% if pagination.next_cursor %}<p class="pager"><a href="?start={{ start_at|urlencode }}&amp;end={{ end_at|urlencode }}&amp;limit={{ pagination.limit }}&amp;cursor={{ pagination.next_cursor|urlencode }}">Next page →</a></p>{% endif %}
+</body>
+</html>

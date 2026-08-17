@@ -643,9 +643,10 @@ def test_start_lag_dashboard_links_trend_and_heatmap_hover(tmp_path):
     assert '<table class="hm-grid not-sortable">' in heatmap_html
     assert "Workers are ordered by recent failure severity (critical counts twice), then hostname." in heatmap_html
 
-    offenders_html = classifier._write_html({"worker-1": {"failures_by_category": {"test": 1}}}, quarantined=set())
+    offenders_html = classifier._write_html({"worker-1": {"failures_by_category": {"unclassified": 1}}}, quarantined=set())
     assert '<h2 id="s-offenders">Top Offenders</h2>' in offenders_html
     assert "Workers with the most failures in the last day, grouped by category." in offenders_html
+    assert 'href="/pools/provisioner/worker-type/unclassified">unclassified</a>' in offenders_html
 
 
 def test_utilization_timeline_explains_incomplete_coverage_with_break_diagnostics(tmp_path):

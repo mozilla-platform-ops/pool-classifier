@@ -42,6 +42,7 @@
     <tr><td class="method">GET</td><td><code>/api/v1/pools</code></td><td>Returns configured pools, including disabled pools and availability modes.</td></tr>
     <tr><td class="method">GET</td><td><code>/api/v1/pools/{provisioner}/{worker_type}/summary</code></td><td>Returns worker, task, freshness, and collection-coverage health metrics.</td></tr>
     <tr><td class="method">GET</td><td><code>/api/v1/pools/{provisioner}/{worker_type}/failures</code></td><td>Returns failure-category counts for a bounded time window.</td></tr>
+    <tr><td class="method">GET</td><td><code>/api/v1/pools/{provisioner}/{worker_type}/unclassified</code></td><td>Returns paginated unclassified task runs and retained-log availability for a bounded time window.</td></tr>
     <tr><td class="method">GET</td><td><code>/api/v1/pools/{provisioner}/{worker_type}/workers</code></td><td>Returns filterable, cursor-paginated worker health details.</td></tr>
     <tr><td class="method">GET</td><td><code>/api/v1/patterns</code></td><td>Returns the classification-pattern registry, including disabled patterns.</td></tr>
     <tr><td class="method">GET</td><td><code>/api/v1/pools/{provisioner}/{worker_type}/utilization</code></td><td>Returns bucketed, duration-weighted utilization for a requested time range.</td></tr>

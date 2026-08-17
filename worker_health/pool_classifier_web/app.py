@@ -47,6 +47,7 @@ from worker_health.pool_classifier_web.storage import (
     observed_start_lag_summaries_global,
     pool_summaries_global,
     team_activity_summary,
+    unclassified_pool_counts_global,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,8 @@ MAX_UTILIZATION_BUCKETS = 2000
 DEFAULT_WORKERS_WINDOW_SECONDS = 24 * 60 * 60
 DEFAULT_WORKERS_LIMIT = 50
 MAX_WORKERS_LIMIT = 200
+DEFAULT_UNCLASSIFIED_LIMIT = 50
+MAX_UNCLASSIFIED_LIMIT = 200
 UTILIZATION_WINDOWS = {"1h": 60 * 60, "24h": 24 * 60 * 60, "7d": 7 * 24 * 60 * 60, "30d": 30 * 24 * 60 * 60}
 DEFAULT_OBSERVED_START_LAG_SLO_SECONDS = 4 * 60 * 60
 DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES = 5
@@ -388,6 +391,33 @@ def _workers_parameters() -> tuple[str, str, bool | None, bool | None, str | Non
 
 def _workers_cursor(alerting: bool, worker_id: str) -> str:
     value = json.dumps({"alerting": alerting, "worker_id": worker_id}, separators=(",", ":"))
+    return base64.urlsafe_b64encode(value.encode()).decode().rstrip("=")
+
+
+def _unclassified_parameters() -> tuple[str, str, int, tuple[str, str, int] | None]:
+    start, end = _bounded_failure_window(DEFAULT_WORKERS_WINDOW_SECONDS)
+    try:
+        limit = int(request.args.get("limit", str(DEFAULT_UNCLASSIFIED_LIMIT)))
+    except ValueError as exc:
+        raise ValueError("limit must be an integer") from exc
+    if not 1 <= limit <= MAX_UNCLASSIFIED_LIMIT:
+        raise ValueError(f"limit must be between 1 and {MAX_UNCLASSIFIED_LIMIT}")
+    cursor = request.args.get("cursor")
+    after = None
+    if cursor:
+        try:
+            padded_cursor = cursor + "=" * (-len(cursor) % 4)
+            value = json.loads(base64.urlsafe_b64decode(padded_cursor))
+            if not isinstance(value["at"], str) or not isinstance(value["task_id"], str) or not isinstance(value["run_id"], int):
+                raise ValueError
+            after = (value["at"], value["task_id"], value["run_id"])
+        except (binascii.Error, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError("cursor is invalid") from exc
+    return start, end, limit, after
+
+
+def _unclassified_cursor(at: str, task_id: str, run_id: int | None) -> str:
+    value = json.dumps({"at": at, "task_id": task_id, "run_id": run_id if run_id is not None else -1}, separators=(",", ":"))
     return base64.urlsafe_b64encode(value.encode()).decode().rstrip("=")
 
 
@@ -1093,15 +1123,18 @@ def create_app() -> Flask:
     @app.get("/patterns")
     def patterns():
         hits: dict[str, int] = {}
+        unclassified_pools: list[dict] = []
         try:
             dsn = os.environ.get("DATABASE_URL")
             if dsn:
+                since = (datetime.now(timezone.utc) - timedelta(hours=24)).replace(microsecond=0).isoformat()
                 hits = _cached_overview_result(
                     ("category-hits", dsn, "24h"),
-                    lambda: count_category_hits_global(
-                        dsn,
-                        (datetime.now(timezone.utc) - timedelta(hours=24)).replace(microsecond=0).isoformat(),
-                    ),
+                    lambda: count_category_hits_global(dsn, since),
+                )
+                unclassified_pools = _cached_overview_result(
+                    ("unclassified-pools", dsn, "24h"),
+                    lambda: unclassified_pool_counts_global(dsn, since),
                 )
         except Exception as e:
             logger.warning("patterns: hit-count query failed: %s", e)
@@ -1114,6 +1147,7 @@ def create_app() -> Flask:
             patterns=rows,
             hits=hits,
             unclassified_count=hits.get("unclassified", 0),
+            unclassified_pools=unclassified_pools,
             generated=_timestamp_label("generated on", datetime.now(timezone.utc)),
         )
 
@@ -1168,6 +1202,7 @@ def create_app() -> Flask:
                     {"path": "/api/v1/pools", "description": "Configured pool discovery."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/summary", "description": "Pool health summary."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/failures", "description": "Failure category counts."},
+                    {"path": "/api/v1/pools/{provisioner}/{worker_type}/unclassified", "description": "Unclassified task runs."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/workers", "description": "Filterable, paginated worker health."},
                     {"path": "/api/v1/patterns", "description": "Classification-pattern registry."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/utilization", "description": "Duration-weighted utilization."},
@@ -1258,12 +1293,13 @@ def create_app() -> Flask:
         if pc is None:
             abort(404)
         os_label = detect_os(pool)
-        return Response(
-            pc.render_html(
+        detail_html = pc.render_html(
                 os_label=os_label,
                 navigation_html=navigation_html(f"{provisioner}/{worker_type}"),
                 navigation_styles=str(app.jinja_env.get_template("base.html").module.navigation_styles()),
-            ),
+            )
+        return Response(
+            detail_html,
             content_type="text/html; charset=utf-8",
         )
 
@@ -1336,6 +1372,57 @@ def create_app() -> Flask:
                 "category": category,
                 "failures": pc.storage.get_public_failures(start, end, category),
             },
+        )
+
+    def _unclassified_task_response(provisioner: str, worker_type: str):
+        try:
+            start, end, limit, after = _unclassified_parameters()
+        except ValueError as exc:
+            return None, (jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400)
+        pc = _get_classifier(provisioner, worker_type)
+        if pc is None:
+            return None, (jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404)
+        tasks = pc.storage.get_unclassified_tasks(start, end, limit + 1, after)
+        has_next = len(tasks) > limit
+        tasks = tasks[:limit]
+        for task in tasks:
+            task["has_saved_log"] = bool(task["has_saved_log"])
+            task["log_url"] = (
+                f"/pools/{provisioner}/{worker_type}/unclassified/{task['task_id']}.log"
+                if task["has_saved_log"] else None
+            )
+        next_cursor = None
+        if has_next:
+            last = tasks[-1]
+            next_cursor = _unclassified_cursor(
+                last["run_resolved"] or last["classified_at"], last["task_id"], last["run_id"],
+            )
+        return {
+            "api_version": 1,
+            "pool_id": f"{provisioner}/{worker_type}",
+            "start_at": start,
+            "end_at": end,
+            "pagination": {"limit": limit, "next_cursor": next_cursor},
+            "tasks": tasks,
+        }, None
+
+    @app.get("/api/v1/pools/<provisioner>/<worker_type>/unclassified")
+    def pool_unclassified_api(provisioner: str, worker_type: str):
+        payload, error = _unclassified_task_response(provisioner, worker_type)
+        return error if error else jsonify(payload)
+
+    @app.get("/pools/<provisioner>/<worker_type>/unclassified")
+    def pool_unclassified_page(provisioner: str, worker_type: str):
+        if registry.get_pool(provisioner, worker_type) is None:
+            abort(404)
+        payload, error = _unclassified_task_response(provisioner, worker_type)
+        if error:
+            return error
+        return render_template(
+            "unclassified.html",
+            provisioner=provisioner,
+            worker_type=worker_type,
+            **payload,
         )
 
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/coverage-breaks")

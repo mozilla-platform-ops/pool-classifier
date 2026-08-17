@@ -804,6 +804,14 @@ def test_patterns_page_shows_global_unclassified_failure_count(monkeypatch):
         "count_category_hits_global",
         lambda dsn, since: {"adb_no_ack": 3, "unclassified": 2},
     )
+    monkeypatch.setattr(
+        app_module,
+        "unclassified_pool_counts_global",
+        lambda dsn, since: [
+            {"pool_id": "provisioner/worker-type", "count": 2},
+            {"pool_id": "other/worker", "count": 1},
+        ],
+    )
     app = create_app()
     app.config["TESTING"] = True
 
@@ -813,9 +821,61 @@ def test_patterns_page_shows_global_unclassified_failure_count(monkeypatch):
     assert response.status_code == 200
     assert b"Unclassified failures (24h): 2" in response.data
     assert b"fallback when no enabled pattern matches a failed task" in response.data
-    assert b'href="/api">failures API</a>' in response.data
-    assert b"category=unclassified" in response.data
-    assert b"/unclassified/&lt;task-id&gt;.log" in response.data
+    assert b"Most unclassified runs by pool:" in response.data
+    assert b'href="/pools/provisioner/worker-type/unclassified"' in response.data
+    assert b'href="/pools/other/worker/unclassified"' in response.data
+
+
+def test_unclassified_api_lists_runs_and_saved_logs(monkeypatch, tmp_path):
+    storage = _api_storage(tmp_path)
+    storage.record_task_result(
+        "saved-task", "worker-1", 4, "failed", "unclassified", "worker crash",
+        API_START.isoformat(), (API_START + timedelta(minutes=10)).isoformat(), (API_START + timedelta(minutes=10)).isoformat(),
+    )
+    storage.save_unclassified_log("saved-task", 4, "worker-1", "captured log")
+    storage.record_task_result(
+        "missing-task", "worker-2", 5, "exception", "unclassified", None,
+        API_START.isoformat(), (API_START + timedelta(minutes=20)).isoformat(), (API_START + timedelta(minutes=20)).isoformat(),
+    )
+    storage.commit()
+    client = _api_client(monkeypatch, storage)
+
+    response = client.get(
+        "/api/v1/pools/provisioner/worker-type/unclassified",
+        query_string={"start": API_START.isoformat(), "end": (API_START + timedelta(hours=1)).isoformat()},
+    )
+
+    assert response.status_code == 200
+    assert [task["task_id"] for task in response.json["tasks"]] == ["missing-task", "saved-task"]
+    assert response.json["tasks"][0]["has_saved_log"] is False
+    assert response.json["tasks"][0]["log_url"] is None
+    assert response.json["tasks"][1]["has_saved_log"] is True
+    assert response.json["tasks"][1]["log_url"] == "/pools/provisioner/worker-type/unclassified/saved-task.log"
+
+
+def test_unclassified_page_renders_saved_log_state(monkeypatch, tmp_path):
+    storage = _api_storage(tmp_path)
+    storage.record_task_result(
+        "task-1", "worker-1", 1, "failed", "unclassified", None,
+        API_START.isoformat(), API_START.isoformat(), API_START.isoformat(),
+    )
+    storage.commit()
+    monkeypatch.setattr(
+        app_module.registry,
+        "get_pool",
+        lambda provisioner, worker_type: SimpleNamespace(enabled=True) if (provisioner, worker_type) == ("provisioner", "worker-type") else None,
+    )
+    client = _api_client(monkeypatch, storage)
+
+    response = client.get(
+        "/pools/provisioner/worker-type/unclassified",
+        query_string={"start": API_START.isoformat(), "end": (API_START + timedelta(hours=1)).isoformat()},
+    )
+
+    assert response.status_code == 200
+    assert b"Unclassified task runs" in response.data
+    assert b"task-1" in response.data
+    assert b"Not captured" in response.data
 
 
 @pytest.mark.parametrize(
