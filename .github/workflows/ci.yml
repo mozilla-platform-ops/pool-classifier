@@ -13,7 +13,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
@@ -46,7 +46,7 @@ jobs:
     env:
       PC_TEST_DATABASE_URL: postgresql://pc:pc@localhost:5432/pool_classifier
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
@@ -63,6 +63,6 @@ jobs:
     name: Docker build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Build production image
         run: docker build --build-arg POOL_CLASSIFIER_COMMIT="${{ github.sha }}" .
