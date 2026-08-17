@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+{% from "base.html" import navigation, navigation_styles %}
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<title>Pool Classifier — Team Activity</title>
+<style>
+  body { font-family: monospace; background: #111; color: #ccc; padding: 1.5rem; }
+  h1, h2 { color: #fff; } h1 { margin: 0 0 .35rem; }
+  .intro, .note, .footer { color: #888; max-width: 72rem; line-height: 1.5; }
+  .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+  .metric { border: 1px solid #30363d; border-radius: 6px; padding: 1rem; background: #161b22; }
+  .metric h2 { margin: 0 0 .8rem; font-size: 1rem; color: #8b949e; text-transform: uppercase; letter-spacing: .06em; }
+  .value { color: #fff; font-size: 2rem; font-weight: bold; line-height: 1.1; }
+  .detail { color: #8b949e; margin-top: .45rem; font-size: .9rem; }
+  .windows { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: .75rem; }
+  .window { border-left: 3px solid #0aa; padding: .55rem .75rem; background: #161b22; }
+  .window-name { color: #8b949e; text-transform: uppercase; font-size: .8rem; }
+  .window-value { color: #fff; font-size: 1.45rem; font-weight: bold; margin-top: .2rem; }
+  .os-list { display: flex; flex-wrap: wrap; gap: .5rem; }
+  .os { border: 1px solid #30363d; border-radius: 999px; padding: .35rem .65rem; color: #c9d1d9; }
+  .footer { margin-top: 2rem; font-size: .8rem; } {{ navigation_styles() }}
+</style>
+</head>
+<body>
+{{ navigation("Activity", show_admin_navigation) }}
+<h1>Team Activity</h1>
+<p class="intro">A compact view of the work observed by Pool Classifier across its configured worker pools.</p>
+
+<section class="metrics" aria-label="Team coverage">
+  <article class="metric"><h2>Worker pools monitored</h2><div class="value">{{ pool_count }}</div><div class="detail">Configured enabled pools</div></article>
+  <article class="metric"><h2>Operating-system coverage</h2><div class="value">{{ os_counts|length }}</div><div class="os-list">{% for os, count in os_counts %}<span class="os">{{ os }} · {{ count }} pools</span>{% endfor %}</div></article>
+</section>
+
+{% if summary %}
+<h2>Recorded terminal task runs</h2>
+<section class="windows" aria-label="Recorded terminal task runs by period">
+{% for name, values in summary.windows.items() %}<article class="window" aria-label="{{ name }}: {{ values.task_runs }} task runs resolved"><div class="window-name">{{ name }}</div><div class="window-value">{{ "{:,}".format(values.task_runs) }}</div><div class="detail">task runs resolved</div></article>{% endfor %}
+</section>
+
+<h2>Recorded machine time</h2>
+<section class="windows" aria-label="Recorded machine time by period">
+{% for name, values in summary.windows.items() %}<article class="window" aria-label="{{ name }}: {{ values.machine_time }} of recorded machine time"><div class="window-name">{{ name }}</div><div class="window-value">{{ values.machine_time }}</div><div class="detail">summed task-run duration</div></article>{% endfor %}
+</section>
+
+<p class="note">These are recorded terminal task runs, not all Taskcluster work. Task runs are counted by resolution time; duration is clipped to each trailing reporting window. Recorded data {% if summary.data_start %}spans {{ summary.data_start }} through {{ summary.data_through }}{% else %}is not available yet{% endif %}; coverage can vary by pool and period.</p>
+{% else %}
+<p class="note">Activity metrics are unavailable because this instance has no database connection.</p>
+{% endif %}
+<p class="footer">{{ generated }}</p>
+</body>
+</html>

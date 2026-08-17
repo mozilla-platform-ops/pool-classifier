@@ -18,6 +18,7 @@ psycopg = pytest.importorskip("psycopg")
 
 from worker_health.pool_classifier_web import app as app_module  # noqa: E402
 from worker_health.pool_classifier_web.scripts.migrate import apply_migrations  # noqa: E402
+from worker_health.pool_classifier_web.storage import team_activity_summary  # noqa: E402
 
 DSN = os.environ.get("PC_TEST_DATABASE_URL", "")
 if not DSN:
@@ -97,6 +98,7 @@ def client(monkeypatch):
         ),
     )
     monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [test_pool])
+    monkeypatch.setattr(app_module.registry, "all_pools", lambda: [test_pool])
     from worker_health.pool_classifier_web.app import create_app
 
     app = create_app()
@@ -177,6 +179,58 @@ def test_utilization_api_postgres_integration(client):
     assert response.json["availability_mode"] == "listed"
     assert response.json["complete"] is True
     assert [bucket["utilization_pct"] for bucket in response.json["buckets"]] == [100, 0]
+
+
+def test_team_activity_summary_counts_resolved_runs_and_clips_duration_to_window():
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    recent_start = now - timedelta(days=8)
+    recent_end = now - timedelta(days=1)
+    old_start = now - timedelta(days=10)
+    old_end = now - timedelta(days=9)
+    with psycopg.connect(DSN) as conn:
+        with conn.cursor() as cur:
+            for task_id, start, end in (("recent", recent_start, recent_end), ("old", old_start, old_end)):
+                cur.execute(
+                    "INSERT INTO task_results"
+                    " (pool_id, task_id, worker_id, run_id, run_state, run_started, run_resolved, classified_at)"
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (POOL_ID, task_id, "w1", 0, "completed", start, end, end),
+                )
+        conn.commit()
+
+    summary = team_activity_summary(
+        DSN,
+        (POOL_ID,),
+        {
+            "1 week": ((now - timedelta(days=7)).isoformat(), now.isoformat()),
+            "1 month": ((now - timedelta(days=30)).isoformat(), now.isoformat()),
+        },
+    )
+
+    assert summary["windows"]["1 week"] == {"task_runs": 1, "machine_seconds": 6 * 24 * 60 * 60}
+    assert summary["windows"]["1 month"] == {"task_runs": 2, "machine_seconds": 8 * 24 * 60 * 60}
+    assert summary["data_start"] == old_end.isoformat()
+    assert summary["data_through"] == recent_end.isoformat()
+
+
+def test_activity_page_renders_recorded_metrics(client):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    with psycopg.connect(DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO task_results"
+                " (pool_id, task_id, worker_id, run_id, run_state, run_started, run_resolved, classified_at)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (POOL_ID, "activity-page", "w1", 0, "completed", now - timedelta(days=2), now - timedelta(days=1), now - timedelta(days=1)),
+            )
+        conn.commit()
+
+    response = client.get("/activity")
+
+    assert response.status_code == 200
+    assert b"Recorded terminal task runs" in response.data
+    assert b'aria-label="1 week: 1 task runs resolved"' in response.data
+    assert b'aria-label="1 week: 1 day of recorded machine time"' in response.data
 
 
 def test_failures_and_workers_api_postgres_integration(client):

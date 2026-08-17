@@ -4,7 +4,7 @@
  ⡧⠜ ⠣⠜ ⠣⠜ ⠣   ⠣⠤ ⠣ ⠣⠼ ⠭⠕ ⠭⠕ ⠇ ⢸  ⠇ ⠣⠭ ⠏ </pre></a>
 <span class="site-title">{{ current }}</span>
 <details class="global-menu"><summary aria-label="Open navigation" title="Navigation"><span class="menu-icon" aria-hidden="true"></span></summary><nav class="menu-popover" aria-label="Global navigation">
-{% for label, url in [('Overview', '/'), ('Patterns', '/patterns'), ('Pool Discovery', '/pool-discovery'), ('API', '/api')] %}{% if label == current %}<span class="current" aria-current="page">{{ label }}</span>{% else %}<a href="{{ url }}">{{ label }}</a>{% endif %}{% endfor %}{% if show_admin_navigation %}{% if current == 'Admin' %}<span class="current" aria-current="page">Admin</span>{% else %}<a href="/admin">Admin</a>{% endif %}{% endif %}{% if current == 'About' %}<span class="current" aria-current="page">About</span>{% else %}<a href="/about">About</a>{% endif %}
+{% for label, url in [('Overview', '/'), ('Activity', '/activity'), ('Patterns', '/patterns'), ('Pool Discovery', '/pool-discovery'), ('API', '/api')] %}{% if label == current %}<span class="current" aria-current="page">{{ label }}</span>{% else %}<a href="{{ url }}">{{ label }}</a>{% endif %}{% endfor %}{% if show_admin_navigation %}{% if current == 'Admin' %}<span class="current" aria-current="page">Admin</span>{% else %}<a href="/admin">Admin</a>{% endif %}{% endif %}{% if current == 'About' %}<span class="current" aria-current="page">About</span>{% else %}<a href="/about">About</a>{% endif %}
 </nav></details></header>
 <script>
 document.addEventListener("click", (event) => {

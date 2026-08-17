@@ -1,6 +1,6 @@
 """Tests for public informational pages that do not require a database."""
 
-from worker_health.pool_classifier_web.app import create_app
+from worker_health.pool_classifier_web.app import _format_machine_time, create_app
 
 
 def test_api_overview_renders():
@@ -27,18 +27,19 @@ def test_about_renders_build_metadata(monkeypatch):
     assert "It collects recent task and worker signals, classifies failures into actionable categories".encode() in response.data
 
 
-def test_global_navigation_has_five_consistent_items():
+def test_global_navigation_has_six_consistent_items():
     app = create_app()
     menu = app.jinja_env.get_template("base.html").module.navigation("Overview")
 
     assert menu.count('class="global-menu"') == 1
     assert menu.count('aria-current="page"') == 1
     assert '!menu.contains(event.target)' in menu
-    # The logo plus the four non-current navigation items are links; the fifth
+    # The logo plus the five non-current navigation items are links; the sixth
     # navigation item is rendered as the current-page span.
-    assert menu.count('<a href="') == 5
+    assert menu.count('<a href="') == 6
     for label, path in (
         ("Overview", "/"),
+        ("Activity", "/activity"),
         ("Patterns", "/patterns"),
         ("Pool Discovery", "/pool-discovery"),
         ("API", "/api"),
@@ -46,6 +47,23 @@ def test_global_navigation_has_five_consistent_items():
     ):
         assert label in menu
         assert f'href="{path}"' in menu or label == "Overview"
+
+
+def test_activity_renders_without_a_database():
+    app = create_app()
+    response = app.test_client().get("/activity")
+
+    assert response.status_code == 200
+    assert b"Team Activity" in response.data
+    assert b"Worker pools monitored" in response.data
+    assert b"Activity metrics are unavailable" in response.data
+
+
+def test_machine_time_formatting_is_compact_and_human_readable():
+    assert _format_machine_time(2 * 3600) == "2 hours"
+    assert _format_machine_time(24 * 3600) == "1 day"
+    assert _format_machine_time(3 * 30 * 24 * 3600) == "3 months"
+    assert _format_machine_time(2 * 365 * 24 * 3600) == "2 years"
 
 
 def test_global_navigation_shows_admin_only_for_iap_admin_hint():

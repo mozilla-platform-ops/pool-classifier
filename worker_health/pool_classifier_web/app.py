@@ -46,6 +46,7 @@ from worker_health.pool_classifier_web.storage import (
     count_category_hits_global,
     observed_start_lag_summaries_global,
     pool_summaries_global,
+    team_activity_summary,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,11 @@ COVERAGE_STALE_AFTER = timedelta(hours=1)
 REPOSITORY_URL = "https://github.com/mozilla-platform-ops/pool-classifier"
 DEFAULT_OVERVIEW_CACHE_TTL_SECONDS = 30
 DEFAULT_OVERVIEW_UTILIZATION_CONCURRENCY = 4
+TEAM_ACTIVITY_WINDOWS = {
+    "1 week": timedelta(days=7),
+    "1 month": timedelta(days=30),
+    "6 months": timedelta(days=180),
+}
 DEBUG_INSTANCE_COLORS = (
     "#1f6feb",
     "#a371f7",
@@ -135,6 +141,22 @@ def _application_version() -> str:
         return version("worker_health")
     except PackageNotFoundError:
         return "unknown"
+
+
+def _format_machine_time(seconds: float) -> str:
+    """Format summed task duration as a compact, human-readable duration."""
+    hours = seconds / 3600
+    if hours >= 365 * 24:
+        value, unit = hours / (365 * 24), "years"
+    elif hours >= 30 * 24:
+        value, unit = hours / (30 * 24), "months"
+    elif hours >= 24:
+        value, unit = hours / 24, "days"
+    else:
+        value, unit = hours, "hours"
+    if round(value) == 1:
+        unit = unit.removesuffix("s")
+    return f"{value:,.0f} {unit}"
 
 
 def _instance_identity_enabled(debug_enabled: bool) -> bool:
@@ -1092,6 +1114,36 @@ def create_app() -> Flask:
             patterns=rows,
             hits=hits,
             generated=_timestamp_label("generated on", datetime.now(timezone.utc)),
+        )
+
+    @app.get("/activity")
+    def activity():
+        now = datetime.now(timezone.utc)
+        pools = registry.all_pools()
+        pool_ids = tuple(f"{pool.provisioner}/{pool.worker_type}" for pool in pools)
+        os_counts = Counter(detect_os(pool) for pool in pools)
+        windows = {
+            name: ((now - duration).isoformat(), now.isoformat())
+            for name, duration in TEAM_ACTIVITY_WINDOWS.items()
+        }
+        summary = None
+        dsn = os.environ.get("DATABASE_URL")
+        if dsn:
+            try:
+                summary = _cached_overview_result(
+                    ("team-activity", dsn, pool_ids, tuple(windows)),
+                    lambda: team_activity_summary(dsn, pool_ids, windows),
+                )
+                for values in summary["windows"].values():
+                    values["machine_time"] = _format_machine_time(values["machine_seconds"])
+            except Exception as exc:
+                logger.warning("activity: aggregate query failed: %s", exc)
+        return render_template(
+            "activity.html",
+            generated=_timestamp_label("generated on", now),
+            pool_count=len(pools),
+            os_counts=sorted(os_counts.items()),
+            summary=summary,
         )
 
     @app.get("/pool-discovery")

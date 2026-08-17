@@ -1294,6 +1294,52 @@ def count_category_hits_global(dsn: str, since_iso: str) -> Dict[str, int]:
             return {row[0]: row[1] for row in cur.fetchall()}
 
 
+def team_activity_summary(
+    dsn: str,
+    pool_ids: Tuple[str, ...],
+    windows: dict[str, tuple[str, str]],
+) -> dict:
+    """Aggregate recorded terminal-task activity for the configured pools.
+
+    A task is counted in the window in which it resolved.  Its duration is
+    clipped to the window boundaries, which prevents a long-running task from
+    contributing time outside the period being reported.
+    """
+    if psycopg is None:
+        raise ImportError("psycopg (psycopg[binary]) is required")
+    if not pool_ids:
+        return {"windows": {name: {"task_runs": 0, "machine_seconds": 0} for name in windows}, "data_start": None, "data_through": None}
+
+    result = {"windows": {}, "data_start": None, "data_through": None}
+    with postgres_connect(dsn, "web") as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT MIN(run_resolved), MAX(run_resolved) FROM task_results"
+                " WHERE pool_id = ANY(%s) AND run_resolved IS NOT NULL",
+                (list(pool_ids),),
+            )
+            data_start, data_through = cur.fetchone()
+            result["data_start"] = _to_iso(data_start)
+            result["data_through"] = _to_iso(data_through)
+
+            for name, (start, end) in windows.items():
+                cur.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(EXTRACT(EPOCH FROM ("
+                    " LEAST(run_resolved, %s::timestamptz) - GREATEST(run_started, %s::timestamptz)"
+                    "))) FILTER (WHERE run_started IS NOT NULL AND run_resolved > run_started), 0)"
+                    " FROM task_results"
+                    " WHERE pool_id = ANY(%s)"
+                    " AND run_resolved >= %s::timestamptz AND run_resolved < %s::timestamptz",
+                    (end, start, list(pool_ids), start, end),
+                )
+                task_runs, machine_seconds = cur.fetchone()
+                result["windows"][name] = {
+                    "task_runs": task_runs,
+                    "machine_seconds": float(machine_seconds),
+                }
+    return result
+
+
 def observed_start_lag_summaries_global(
     dsn: str, range_start: str, range_end: str,
 ) -> Dict[str, dict]:
