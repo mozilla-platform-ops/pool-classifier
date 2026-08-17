@@ -773,6 +773,30 @@ def test_patterns_api_exposes_enabled_and_disabled_registry_entries(monkeypatch)
     }
 
 
+def test_patterns_page_uses_shared_sorting_with_severity_as_its_default(monkeypatch):
+    monkeypatch.setattr(
+        app_module.patterns_registry,
+        "_patterns",
+        [
+            SimpleNamespace(name="critical", severity="critical", regex="critical", tags=[], description="", enabled=True),
+            SimpleNamespace(name="high", severity="high", regex="high", tags=["android"], description="", enabled=False),
+        ],
+    )
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/patterns")
+
+    assert response.status_code == 200
+    assert b'<th data-default-direction="asc">Severity</th>' in response.data
+    assert b'<th class="hits" data-default-direction="desc">Hits (24h)</th>' in response.data
+    assert b'data-sort-value="0"' in response.data
+    assert b'data-sort-value="1"' in response.data
+    assert b'data-sort-index="0"' in response.data
+    assert b"initSortableTable(table, {numericColumns: [0, 3], initialColumn: 0, initialDirection: 'asc'})" in response.data
+
+
 @pytest.mark.parametrize(
     ("path", "query", "message"),
     [

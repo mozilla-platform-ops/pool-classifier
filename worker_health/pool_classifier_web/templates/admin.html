@@ -64,16 +64,17 @@
 <tr><td class="ok">{{ classify_all_duration }}</td><td><time class="utc-time" datetime="{{ classify_all_completed_at.isoformat() }}" data-utc="{{ classify_all_completed_at.isoformat() }}">{{ classify_all_completed_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</time></td></tr>
 </tbody></table>
 <h2 id="pool-runtime">Per-pool runtime</h2>
-<table class="sortable-table"><thead><tr><th>Pool</th><th>Runtime</th><th>Completed (<span data-timezone-heading>Local</span>)</th></tr></thead><tbody>
+<table class="sortable-table"><thead><tr><th data-default-direction="desc">Pool</th><th data-default-direction="desc">Runtime</th><th data-default-direction="desc">Completed (<span data-timezone-heading>Local</span>)</th></tr></thead><tbody>
 {% for timing in pool_timings %}<tr><td>{% if timing.pool %}<a href="/pools/{{ timing.pool.provisioner }}/{{ timing.pool.worker_type }}">{{ timing.pool_id }}</a>{% else %}{{ timing.pool_id }}{% endif %}</td><td class="ok" data-sort-value="{{ timing.duration_seconds }}"><span class="runtime">{{ timing.duration }}<span class="runtime-bar" aria-hidden="true"><span style="width: {{ timing.runtime_percent }}%"></span></span></span></td><td data-sort-value="{{ timing.completed_at.timestamp() }}"><time class="utc-time" datetime="{{ timing.completed_at.isoformat() }}" data-utc="{{ timing.completed_at.isoformat() }}">{{ timing.completed_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}</time></td></tr>{% endfor %}
 </tbody></table>
 {% endif %}
 <h2 id="pool-snapshots">Pool dashboard snapshots</h2>
-<table class="sortable-table"><thead><tr><th>Pool</th><th>Snapshot source</th><th>Pool state</th></tr></thead><tbody>
+<table class="sortable-table"><thead><tr><th data-default-direction="desc">Pool</th><th data-default-direction="desc">Snapshot source</th><th data-default-direction="desc">Pool state</th></tr></thead><tbody>
 {% for snapshot in snapshots %}<tr><td><a href="/pools/{{ snapshot.pool.provisioner }}/{{ snapshot.pool.worker_type }}">{{ snapshot.pool_id }}</a></td>{% if snapshot.source_at %}<td class="{{ 'stale' if snapshot.stale else 'ok' }}" data-sort-value="{{ snapshot.source_at_seconds }}"><time datetime="{{ snapshot.source_at.isoformat() }}" class="utc-tooltip" data-utc="{{ snapshot.source_at.isoformat() }}" title="{{ snapshot.source_at.strftime('%Y-%m-%d %H:%M:%S UTC') }}">{{ snapshot.age }}</time>{% if snapshot.stale %} (stale){% endif %}</td>{% else %}<td class="missing" data-sort-value="">never</td>{% endif %}<td>{{ 'enabled' if snapshot.enabled else 'disabled' }}</td></tr>{% endfor %}
 </tbody></table>
 {% endif %}
-<script>
+<script type="module">
+  import {initSortableTable} from "{{ url_for('static', filename='table-sort.js') }}";
   function formatTime(iso, mode) {
     if (mode === 'utc') return iso.slice(0, 19).replace('T', ' ') + ' UTC';
     return new Date(iso).toLocaleString(undefined, {year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'});
@@ -92,25 +93,13 @@
   timezoneButtons.forEach(button => button.addEventListener('click', () => setTimezone(button.dataset.timezone)));
   setTimezone('local');
 
-  function sortValue(row, index) {
-    const cell = row.children[index];
-    return cell.dataset.sortValue || cell.textContent.trim();
-  }
-  document.querySelectorAll('.sortable-table th').forEach(header => header.addEventListener('click', () => {
-    const index = [...header.parentElement.children].indexOf(header);
-    const ascending = header.dataset.sort === 'desc';
-    const table = header.closest('table');
-    table.querySelectorAll('th').forEach(other => delete other.dataset.sort);
-    header.dataset.sort = ascending ? 'asc' : 'desc';
-    [...table.tBodies[0].rows].sort((left, right) => {
-      const leftValue = sortValue(left, index), rightValue = sortValue(right, index);
-      const leftNumber = Number(leftValue), rightNumber = Number(rightValue);
-      const bothNumbers = leftValue !== '' && rightValue !== '' && Number.isFinite(leftNumber) && Number.isFinite(rightNumber);
-      if (leftValue === '' || rightValue === '') return leftValue === rightValue ? 0 : leftValue === '' ? 1 : -1;
-      const comparison = bothNumbers ? leftNumber - rightNumber : leftValue.localeCompare(rightValue);
-      return ascending ? comparison : -comparison;
-    }).forEach(row => table.tBodies[0].appendChild(row));
-  }));
+  document.querySelectorAll('.sortable-table').forEach(table => {
+    const snapshotTable = table.querySelector('th:nth-child(2)')?.textContent.includes('Snapshot source');
+    initSortableTable(table, {
+      numericColumns: snapshotTable ? [1] : [1, 2],
+      missingLast: snapshotTable ? [1] : [],
+    });
+  });
 </script>
 </body>
 </html>

@@ -34,7 +34,10 @@
   .search input { background: #1a1a1a; color: #ccc; border: 1px solid #333; padding: .35rem .6rem; border-radius: 3px; font-family: monospace; width: 24rem; }
   .search input:focus { outline: none; border-color: #58a6ff; }
   table { border-collapse: collapse; width: 100%; }
-  th { background: #222; color: #aaa; text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #444; }
+  th { background: #222; color: #aaa; text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #444; cursor: pointer; user-select: none; }
+  th:hover { color: #fff; }
+  th[data-sort='asc']::after { content: ' ▲'; color: #f90; }
+  th[data-sort='desc']::after { content: ' ▼'; color: #f90; }
   td { padding: .4rem .8rem; border-bottom: 1px solid #2a2a2a; vertical-align: top; }
   tr:target { background: #2a2a1a; }
   tr:hover td { background: #1a1a1a; }
@@ -56,7 +59,8 @@
 <body>
 {{ navigation("Patterns", show_admin_navigation) }}
 <p class="blurb">
-  Patterns are sorted by severity (critical → high → low), then file order within a tier.
+  By default, patterns are sorted by severity (critical → high → low), then file order within a tier.
+  Select a column heading to sort; selecting it again reverses the direction.
   Matching is first-match-wins, so a critical pattern always beats a high pattern.
   Edit <code>worker_health/pool_classifier_web/patterns.yaml</code> to change rules.
   Hit counts cover the last 24h across all pools.
@@ -68,26 +72,26 @@
 <table id="patterns-table">
   <thead>
     <tr>
-      <th>Severity</th>
-      <th>Name</th>
-      <th>Regex</th>
-      <th class="hits">Hits (24h)</th>
-      <th>Tags</th>
-      <th>Description</th>
+      <th data-default-direction="asc">Severity</th>
+      <th data-default-direction="asc">Name</th>
+      <th data-default-direction="asc">Regex</th>
+      <th class="hits" data-default-direction="desc">Hits (24h)</th>
+      <th data-default-direction="asc">Tags</th>
+      <th data-default-direction="asc">Description</th>
     </tr>
   </thead>
   <tbody>
     {% for p in patterns %}
-    <tr id="pattern-{{ p.name }}"{% if not p.enabled %} class="disabled"{% endif %}>
-      <td class="sev-{{ p.severity }}">{{ p.severity }}{% if not p.enabled %} (off){% endif %}</td>
-      <td>
+    <tr id="pattern-{{ p.name }}" data-sort-index="{{ loop.index0 }}"{% if not p.enabled %} class="disabled"{% endif %}>
+      <td class="sev-{{ p.severity }}" data-sort-value="{{ {'critical': 0, 'high': 1, 'low': 2}[p.severity] }}">{{ p.severity }}{% if not p.enabled %} (off){% endif %}</td>
+      <td data-sort-value="{{ p.name }}">
         <span class="name">{{ p.name }}</span>
         <a class="anchor" href="#pattern-{{ p.name }}" title="link to this pattern">#</a>
       </td>
-      <td><span class="regex">{{ p.regex }}</span></td>
-      <td class="hits{% if not hits.get(p.name) %} hits-zero{% endif %}">{{ hits.get(p.name, 0) }}</td>
-      <td>{% for t in p.tags %}<span class="tag">{{ t }}</span>{% endfor %}</td>
-      <td>{{ p.description }}</td>
+      <td data-sort-value="{{ p.regex }}"><span class="regex">{{ p.regex }}</span></td>
+      <td class="hits{% if not hits.get(p.name) %} hits-zero{% endif %}" data-sort-value="{{ hits.get(p.name, 0) }}">{{ hits.get(p.name, 0) }}</td>
+      <td data-sort-value="{{ p.tags | join(', ') }}">{% for t in p.tags %}<span class="tag">{{ t }}</span>{% endfor %}</td>
+      <td data-sort-value="{{ p.description }}">{{ p.description }}</td>
     </tr>
     {% endfor %}
   </tbody>
@@ -95,9 +99,12 @@
 
 <p class="footer">{{ generated }}</p>
 
-<script>
+<script type="module">
+  import {initSortableTable} from "{{ url_for('static', filename='table-sort.js') }}";
   const input = document.getElementById('search');
+  const table = document.getElementById('patterns-table');
   const rows = [...document.querySelectorAll('#patterns-table tbody tr')];
+  initSortableTable(table, {numericColumns: [0, 3], initialColumn: 0, initialDirection: 'asc'});
   function applyFilter() {
     const q = input.value.trim().toLowerCase();
     rows.forEach(r => {
