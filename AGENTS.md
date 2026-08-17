@@ -101,6 +101,10 @@ br sync --status      # Check sync status
 
 **Before ending any session, run this checklist:**
 
+Never use `git commit --amend`. For work that implements or closes a Beads
+issue, include its ID in parentheses in the commit subject, for example:
+`feat: add pool-classifier CLI entry point (pool-classifier-bugz)`.
+
 ```bash
 git status              # Check what changed
 git add <files>         # Stage code changes
