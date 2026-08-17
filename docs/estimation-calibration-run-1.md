@@ -78,7 +78,7 @@ hypothesis, not a guarantee.
 | Pre-change API snapshots captured | 2026-08-17T21:12:13Z | Forecast window and model outputs recorded above. |
 | All 10 hosts quarantined in 1804 | <!-- fill --> | |
 | Classifier observed 10 quarantined in 1804 | <!-- fill --> | |
-| All 10 hosts drained in 1804 | <!-- fill --> | Expected within one hour of quarantine. |
+| All 10 hosts drained in 1804 | 2026-08-17T21:57:05Z | Operator confirmed all selected hosts idle. |
 | Imaging started | <!-- fill --> | |
 | Imaging completed | <!-- fill --> | |
 | All 10 hosts ready in 2404 | <!-- fill --> | |
