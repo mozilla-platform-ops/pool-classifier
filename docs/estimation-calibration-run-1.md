@@ -43,11 +43,13 @@ hypothesis, not a guarantee.
    observed-start-lag, and capacity-scenarios responses. Record the exact
    query windows used. Completed `2026-08-17T21:12:13Z`; the frozen forecast
    window is recorded above.
-2. Drain active work if the quarantine mechanism does not already prevent new
-   work while allowing active work to finish.
-3. Quarantine all ten selected hosts in 1804. Record both the operator action
-   time and the time Pool Classifier first observes all ten as quarantined.
-   This is the 1804 capacity-removal event.
+2. Quarantine all ten selected hosts in 1804 to stop new work. Record both the
+   operator action time and the time Pool Classifier first observes all ten as
+   quarantined.
+3. Let any active work drain after quarantine. The hosts should be empty within
+   one hour. Record the drain-complete time; begin the steady-state 1804
+   observation window only after both the quarantine transition and drain are
+   complete.
 4. Keep the hosts quarantined/offline while they are reimaged. Do not include
    this interval when evaluating either steady-state estimate.
 5. Register the hosts in 2404. Record each ready time and the time Pool
@@ -66,6 +68,7 @@ hypothesis, not a guarantee.
 | Pre-change API snapshots captured | 2026-08-17T21:12:13Z | Forecast window and model outputs recorded above. |
 | All 10 hosts quarantined in 1804 | <!-- fill --> | |
 | Classifier observed 10 quarantined in 1804 | <!-- fill --> | |
+| All 10 hosts drained in 1804 | <!-- fill --> | Expected within one hour of quarantine. |
 | Imaging started | <!-- fill --> | |
 | Imaging completed | <!-- fill --> | |
 | All 10 hosts ready in 2404 | <!-- fill --> | |
