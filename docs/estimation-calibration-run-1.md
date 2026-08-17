@@ -39,9 +39,10 @@ hypothesis, not a guarantee.
 
 ## Procedure
 
-1. Before changing capacity, save the source and target summary,
+1. [x] Before changing capacity, save the source and target summary,
    observed-start-lag, and capacity-scenarios responses. Record the exact
-   query windows used.
+   query windows used. Completed `2026-08-17T21:12:13Z`; the frozen forecast
+   window is recorded above.
 2. Drain active work if the quarantine mechanism does not already prevent new
    work while allowing active work to finish.
 3. Quarantine all ten selected hosts in 1804. Record both the operator action
@@ -62,7 +63,7 @@ hypothesis, not a guarantee.
 
 | Event | UTC time | Notes |
 | --- | --- | --- |
-| Pre-change API snapshots captured | <!-- fill --> | |
+| Pre-change API snapshots captured | 2026-08-17T21:12:13Z | Forecast window and model outputs recorded above. |
 | All 10 hosts quarantined in 1804 | <!-- fill --> | |
 | Classifier observed 10 quarantined in 1804 | <!-- fill --> | |
 | Imaging started | <!-- fill --> | |
