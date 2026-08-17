@@ -844,7 +844,7 @@ class SqliteStorage:
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
 
     def get_capacity_scenarios(
-        self, range_start: str, range_end: str, target_p95_seconds: int, additional_hosts: list[int], turnaround_seconds: int,
+        self, range_start: str, range_end: str, target_p95_seconds: int, host_delta_min: int, host_delta_max: int, turnaround_seconds: int,
     ) -> dict:
         from worker_health.pool_classifier_web.capacity_scenarios import calculate_capacity_scenarios, calculate_turnaround_sensitivity
 
@@ -855,11 +855,11 @@ class SqliteStorage:
             (range_start, range_end),
         )]
         result = calculate_capacity_scenarios(
-            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, turnaround_seconds, runs,
+            self.pool_id, range_start, range_end, target_p95_seconds, host_delta_min, host_delta_max, turnaround_seconds, runs,
             self._availability_transitions_for_window(range_start, range_end),
         )
         result["turnaround_sensitivity"] = calculate_turnaround_sensitivity(
-            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, runs,
+            self.pool_id, range_start, range_end, target_p95_seconds, host_delta_min, host_delta_max, runs,
             self._availability_transitions_for_window(range_start, range_end),
         )
         result["coverage"] = {
@@ -868,6 +868,7 @@ class SqliteStorage:
         }
         result["warnings"] = [
             "Model outputs are experimental until calibrated against a known capacity change.",
+            "Host-removal scenarios omit tasks that never started; stage and verify removal decisions.",
             *[
                 f"{source} collection coverage is incomplete for the selected window."
                 for source, coverage in result["coverage"].items() if not coverage["complete"]
@@ -2062,7 +2063,7 @@ class PostgresStorage:
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
 
     def get_capacity_scenarios(
-        self, range_start: str, range_end: str, target_p95_seconds: int, additional_hosts: list[int], turnaround_seconds: int,
+        self, range_start: str, range_end: str, target_p95_seconds: int, host_delta_min: int, host_delta_max: int, turnaround_seconds: int,
     ) -> dict:
         from worker_health.pool_classifier_web.capacity_scenarios import calculate_capacity_scenarios, calculate_turnaround_sensitivity
 
@@ -2079,10 +2080,10 @@ class PostgresStorage:
             ]
             transitions = self._availability_transitions_for_window(cur, range_start, range_end)
         result = calculate_capacity_scenarios(
-            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, turnaround_seconds, runs, transitions,
+            self.pool_id, range_start, range_end, target_p95_seconds, host_delta_min, host_delta_max, turnaround_seconds, runs, transitions,
         )
         result["turnaround_sensitivity"] = calculate_turnaround_sensitivity(
-            self.pool_id, range_start, range_end, target_p95_seconds, additional_hosts, runs, transitions,
+            self.pool_id, range_start, range_end, target_p95_seconds, host_delta_min, host_delta_max, runs, transitions,
         )
         result["coverage"] = {
             source: self.get_collection_coverage(source, range_start, range_end)
@@ -2090,6 +2091,7 @@ class PostgresStorage:
         }
         result["warnings"] = [
             "Model outputs are experimental until calibrated against a known capacity change.",
+            "Host-removal scenarios omit tasks that never started; stage and verify removal decisions.",
             *[
                 f"{source} collection coverage is incomplete for the selected window."
                 for source, coverage in result["coverage"].items() if not coverage["complete"]

@@ -60,8 +60,9 @@ MAX_WORKERS_LIMIT = 200
 UTILIZATION_WINDOWS = {"1h": 60 * 60, "24h": 24 * 60 * 60, "7d": 7 * 24 * 60 * 60, "30d": 30 * 24 * 60 * 60}
 DEFAULT_OBSERVED_START_LAG_SLO_SECONDS = 4 * 60 * 60
 DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES = 5
-DEFAULT_CAPACITY_SCENARIO_ADDITIONAL_HOSTS = (0, 1, 2, 4, 8, 12)
-MAX_CAPACITY_SCENARIO_ADDITIONAL_HOSTS = 100
+DEFAULT_CAPACITY_SCENARIO_HOST_DELTA_MIN = -100
+DEFAULT_CAPACITY_SCENARIO_HOST_DELTA_MAX = 100
+MAX_CAPACITY_SCENARIO_HOST_DELTA = 100
 DEFAULT_CAPACITY_SCENARIO_TURNAROUND_SECONDS = 120
 MAX_CAPACITY_SCENARIO_TURNAROUND_SECONDS = 30 * 60
 COVERAGE_STALE_AFTER = timedelta(hours=1)
@@ -275,7 +276,7 @@ def _observed_start_lag_min_samples() -> int:
     return min_samples
 
 
-def _capacity_scenario_parameters() -> tuple[str, str, int, list[int], int]:
+def _capacity_scenario_parameters() -> tuple[str, str, int, int, int, int]:
     start = _parse_utilization_datetime("start", request.args.get("start"))
     end = _parse_utilization_datetime("end", request.args.get("end"))
     if end <= start:
@@ -294,21 +295,18 @@ def _capacity_scenario_parameters() -> tuple[str, str, int, list[int], int]:
         raise ValueError("turnaround_seconds must be an integer") from exc
     if not 0 <= turnaround_seconds <= MAX_CAPACITY_SCENARIO_TURNAROUND_SECONDS:
         raise ValueError(f"turnaround_seconds must be between 0 and {MAX_CAPACITY_SCENARIO_TURNAROUND_SECONDS}")
-    raw_additions = request.args.get("additional_hosts")
-    if raw_additions is None:
-        additional_hosts = list(DEFAULT_CAPACITY_SCENARIO_ADDITIONAL_HOSTS)
-    else:
-        try:
-            additional_hosts = [int(value) for value in raw_additions.split(",")]
-        except ValueError as exc:
-            raise ValueError("additional_hosts must be comma-separated integers") from exc
-        if not additional_hosts:
-            raise ValueError("additional_hosts must include at least one value")
-    if any(value < 0 for value in additional_hosts):
-        raise ValueError("additional_hosts must not contain negative values")
-    if any(value > MAX_CAPACITY_SCENARIO_ADDITIONAL_HOSTS for value in additional_hosts):
-        raise ValueError(f"additional_hosts values must not exceed {MAX_CAPACITY_SCENARIO_ADDITIONAL_HOSTS}")
-    return start.isoformat(), end.isoformat(), target_p95_seconds, sorted(set(additional_hosts)), turnaround_seconds
+    try:
+        host_delta_min = int(request.args.get("host_delta_min", DEFAULT_CAPACITY_SCENARIO_HOST_DELTA_MIN))
+        host_delta_max = int(request.args.get("host_delta_max", DEFAULT_CAPACITY_SCENARIO_HOST_DELTA_MAX))
+    except ValueError as exc:
+        raise ValueError("host_delta_min and host_delta_max must be integers") from exc
+    if host_delta_min < -MAX_CAPACITY_SCENARIO_HOST_DELTA or host_delta_max > MAX_CAPACITY_SCENARIO_HOST_DELTA:
+        raise ValueError(f"host deltas must be between -{MAX_CAPACITY_SCENARIO_HOST_DELTA} and {MAX_CAPACITY_SCENARIO_HOST_DELTA}")
+    if host_delta_min > host_delta_max:
+        raise ValueError("host_delta_min must not exceed host_delta_max")
+    if host_delta_min > 0 or host_delta_max < 0:
+        raise ValueError("host delta range must include zero")
+    return start.isoformat(), end.isoformat(), target_p95_seconds, host_delta_min, host_delta_max, turnaround_seconds
 
 
 def _bounded_failure_window(default_seconds: int | None = None) -> tuple[str, str]:
@@ -1401,14 +1399,14 @@ def create_app() -> Flask:
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/capacity-scenarios")
     def pool_capacity_scenarios(provisioner: str, worker_type: str):
         try:
-            start, end, target_p95_seconds, additional_hosts, turnaround_seconds = _capacity_scenario_parameters()
+            start, end, target_p95_seconds, host_delta_min, host_delta_max, turnaround_seconds = _capacity_scenario_parameters()
         except ValueError as exc:
             return jsonify({"error": {"code": "invalid_parameter", "message": str(exc)}}), 400
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:
             return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
         result = pc.storage.get_capacity_scenarios(
-            start, end, target_p95_seconds, additional_hosts, turnaround_seconds,
+            start, end, target_p95_seconds, host_delta_min, host_delta_max, turnaround_seconds,
         )
         result["api_version"] = 1
         return jsonify(result)

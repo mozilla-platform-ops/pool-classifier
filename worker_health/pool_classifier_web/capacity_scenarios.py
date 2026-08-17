@@ -2,8 +2,7 @@
 
 This is deliberately a bounded FIFO replay, not a Taskcluster queue simulator.
 It only knows about runs that started and later became terminal, and models
-extra hosts as always-available capacity added to the observed healthy-worker
-count.
+healthy-worker capacity changed by a signed host delta.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from math import ceil
 from typing import Iterable
 
 
-MODEL_VERSION = "fifo-observed-runs-v1"
+MODEL_VERSION = "fifo-observed-runs-v2"
 MIN_BUSY_TURNAROUND_SAMPLES = 30
 SCOPE = (
     "FIFO counterfactual replay of observed terminal task runs. It excludes "
@@ -95,7 +94,7 @@ def _availability_by_time(
 
 
 def _scenario(
-    arrivals: list[tuple[datetime, float]], capacity_changes: list[tuple[datetime, int]], additional_hosts: int,
+    arrivals: list[tuple[datetime, float]], capacity_changes: list[tuple[datetime, int]], host_delta: int,
     slo_seconds: int, turnaround_seconds: int,
 ) -> dict:
     queued: deque[tuple[datetime, float]] = deque()
@@ -117,7 +116,7 @@ def _scenario(
         while completions and completions[0] <= now:
             heapq.heappop(completions)
         while capacity_index < len(capacity_changes) and capacity_changes[capacity_index][0] <= now:
-            current_capacity = capacity_changes[capacity_index][1] + additional_hosts
+            current_capacity = max(0, capacity_changes[capacity_index][1] + host_delta)
             capacity_index += 1
         while arrival_index < len(arrivals) and arrivals[arrival_index][0] <= now:
             queued.append(arrivals[arrival_index])
@@ -132,7 +131,7 @@ def _scenario(
 
     p50, p95 = _percentile(lags, 0.50), _percentile(lags, 0.95)
     return {
-        "additional_hosts": additional_hosts,
+        "host_delta": host_delta,
         "modeled_task_count": len(lags),
         "unstarted_task_count": len(arrivals) - len(lags),
         "modeled_p50_seconds": p50,
@@ -143,27 +142,43 @@ def _scenario(
     }
 
 
-def _minimum_passing_addition(display_scenarios: list[dict], run_scenario) -> int | None:
-    """Find the exact first passing integer inside the first displayed passing bracket."""
-    passing_index = next((index for index, scenario in enumerate(display_scenarios) if scenario["meets_target"]), None)
-    if passing_index is None:
-        return None
-    upper = display_scenarios[passing_index]["additional_hosts"]
-    if passing_index == 0:
-        return upper
-    lower = display_scenarios[passing_index - 1]["additional_hosts"] + 1
+def _capacity_threshold(host_delta_min: int, host_delta_max: int, run_scenario) -> dict:
+    """Find the smallest capacity delta that meets the target in the requested range."""
+    lower_scenario = run_scenario(host_delta_min)
+    if lower_scenario["meets_target"]:
+        return {
+            "status": "at_or_below_search_limit",
+            "minimum_host_delta_meeting_target": None,
+            "maximum_removable_hosts_meeting_target": None,
+            "maximum_removable_hosts_lower_bound": max(0, -host_delta_min),
+        }
+    upper_scenario = run_scenario(host_delta_max)
+    if not upper_scenario["meets_target"]:
+        return {
+            "status": "no_passing_delta",
+            "minimum_host_delta_meeting_target": None,
+            "maximum_removable_hosts_meeting_target": None,
+            "maximum_removable_hosts_lower_bound": None,
+        }
+
+    lower, upper = host_delta_min + 1, host_delta_max
     while lower < upper:
         middle = (lower + upper) // 2
         if run_scenario(middle)["meets_target"]:
             upper = middle
         else:
             lower = middle + 1
-    return lower
+    return {
+        "status": "exact",
+        "minimum_host_delta_meeting_target": lower,
+        "maximum_removable_hosts_meeting_target": max(0, -lower),
+        "maximum_removable_hosts_lower_bound": None,
+    }
 
 
 def calculate_capacity_scenarios(
     pool_id: str, range_start: str, range_end: str, target_p95_seconds: int,
-    additional_hosts: Iterable[int], turnaround_seconds: int, runs: Iterable[dict], availability_transitions: Iterable[dict],
+    host_delta_min: int, host_delta_max: int, turnaround_seconds: int, runs: Iterable[dict], availability_transitions: Iterable[dict],
 ) -> dict:
     start, end = _parse(range_start), _parse(range_end)
     if end <= start:
@@ -172,9 +187,10 @@ def calculate_capacity_scenarios(
         raise ValueError("target_p95_seconds must be greater than zero")
     if turnaround_seconds < 0:
         raise ValueError("turnaround_seconds must be non-negative")
-    additions = sorted({0, *additional_hosts})
-    if not additions or additions[0] < 0:
-        raise ValueError("additional_hosts must contain non-negative integers")
+    if host_delta_min > 0 or host_delta_max < 0:
+        raise ValueError("host delta range must include zero")
+    if host_delta_min > host_delta_max:
+        raise ValueError("host_delta_min must not exceed host_delta_max")
 
     arrivals = []
     observed_lags = []
@@ -192,27 +208,34 @@ def calculate_capacity_scenarios(
         observed_lags.append((started - scheduled).total_seconds())
     arrivals.sort()
     capacity_changes = _availability_by_time(availability_transitions, start, end)
-    def run_scenario(addition: int) -> dict:
-        return _scenario(arrivals, capacity_changes, addition, target_p95_seconds, turnaround_seconds)
+    def run_scenario(host_delta: int) -> dict:
+        return _scenario(arrivals, capacity_changes, host_delta, target_p95_seconds, turnaround_seconds)
 
-    scenarios = [run_scenario(addition) for addition in additions]
-    modeled_baseline = scenarios[0]
+    threshold = _capacity_threshold(host_delta_min, host_delta_max, run_scenario)
+    display_deltas = {host_delta_min, 0, host_delta_max}
+    if threshold["status"] == "exact":
+        threshold_delta = threshold["minimum_host_delta_meeting_target"]
+        display_deltas.update({threshold_delta - 1, threshold_delta, threshold_delta + 1})
+    scenarios = [run_scenario(delta) for delta in sorted(
+        delta for delta in display_deltas if host_delta_min <= delta <= host_delta_max
+    )]
+    modeled_baseline = next(scenario for scenario in scenarios if scenario["host_delta"] == 0)
     observed_p95 = _percentile(observed_lags, 0.95)
     modeled_p95 = modeled_baseline["modeled_p95_seconds"]
-    minimum = _minimum_passing_addition(scenarios, run_scenario)
     return {
         "metric": "modeled_capacity_scenario",
         "model": {
             "version": MODEL_VERSION,
             "status": "uncalibrated",
             "scope": SCOPE,
-            "capacity_basis": "observed healthy workers plus additional hosts",
-            "assumptions": {"turnaround_seconds": turnaround_seconds},
+            "capacity_basis": "observed healthy workers plus signed host delta",
+            "assumptions": {"turnaround_seconds": turnaround_seconds, "effective_capacity_floor": 0},
         },
         "pool_id": pool_id,
         "start_at": start.isoformat(),
         "end_at": end.isoformat(),
         "target_p95_seconds": target_p95_seconds,
+        "host_delta_range": {"min": host_delta_min, "max": host_delta_max},
         "observed_run_count": len(arrivals),
         "excluded_run_count": excluded_runs,
         "observed_baseline": {
@@ -229,13 +252,13 @@ def calculate_capacity_scenarios(
             "p95_difference_seconds": round(modeled_p95 - observed_p95, 3) if modeled_p95 is not None and observed_p95 is not None else None,
         },
         "scenarios": scenarios,
-        "minimum_additional_hosts_meeting_target": minimum,
+        "capacity_threshold": threshold,
     }
 
 
 def calculate_turnaround_sensitivity(
     pool_id: str, range_start: str, range_end: str, target_p95_seconds: int,
-    additional_hosts: Iterable[int], runs: list[dict], availability_transitions: list[dict],
+    host_delta_min: int, host_delta_max: int, runs: list[dict], availability_transitions: list[dict],
 ) -> dict:
     """Return comparable fixed and per-pool turnaround scenario results."""
     summary = busy_turnaround_summary(runs, range_start, range_end)
@@ -247,7 +270,7 @@ def calculate_turnaround_sensitivity(
         if seconds is None or (identifier == "busy_cycle_median" and not summary["available"]):
             continue
         result = calculate_capacity_scenarios(
-            pool_id, range_start, range_end, target_p95_seconds, additional_hosts, int(seconds), runs, availability_transitions,
+            pool_id, range_start, range_end, target_p95_seconds, host_delta_min, host_delta_max, int(seconds), runs, availability_transitions,
         )
         variants.append({
             "id": identifier,
@@ -255,6 +278,6 @@ def calculate_turnaround_sensitivity(
             "turnaround": {"seconds": int(seconds), "source": source},
             "calibration": result["calibration"],
             "scenarios": result["scenarios"],
-            "minimum_additional_hosts_meeting_target": result["minimum_additional_hosts_meeting_target"],
+            "capacity_threshold": result["capacity_threshold"],
         })
     return {"busy_turnaround": summary, "variants": variants}

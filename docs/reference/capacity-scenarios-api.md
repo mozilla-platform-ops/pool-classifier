@@ -1,28 +1,33 @@
 # Capacity scenarios API
 
 `GET /api/v1/pools/{provisioner}/{worker_type}/capacity-scenarios` estimates
-the observed start-lag outcome when healthy hosts are added to a pool. It is a
-read-only, counterfactual planning aid for investigating an overloaded pool;
+the observed start-lag outcome when healthy-host capacity changes in a pool. It is a
+read-only, counterfactual planning aid for capacity planning;
 it is not a provisioning command or a complete Taskcluster queue simulation.
 
 The endpoint requires timezone-aware ISO 8601 `start` and `end` parameters.
 The interval is start-inclusive and end-exclusive and may be at most 90 days.
 `target_p95_seconds` is optional and defaults to 14,400 seconds (four hours).
-`additional_hosts` is an optional comma-separated list of non-negative
-integers, defaulting to `0,1,2,4,8,12`; each value is capped at 100.
+`host_delta_min` and `host_delta_max` bound a signed capacity-change search;
+they default to `-100` and `100` and must include zero. A positive delta adds
+healthy hosts and a negative delta removes them. Both bounds are capped at
+`-100` through `100`. Effective capacity is never allowed below zero.
 `turnaround_seconds` is an optional non-negative post-run host turnaround
 assumption, defaulting to 120 seconds and capped at 1,800 seconds. It is added
 to every observed run duration before its modeled host becomes available.
 
-For every requested increment, the result reports modeled p50/p95 start lag,
-the share of modeled tasks within the selected target, peak waiting queue
-depth, and whether every modeled task starts and the p95 meets the target.
-`minimum_additional_hosts_meeting_target` is the first requested increment
-that meets the target, refined to the smallest integer host count between the
-previous failing displayed increment and that first passing increment. It is
-`null` if none of the displayed increments meets the target.
+The result reports only decision-relevant scenarios: the requested range
+endpoints, zero, and (when it exists) the threshold and its adjacent values.
+Each reports modeled p50/p95 start lag, the share of modeled tasks within the
+selected target, peak waiting queue depth, and whether every modeled task
+starts and the p95 meets the target. `capacity_threshold` searches the complete
+requested integer range for the smallest signed delta that meets the target.
+When that threshold is negative, `maximum_removable_hosts_meeting_target`
+reports its positive removal count. Its `status` is `exact`,
+`at_or_below_search_limit` when the lower search bound already passes, or
+`no_passing_delta` when even the upper bound fails.
 `observed_baseline` reports the actual p50/p95 lag of the replay input, so a
-consumer can judge how closely the zero-added-host scenario reproduces the
+consumer can judge how closely the zero-delta scenario reproduces the
 observed period before relying on other scenarios.
 `calibration` makes that difference machine-readable. The initial model is
 explicitly `uncalibrated`; its host-count result must not be used as a sizing
@@ -37,7 +42,8 @@ turnaround, not a model of long reboot or readiness failures.
 
 The model replays task runs in scheduled-time FIFO order using their observed
 started-to-resolved duration. Its capacity at each point is the number of
-historically observed healthy workers plus the requested additional hosts.
+historically observed healthy workers plus the signed host delta, floored at
+zero.
 The response includes task-run and worker-availability collection coverage and
 a versioned `model` object that documents the scope.
 
@@ -46,5 +52,5 @@ started and subsequently became terminal. Tasks that never started, expired,
 or were cancelled before starting are absent. The model also does not account
 for routing/capability constraints, retries, host wake-up time, or changes in
 task duration under a different load. Treat its results as a conservative
-starting point for an upsize investigation, and do not use them for a
-downsize decision.
+planning aid; incomplete collection coverage and unvalidated calibration
+reduce confidence, especially for host-removal decisions.
