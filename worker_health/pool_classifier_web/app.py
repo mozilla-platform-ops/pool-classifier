@@ -1113,6 +1113,7 @@ def create_app() -> Flask:
             "patterns.html",
             patterns=rows,
             hits=hits,
+            unclassified_count=hits.get("unclassified", 0),
             generated=_timestamp_label("generated on", datetime.now(timezone.utc)),
         )
 

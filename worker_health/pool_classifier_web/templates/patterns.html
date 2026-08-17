@@ -30,6 +30,9 @@
   .menu-popover a:hover { color: #a0c8ff; background: #2a2a2a; text-decoration: none; }
   .menu-popover .current { display: block; padding: .45rem .6rem; color: #666; cursor: default; }
   .blurb { color: #888; font-size: .85em; max-width: 70rem; margin: 0 0 1rem; }
+  .unclassified-summary { max-width: 70rem; margin: 0 0 1rem; padding: .75rem 1rem; border: 1px solid #765; background: #211b16; color: #ccc; }
+  .unclassified-summary strong { color: #f90; }
+  .unclassified-summary p { margin: .35rem 0 0; color: #aaa; font-size: .85em; }
   .search { margin: 0 0 1rem; }
   .search input { background: #1a1a1a; color: #ccc; border: 1px solid #333; padding: .35rem .6rem; border-radius: 3px; font-family: monospace; width: 24rem; }
   .search input:focus { outline: none; border-color: #58a6ff; }
@@ -65,6 +68,10 @@
   Edit <code>worker_health/pool_classifier_web/patterns.yaml</code> to change rules.
   Hit counts cover the last 24h across all pools.
 </p>
+<section class="unclassified-summary" aria-labelledby="unclassified-heading">
+  <strong id="unclassified-heading">Unclassified failures (24h): {{ unclassified_count }}</strong>
+  <p>Unclassified is the fallback when no enabled pattern matches a failed task. For a specific pool, use the <a href="/api">failures API</a> with <code>category=unclassified</code> to find its failures; saved logs are available at that pool’s <code>/unclassified/&lt;task-id&gt;.log</code> endpoint.</p>
+</section>
 <div class="search">
   <input id="search" type="text" placeholder="filter by name / regex / description / tag…" autocomplete="off">
 </div>

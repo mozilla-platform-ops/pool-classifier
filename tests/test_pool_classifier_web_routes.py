@@ -797,6 +797,27 @@ def test_patterns_page_uses_shared_sorting_with_severity_as_its_default(monkeypa
     assert b"initSortableTable(table, {numericColumns: [0, 3], initialColumn: 0, initialDirection: 'asc'})" in response.data
 
 
+def test_patterns_page_shows_global_unclassified_failure_count(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/pool-classifier")
+    monkeypatch.setattr(
+        app_module,
+        "count_category_hits_global",
+        lambda dsn, since: {"adb_no_ack": 3, "unclassified": 2},
+    )
+    app = create_app()
+    app.config["TESTING"] = True
+
+    with app.test_client() as client:
+        response = client.get("/patterns")
+
+    assert response.status_code == 200
+    assert b"Unclassified failures (24h): 2" in response.data
+    assert b"fallback when no enabled pattern matches a failed task" in response.data
+    assert b'href="/api">failures API</a>' in response.data
+    assert b"category=unclassified" in response.data
+    assert b"/unclassified/&lt;task-id&gt;.log" in response.data
+
+
 @pytest.mark.parametrize(
     ("path", "query", "message"),
     [
