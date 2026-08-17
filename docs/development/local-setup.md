@@ -41,6 +41,18 @@ Start the app:
 PC_PORT=8090 ./pc_start.sh     # override port
 ```
 
+For a local production-style server, use the package entry point. It runs
+Gunicorn with the same defaults as the Cloud Run container:
+
+```sh
+uv run pool-classifier                  # binds to 0.0.0.0:8080
+PORT=8090 uv run pool-classifier
+uv run pool-classifier --host 127.0.0.1 --port 8090 --workers 1
+```
+
+`POOL_CLASSIFIER_HOST`, `PORT`, `GUNICORN_WORKERS`, `GUNICORN_THREADS`, and
+`GUNICORN_TIMEOUT` set defaults; the corresponding command-line options win.
+
 Useful local URLs:
 
 - Dashboard: <http://localhost:8080/>

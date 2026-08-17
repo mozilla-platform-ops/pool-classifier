@@ -20,6 +20,17 @@ The local dashboard is available at <http://localhost:8080/>. A Taskcluster
 token is required at `~/.tc_token`; see the development guide for its format
 and the complete local workflow.
 
+To launch the production-style Gunicorn server directly, use:
+
+```sh
+uv run pool-classifier
+PORT=8090 uv run pool-classifier
+```
+
+It binds to `0.0.0.0:8080` by default. `PORT`, `POOL_CLASSIFIER_HOST`,
+`GUNICORN_WORKERS`, `GUNICORN_THREADS`, and `GUNICORN_TIMEOUT` configure the
+same defaults as the Cloud Run container; command-line options take precedence.
+
 To inspect current detail-page code without waiting for a classifier to replace
 a cached dashboard snapshot, start a separate local listener with snapshots
 disabled:
