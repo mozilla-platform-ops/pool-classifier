@@ -76,13 +76,13 @@ hypothesis, not a guarantee.
 | Event | UTC time | Notes |
 | --- | --- | --- |
 | Pre-change API snapshots captured | 2026-08-17T21:12:13Z | Forecast window and model outputs recorded above. |
-| All 10 hosts quarantined in 1804 | <!-- fill --> | |
+| All 10 hosts quarantined in 1804 | 2026-08-17T21:55:00Z | Operator action time. |
 | Classifier observed 10 quarantined in 1804 | <!-- fill --> | |
 | All 10 hosts drained in 1804 | 2026-08-17T21:57:05Z | Operator confirmed all selected hosts idle. |
 | Imaging started | <!-- fill --> | |
 | Imaging completed | <!-- fill --> | |
-| All 10 hosts ready in 2404 | <!-- fill --> | |
-| Classifier observed 10 available in 2404 | <!-- fill --> | |
+| All 10 hosts ready in 2404 | 2026-08-18T16:48:29Z | Confirmed online in Taskcluster by this time; individual ready times were not captured. |
+| Classifier observed 10 available in 2404 | 2026-08-18T16:48:29Z | All hosts `229`–`238` listed on the 2404 pool page generated at this time. |
 
 ## Results
 
@@ -100,7 +100,43 @@ hypothesis, not a guarantee.
 | 1804 (-10) | 0s | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> | |
 | 2404 (+10) | 1h 47m 10s | <!-- fill --> | <!-- fill --> | <!-- fill --> | <!-- fill --> | |
 
+## Design lessons for future runs
+
+This one-way host transfer cannot produce independent seven-day steady-state
+measurements for both its source and target pools. Once imaging begins, the
+1804 removal window ends; once the hosts are registered in 2404, 1804 no
+longer has the planned capacity state. Therefore this run can calibrate the
+2404 `+10` estimate, but it cannot provide the planned seven-day calibration
+of the 1804 `-10` estimate.
+
+Future capacity-change calibrations must use separate, stable experiments for
+each signed delta:
+
+1. For a removal estimate, quarantine or otherwise remove the selected healthy
+   hosts and hold the source pool at that reduced capacity for the complete
+   observation window before restoring or transferring them.
+2. For an addition estimate, add healthy, available hosts to the target pool
+   and hold the target pool at the increased capacity for the complete
+   observation window.
+3. Do not combine the source-removal and target-addition measurements in a
+   one-way transfer unless both required steady-state windows can actually be
+   completed. Treat imaging and registration as excluded transition time.
+4. Before any capacity action, name the single signed delta being calibrated,
+   its event timestamp, its 24-hour and seven-day checkpoint timestamps, and
+   the rollback or next-transition time. Do not begin the next transition
+   before the required window closes.
+5. Record the operator action, the first Classifier observation, and the
+   source API responses at each checkpoint. If only a later confirmation is
+   available, label it as a conservative "confirmed by" time rather than the
+   actual transition time.
+6. Archive a reproducibility bundle for the baseline and every checkpoint:
+   the full request (endpoint, query parameters, headers or request body as
+   applicable), fetch timestamp, and unmodified raw response. The summary
+   values copied into this document are not sufficient to reproduce or audit a
+   result later. Store the artifact location in the event log.
+
 ## Outcome
 
-<!-- Summarize whether this run supports calibrating the model, what error was
-observed, and whether a further controlled delta is needed. -->
+This run is a 2404 `+10` calibration only. Its 24-hour and seven-day results
+remain pending. The 1804 `-10` estimate requires a separate controlled,
+seven-day removal run before it can be calibrated.
