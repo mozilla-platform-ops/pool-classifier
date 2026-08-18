@@ -18,6 +18,7 @@ def test_gunicorn_command_uses_deployment_defaults(monkeypatch):
 
     assert cli.gunicorn_command(arguments) == [
         "gunicorn",
+        "--config", "python:worker_health.pool_classifier_web.gunicorn_config",
         "--bind", "0.0.0.0:8080",
         "--workers", "2",
         "--threads", "8",
@@ -38,7 +39,8 @@ def test_command_line_options_override_environment(monkeypatch):
 
     arguments = cli.build_parser().parse_args(["--host", "::1", "--port", "9001", "--workers", "1", "--threads", "2", "--timeout", "10"])
 
-    assert cli.gunicorn_command(arguments)[2] == "[::1]:9001"
+    command = cli.gunicorn_command(arguments)
+    assert command[command.index("--bind") + 1] == "[::1]:9001"
     assert (arguments.workers, arguments.threads, arguments.timeout) == (1, 2, 10)
 
 

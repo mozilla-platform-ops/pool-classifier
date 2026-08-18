@@ -10,6 +10,7 @@ set -e
 # Cloud Run request timeout (1800s in run.tf). Work is I/O-bound (Taskcluster
 # API + Postgres), so threads give cheap concurrency.
 exec gunicorn \
+    --config "python:worker_health.pool_classifier_web.gunicorn_config" \
     --bind "0.0.0.0:${PORT:-8080}" \
     --workers "${GUNICORN_WORKERS:-2}" \
     --threads "${GUNICORN_THREADS:-8}" \

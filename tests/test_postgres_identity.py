@@ -51,6 +51,7 @@ def test_direct_connect_sets_role_identity(monkeypatch):
 
 def test_postgres_pools_are_separated_by_role(monkeypatch):
     created = []
+    closed = []
 
     class FakePool:
         check_connection = object()
@@ -59,7 +60,7 @@ def test_postgres_pools_are_separated_by_role(monkeypatch):
             created.append(kwargs)
 
         def close(self):
-            pass
+            closed.append(self)
 
     monkeypatch.setattr(storage, "psycopg_pool", SimpleNamespace(ConnectionPool=FakePool))
     storage.close_postgres_pools()
@@ -72,3 +73,5 @@ def test_postgres_pools_are_separated_by_role(monkeypatch):
     assert ":web:" in created[0]["kwargs"]["application_name"]
     assert ":classifier:" in created[1]["kwargs"]["application_name"]
     storage.close_postgres_pools()
+    assert closed == [web_pool, classifier_pool]
+    assert storage._PG_POOLS == {}

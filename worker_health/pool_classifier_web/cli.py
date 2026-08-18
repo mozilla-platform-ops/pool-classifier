@@ -75,6 +75,7 @@ def gunicorn_command(arguments: argparse.Namespace) -> list[str]:
     host = f"[{arguments.host}]" if ":" in arguments.host and not arguments.host.startswith("[") else arguments.host
     return [
         "gunicorn",
+        "--config", "python:worker_health.pool_classifier_web.gunicorn_config",
         "--bind", f"{host}:{arguments.port}",
         "--workers", str(arguments.workers),
         "--threads", str(arguments.threads),
