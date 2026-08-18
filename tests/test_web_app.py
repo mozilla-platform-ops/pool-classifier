@@ -218,6 +218,11 @@ def test_activity_page_renders_recorded_metrics(client):
     with psycopg.connect(DSN) as conn:
         with conn.cursor() as cur:
             cur.execute(
+                "INSERT INTO collection_coverage_intervals (pool_id, source, start_at, end_at)"
+                " VALUES (%s,%s,%s,%s)",
+                (POOL_ID, "task_runs", now - timedelta(days=180), now),
+            )
+            cur.execute(
                 "INSERT INTO task_results"
                 " (pool_id, task_id, worker_id, run_id, run_state, run_started, run_resolved, classified_at)"
                 " VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
@@ -228,11 +233,11 @@ def test_activity_page_renders_recorded_metrics(client):
     response = client.get("/activity")
 
     assert response.status_code == 200
-    assert b"Tasks resolved" in response.data
+    assert b"tasks resolved" in response.data
     assert b"Reporting windows" in response.data
     assert b"30 days" in response.data
     assert b"machine-years" in response.data
-    assert b"Task-run coverage" in response.data
+    assert b"% coverage" in response.data
 
 
 def test_failures_and_workers_api_postgres_integration(client):
