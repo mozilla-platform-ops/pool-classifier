@@ -705,6 +705,22 @@ def test_start_lag_dashboard_links_trend_and_heatmap_hover(tmp_path):
     assert '<table class="hm-grid not-sortable">' in heatmap_html
     assert "Workers are ordered by recent failure severity (critical counts twice), then hostname." in heatmap_html
 
+
+def test_activity_heatmap_renders_unclassified_with_distinct_color(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    storage.init_schema()
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+
+    html = classifier._write_html(
+        {"worker-1": {"failures_by_category": {"unclassified": 1}}},
+        quarantined=set(),
+        heatmap={"worker-1": {0: {"s": 0, "critical": 0, "high": 0, "low": 0, "unclassified": 1, "cats": {"unclassified": 1}}}},
+    )
+
+    assert ".hm-sev-unclassified { background: #5b245f; }" in html
+    assert 'class="hm-cell hm-sev-unclassified"' in html
+    assert 'background:#5b245f"></span>unclassified' in html
+
     offenders_html = classifier._write_html({"worker-1": {"failures_by_category": {"unclassified": 1}}}, quarantined=set())
     assert '<h2 id="s-offenders">Top Offenders</h2>' in offenders_html
     assert "Workers with the most failures in the last day, grouped by category." in offenders_html

@@ -1141,15 +1141,18 @@ class SqliteStorage:
         for row in rows:
             cell = heatmap.setdefault(row["worker_id"], {}).setdefault(
                 row["hour_ago"],
-                {"s": 0, "critical": 0, "high": 0, "low": 0, "cats": {}},
+                {"s": 0, "critical": 0, "high": 0, "low": 0, "unclassified": 0, "cats": {}},
             )
             if row["run_state"] == "completed":
                 cell["s"] += row["cnt"]
             else:
                 cat = row["category"]
                 cell["cats"][cat] = cell["cats"].get(cat, 0) + row["cnt"]
-                sev = cat_to_sev.get(cat, "low")
-                cell[sev] += row["cnt"]
+                if cat == "unclassified":
+                    cell["unclassified"] += row["cnt"]
+                else:
+                    sev = cat_to_sev.get(cat, "low")
+                    cell[sev] += row["cnt"]
         return heatmap
 
     def top_offenders(self, category: str, n: int = 5, since: Optional[str] = None) -> List[Tuple[str, int]]:
@@ -2472,13 +2475,16 @@ class PostgresStorage:
             for row in cur.fetchall():
                 cell = heatmap.setdefault(row["worker_id"], {}).setdefault(
                     row["hour_ago"],
-                    {"s": 0, "critical": 0, "high": 0, "low": 0, "cats": {}},
+                {"s": 0, "critical": 0, "high": 0, "low": 0, "unclassified": 0, "cats": {}},
                 )
                 if row["run_state"] == "completed":
                     cell["s"] += row["cnt"]
                 else:
                     cat = row["category"]
                     cell["cats"][cat] = cell["cats"].get(cat, 0) + row["cnt"]
+                if cat == "unclassified":
+                    cell["unclassified"] += row["cnt"]
+                else:
                     sev = cat_to_sev.get(cat, "low")
                     cell[sev] += row["cnt"]
         return heatmap

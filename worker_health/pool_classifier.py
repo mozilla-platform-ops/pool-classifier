@@ -1995,6 +1995,7 @@ class PoolClassifier:
             "  .hm-sev-critical { background: #7a1515; }",
             "  .hm-sev-high { background: #7a4400; }",
             "  .hm-sev-low { background: #2a2a4a; }",
+            "  .hm-sev-unclassified { background: #5b245f; }",
             "  .hm-legend { display: flex; gap: 1.5rem; font-size: .8em; color: #aaa; margin: .5rem 0 1.2rem; align-items: center; flex-wrap: wrap; }",
             "  .hm-swatch { display: inline-block; width: .9rem; height: .9rem; margin-right: .35rem; vertical-align: middle; border-radius: 2px; border: 1px solid #333; }",
             "  .hm-copy { cursor: pointer; color: #555; margin-right: .35rem; vertical-align: middle; display: inline-block; line-height: 1; }",
@@ -2213,13 +2214,16 @@ class PoolClassifier:
             def hm_cell(data: Optional[dict], h: int) -> str:
                 period = hour_period[h]
                 if not data:
-                    info = json.dumps({"period": period, "ok": 0, "critical": 0, "high": 0, "low": 0, "cats": {}})
+                    info = json.dumps({"period": period, "ok": 0, "critical": 0, "high": 0, "low": 0, "unclassified": 0, "cats": {}})
                     return f"<td class=\"hm-cell hm-empty\" data-info='{info}'></td>"
                 s, critical, high, low = data["s"], data["critical"], data["high"], data["low"]
+                unclassified = data.get("unclassified", 0)
                 if critical:
                     cls = "hm-sev-critical"
                 elif high:
                     cls = "hm-sev-high"
+                elif unclassified:
+                    cls = "hm-sev-unclassified"
                 elif low:
                     cls = "hm-sev-low"
                 else:
@@ -2231,6 +2235,7 @@ class PoolClassifier:
                         "critical": critical,
                         "high": high,
                         "low": low,
+                        "unclassified": unclassified,
                         "cats": data.get("cats", {}),
                     },
                 )
@@ -2239,7 +2244,7 @@ class PoolClassifier:
             # sort workers: highest-severity failures first, then alpha
             def hm_sort_key(wid):
                 hours = heatmap[wid]
-                bad = sum(h["critical"] * 2 + h["high"] for h in hours.values())
+                bad = sum(h["critical"] * 2 + h["high"] + h.get("unclassified", 0) for h in hours.values())
                 return (-bad, wid)
 
             hour_labels = ["&lt;1h", "1h", "2h", "3h", "4h", "5h", "6h", "7h", "8h", "9h", "10h", "11h"]
@@ -2269,6 +2274,7 @@ class PoolClassifier:
                 '  <span><span class="hm-swatch" style="background:#7a1515"></span>critical</span>',
                 '  <span><span class="hm-swatch" style="background:#7a4400"></span>high</span>',
                 '  <span><span class="hm-swatch" style="background:#2a2a4a"></span>low</span>',
+                '  <span><span class="hm-swatch" style="background:#5b245f"></span>unclassified</span>',
                 '  <span><span class="hm-swatch" style="background:#1c1c1c; border-color:#444"></span>no activity</span>',
                 "</div>",
                 '<div class="hm-wrap">',
