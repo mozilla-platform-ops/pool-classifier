@@ -1,6 +1,7 @@
 """Pool failure classifier: monitors all workers in a TC pool and classifies task failures from logs."""
 
 import collections
+import gzip
 import json
 import logging
 import os
@@ -142,9 +143,10 @@ LOG_HEAD_BYTES = 20480  # 20 KB
 LOG_TAIL_BYTES = 51200  # 50 KB
 # Gzipped-artifact size at which we refuse to stream the log (GCS gunzips on the fly
 # without honoring Range, so anything large means downloading the entire decompressed log).
-LOG_MAX_GZIP_BYTES = 20 * 1024 * 1024  # 20 MB compressed (~100+ MB uncompressed)
+LOG_MAX_GZIP_BYTES = 10 * 1024 * 1024  # 10 MB compressed
 LOG_FETCH_MAX_SECONDS = 30  # hard wall-clock cap for the streamed read
 LOG_FETCH_MAX_BYTES = 5 * 1024 * 1024  # hard byte cap for the streamed read
+LOG_FULL_DECOMPRESSED_MAX_BYTES = 250 * 1024 * 1024
 WPT_ERROR_SUMMARY_MAX_BYTES = 256 * 1024
 WPT_ERROR_SUMMARY_MAX_SECONDS = 10
 
@@ -595,88 +597,39 @@ class PoolClassifier:
         temporary_path.replace(state_file)
 
     def _fetch_log_tail(self, task_id: str, run_id: int) -> Tuple[str, str]:
-        """Fetch head+tail of the task log with size, time, and byte caps.
+        """Fetch a bounded gzip artifact and retain its true plaintext head and tail.
 
-        Returns (log_text, status):
-          - "ok":         log fetched (possibly truncated by caps)
-          - "too_large":  gzipped artifact exceeds LOG_MAX_GZIP_BYTES; skipped
-          - "empty":      fetch failed or produced nothing
+        Requesting the gzip representation prevents Cloud Storage's decompressive
+        transcoding, which otherwise ignores Range requests.  The complete gzip
+        stream is still required to produce its plaintext tail, but decoding is
+        streaming and retains only the fixed-size buffers.
         """
         url = f"{self.queue_base}/task/{task_id}/runs/{run_id}/artifacts/public/logs/live_backing.log"
-
-        # HEAD-first size gate. GCS transparently gunzips on egress for these artifacts and
-        # silently ignores Range, so a large log means downloading the entire decompressed
-        # stream. Check the stored (gzipped) size and bail out if it's huge.
-        try:
-            t = time.time()
-            h = requests.head(url, allow_redirects=True, timeout=(10, 15))
-            gz_len = h.headers.get("x-goog-stored-content-length")
-            gz_enc = h.headers.get("x-goog-stored-content-encoding")
-            logger.info(
-                f"fetch_log {task_id}/{run_id} head_check {time.time() - t:.2f}s "
-                f"status={h.status_code} stored_len={gz_len} stored_enc={gz_enc} url={h.url}",
-            )
-            if gz_len is not None:
-                try:
-                    if int(gz_len) > LOG_MAX_GZIP_BYTES:
-                        logger.warning(
-                            f"fetch_log {task_id}/{run_id} skipping: gzipped artifact "
-                            f"{int(gz_len) / (1024 * 1024):.1f} MB > "
-                            f"{LOG_MAX_GZIP_BYTES / (1024 * 1024):.0f} MB cap",
-                        )
-                        return "", "too_large"
-                except ValueError:
-                    pass
-        except Exception as e:
-            logger.warning(f"fetch_log {task_id}/{run_id} HEAD failed: {e}")
-            # fall through and try the streamed fetch anyway
-
-        # Streamed read with wall-clock + byte caps. Keep first LOG_HEAD_BYTES bytes and
-        # the rolling last LOG_TAIL_BYTES bytes. If we hit a cap we still return what we have.
         head_buf = bytearray()
         tail_buf: "collections.deque[int]" = collections.deque(maxlen=LOG_TAIL_BYTES)
         total = 0
         start = time.monotonic()
-        aborted = None
         try:
-            with requests.get(url, stream=True, timeout=(10, 15)) as r:
-                if r.status_code not in (200, 206):
-                    logger.warning(
-                        f"fetch_log {task_id}/{run_id} stream status={r.status_code}",
-                    )
+            with requests.get(url, headers={"Accept-Encoding": "gzip"}, stream=True, timeout=(10, 15)) as response:
+                if response.status_code != 200:
+                    logger.warning("fetch_compressed_log %s/%s status=%s", task_id, run_id, response.status_code)
                     return "", "empty"
-                for chunk in r.iter_content(chunk_size=65536):
-                    if not chunk:
-                        continue
-                    total += len(chunk)
-                    if len(head_buf) < LOG_HEAD_BYTES:
-                        head_buf.extend(chunk[: LOG_HEAD_BYTES - len(head_buf)])
-                    tail_buf.extend(chunk)
-                    if total >= LOG_FETCH_MAX_BYTES:
-                        aborted = "byte_cap"
-                        break
-                    if time.monotonic() - start > LOG_FETCH_MAX_SECONDS:
-                        aborted = "time_cap"
-                        break
-        except Exception as e:
-            logger.warning(
-                f"fetch_log {task_id}/{run_id} stream failed after {time.monotonic() - start:.2f}s, total={total}: {e}",
-            )
-            if total == 0:
-                return "", "empty"
-
-        elapsed = time.monotonic() - start
-        logger.info(
-            f"fetch_log {task_id}/{run_id} stream {elapsed:.2f}s total={total} "
-            f"head={len(head_buf)} tail={len(tail_buf)} aborted={aborted}",
-        )
-        if total == 0:
+                stored_length = response.headers.get("x-goog-stored-content-length") or response.headers.get("content-length")
+                if stored_length is not None and int(stored_length) > LOG_MAX_GZIP_BYTES:
+                    return "", "too_large"
+                response.raw.decode_content = False
+                with gzip.GzipFile(fileobj=response.raw, mode="rb") as stream:
+                    while chunk := stream.read(65536):
+                        total += len(chunk)
+                        if total > LOG_FULL_DECOMPRESSED_MAX_BYTES or time.monotonic() - start > LOG_FETCH_MAX_SECONDS:
+                            return "", "too_large"
+                        if len(head_buf) < LOG_HEAD_BYTES:
+                            head_buf.extend(chunk[: LOG_HEAD_BYTES - len(head_buf)])
+                        tail_buf.extend(chunk)
+        except (OSError, requests.RequestException, ValueError) as exc:
+            logger.warning("fetch_compressed_log %s/%s failed: %s", task_id, run_id, exc)
             return "", "empty"
-        head_str = bytes(head_buf).decode("utf-8", errors="replace")
-        tail_str = bytes(tail_buf).decode("utf-8", errors="replace")
-        if aborted and self._fetch_wpt_error_summary_marker(task_id, run_id):
-            tail_str += "\nWPT_ERROR_SUMMARY_UNEXPECTED_RESULT\n"
-        return head_str + tail_str, "ok"
+        return bytes(head_buf).decode("utf-8", errors="replace") + bytes(tail_buf).decode("utf-8", errors="replace"), "ok"
 
     @staticmethod
     def _wpt_error_summary_has_unexpected_result(summary_text: str) -> bool:
@@ -1128,65 +1081,41 @@ class PoolClassifier:
         return transition_count
 
     def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], bar=None, worker_group: str = None):
-        for task in terminal_tasks:
+        def persist(task, category, log_text, classified_at):
             task_id, run_id, run_state, run_started, run_resolved, reason_resolved, *queue_fields = task
             run_scheduled, reason_created = (queue_fields + [None, None])[:2]
+            if category == "unclassified" and log_text:
+                self._save_unclassified(task_id, run_id, worker_id, log_text)
+            cat_colored = self._color("1;35" if category == "unclassified" else "1;31", str(category))
+            logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} → {cat_colored}")
+            self.storage.record_task_result(task_id, worker_id, run_id, run_state, category, reason_resolved,
+                                            run_started, run_resolved, classified_at,
+                                            run_scheduled=run_scheduled, reason_created=reason_created)
+            self.storage.upsert_worker(worker_id, worker_group)
+            if run_state == "completed":
+                self.storage.increment_success(worker_id, run_started)
+            else:
+                self.storage.increment_failure(worker_id, run_started, category)
+            self.storage.commit()
+
+        for task in terminal_tasks:
+            task_id, run_id, run_state, _run_started, _run_resolved, reason_resolved, *_ = task
             if self._interrupted:
                 logger.info(f"  {worker_id}: interrupted, skipping remaining tasks")
                 break
             if bar:
                 bar()
-
             classified_at = datetime.now(timezone.utc).isoformat()
             self._record_job_source(task_id, classified_at)
-
             if run_state == "completed":
-                category = None
                 logger.info(f"  {worker_id}: {self._color('1;32', 'completed')} task={task_id} run={run_id}")
-            else:
-                log_text = ""
-                fetch_status = "empty"
-                if run_id is not None:
-                    log_url = f"{self.queue_base}/task/{task_id}/runs/{run_id}/artifacts/public/logs/live_backing.log"
-                    logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} — fetching log tail {log_url}")
-                    log_text, fetch_status = self._fetch_log_tail(task_id, run_id)
-                    if log_text:
-                        logger.info(f"  {worker_id}: task={task_id} log tail fetched ({len(log_text)} bytes)")
-                    else:
-                        logger.info(f"  {worker_id}: task={task_id} no log available ({fetch_status})")
-                if fetch_status == "too_large":
-                    category = "log_too_large"
-                else:
-                    category = self._classify(log_text, run_state, reason_resolved)
-                if category == "unclassified":
-                    cat_colored = self._color("1;35", category)  # magenta
-                else:
-                    cat_colored = self._color("1;31", category)  # red
-                logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} → {cat_colored}")
-                if category == "unclassified" and log_text:
-                    self._save_unclassified(task_id, run_id, worker_id, log_text)
-
-            self.storage.record_task_result(
-                task_id,
-                worker_id,
-                run_id,
-                run_state,
-                category,
-                reason_resolved,
-                run_started,
-                run_resolved,
-                classified_at,
-                run_scheduled=run_scheduled,
-                reason_created=reason_created,
-            )
-            self.storage.upsert_worker(worker_id, worker_group)
-
-            if run_state == "completed":
-                self.storage.increment_success(worker_id, run_started)
-            else:
-                self.storage.increment_failure(worker_id, run_started, category)
-
-            self.storage.commit()
+                persist(task, None, "", classified_at)
+                continue
+            log_text, fetch_status = ("", "empty")
+            if run_id is not None:
+                log_text, fetch_status = self._fetch_log_tail(task_id, run_id)
+            category = "artifact_too_large" if fetch_status == "too_large" else self._classify(log_text, run_state, reason_resolved)
+            persist(task, category, log_text, classified_at)
 
     # --- main loop ---
 
@@ -1482,7 +1411,7 @@ class PoolClassifier:
             run_id = row["run_id"]
             if run_id is None:
                 continue
-            log_text, _ = self._fetch_log_tail(task_id, run_id)
+            log_text, fetch_status = self._fetch_log_tail(task_id, run_id)
             if not log_text:
                 continue
             refetch_total += 1

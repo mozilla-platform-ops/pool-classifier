@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import gzip
+import io
 from datetime import datetime, timedelta, timezone
 
 import json
@@ -9,6 +11,36 @@ import logging
 
 from worker_health.pool_classifier import PhaseMemorySampler, PoolClassifier
 from worker_health.pool_classifier_web.storage import SqliteStorage
+
+
+def test_compressed_log_fetch_keeps_true_plaintext_tail(monkeypatch, tmp_path):
+    payload = b"start\n" + (b"verbose test output\n" * 10_000) + b"WARNING - Got 21 unexpected statuses\n"
+    compressed = gzip.compress(payload)
+
+    class Raw(io.BytesIO):
+        pass
+
+    class Response:
+        status_code = 200
+        headers = {"x-goog-stored-content-length": str(len(compressed))}
+
+        def __init__(self):
+            self.raw = Raw(compressed)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("worker_health.pool_classifier.requests.get", lambda *_args, **_kwargs: Response())
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=object(), use_color=False)
+
+    log_text, status = classifier._fetch_log_tail("task-id", 0)
+
+    assert status == "ok"
+    assert "WARNING - Got 21 unexpected statuses" in log_text
+    assert len(log_text.encode()) <= 20480 + 51200
 
 
 def test_sqlite_records_resolved_time_and_distinct_retries(tmp_path):

@@ -85,7 +85,10 @@
 ### Data Collection
 - Recent tasks per worker from TC Queue API
 - Individual task status from TC (with run details)
-- Task log artifacts — HEAD (20 KB) + TAIL (50 KB) via range requests
+- Task log artifacts — bounded raw gzip streams decoded locally, retaining the
+  first 20 KB and final 50 KB of plaintext; artifacts outside the safeguards
+  are classified as
+  `artifact_too_large` (see [Taskcluster log-tail feature request](taskcluster-log-tail-feature-request.md))
 - Full worker list with continuation-token pagination
 - Quarantine state + enriched details via TC GraphQL
 
