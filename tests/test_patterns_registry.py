@@ -2,6 +2,19 @@ from worker_health.pool_classifier import PoolClassifier
 from worker_health.pool_classifier_web.patterns_registry import all_patterns, classify_patterns
 
 
+def test_mozdevice_adb_timeout_is_a_critical_device_failure():
+    category, pattern = classify_patterns(
+        all_patterns(),
+        "mozdevice.adb.ADBTimeoutError: args: adb wait-for-device shell getprop sys.boot_completed",
+        "failed",
+        None,
+    )
+
+    assert category == "mozdevice_adb_timeout"
+    assert pattern is not None
+    assert pattern.severity == "critical"
+
+
 def test_macos_refresh_rate_mismatch_ignores_incidental_payload_validation_text():
     category, pattern = classify_patterns(
         all_patterns(),

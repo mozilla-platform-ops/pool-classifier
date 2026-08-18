@@ -36,6 +36,12 @@ patterns:
     severity: critical
     tags: [android]
 
+  - name: mozdevice_adb_timeout
+    regex: "mozdevice\\.adb\\.ADBTimeoutError"
+    severity: critical
+    tags: [android]
+    description: ADB did not respond while waiting for an Android device to become ready.
+
   - name: device_not_found
     regex: "error: device .* not found"
     severity: critical
