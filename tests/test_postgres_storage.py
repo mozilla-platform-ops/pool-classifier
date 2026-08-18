@@ -606,6 +606,10 @@ def test_query_windowed_sr(sqlite, pg):
 
 def test_pool_summaries_global_parity(pg):
     _seed(pg)
+    observed = _now_iso()
+    pg.upsert_worker_availability_state("w1", "grp-a", True, False, observed, None, "online", observed, observed)
+    pg.upsert_worker_availability_state("w2", None, False, False, None, None, "contact_timeout", observed, observed)
+    pg.commit()
     since_1h = _now_iso(-1)
     since_24h = _now_iso(-24)
     threshold = 1
@@ -614,7 +618,7 @@ def test_pool_summaries_global_parity(pg):
     assert s is not None, "seeded pool should appear in the grouped result"
 
     # Each batched field must equal the per-pool method it replaces.
-    assert s["workers"] == pg.count_workers()
+    assert s["workers"] == 1
     assert s["alerting"] == pg.count_alerting(threshold)
     assert s["oldest"] == pg.oldest_classified_at()
     assert s["latest"] is not None

@@ -1482,6 +1482,35 @@ LEFT JOIN LATERAL (
 ORDER BY requested_pools.pool_id
 """
 
+# ``workers`` intentionally remains the source for alerting: it retains the
+# failure history that drives that signal.  The overview's host count, however,
+# must describe current capacity rather than every worker ever seen in a pool.
+LIVE_WORKER_AND_ALERT_SUMMARY_SQL = """
+WITH requested AS (
+    SELECT unnest(%(pool_ids)s::text[]) AS pool_id
+),
+live_workers AS (
+    SELECT pool_id, COUNT(*) AS workers
+    FROM worker_availability_state
+    WHERE pool_id = ANY(%(pool_ids)s::text[])
+      AND available = TRUE
+    GROUP BY pool_id
+),
+alerting_workers AS (
+    SELECT pool_id, COUNT(*) AS alerting
+    FROM workers
+    WHERE pool_id = ANY(%(pool_ids)s::text[])
+      AND consecutive_failures >= %(alert_threshold)s
+    GROUP BY pool_id
+)
+SELECT requested.pool_id,
+       COALESCE(live_workers.workers, 0) AS workers,
+       COALESCE(alerting_workers.alerting, 0) AS alerting
+FROM requested
+LEFT JOIN live_workers USING (pool_id)
+LEFT JOIN alerting_workers USING (pool_id)
+"""
+
 
 def pool_summaries_global(
     dsn: str,
@@ -1528,14 +1557,11 @@ def pool_summaries_global(
         )
 
     with postgres_connect(dsn, "web") as conn:
-        # workers table → worker count + alerting count per pool
+        # Current availability determines capacity; the historical worker table
+        # is still used for failure-based alerting.
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT requested.pool_id, COUNT(workers.worker_id) AS workers,"
-                " COUNT(*) FILTER (WHERE workers.consecutive_failures >= %(alert_threshold)s) AS alerting"
-                " FROM unnest(%(pool_ids)s::text[]) AS requested(pool_id)"
-                " LEFT JOIN workers USING (pool_id)"
-                " GROUP BY requested.pool_id",
+                LIVE_WORKER_AND_ALERT_SUMMARY_SQL,
                 {"pool_ids": list(pool_ids), "alert_threshold": alert_threshold},
             )
             for pool_id, workers, alerting in cur.fetchall():
