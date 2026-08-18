@@ -2482,11 +2482,11 @@ class PostgresStorage:
                 else:
                     cat = row["category"]
                     cell["cats"][cat] = cell["cats"].get(cat, 0) + row["cnt"]
-                if cat == "unclassified":
-                    cell["unclassified"] += row["cnt"]
-                else:
-                    sev = cat_to_sev.get(cat, "low")
-                    cell[sev] += row["cnt"]
+                    if cat == "unclassified":
+                        cell["unclassified"] += row["cnt"]
+                    else:
+                        sev = cat_to_sev.get(cat, "low")
+                        cell[sev] += row["cnt"]
         return heatmap
 
     def top_offenders(self, category: str, n: int = 5, since: Optional[str] = None) -> List[Tuple[str, int]]:

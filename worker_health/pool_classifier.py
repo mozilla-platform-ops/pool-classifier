@@ -2222,10 +2222,10 @@ class PoolClassifier:
                     cls = "hm-sev-critical"
                 elif high:
                     cls = "hm-sev-high"
-                elif unclassified:
-                    cls = "hm-sev-unclassified"
                 elif low:
                     cls = "hm-sev-low"
+                elif unclassified:
+                    cls = "hm-sev-unclassified"
                 else:
                     cls = "hm-ok"
                 info = json.dumps(

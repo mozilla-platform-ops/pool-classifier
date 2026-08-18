@@ -4,13 +4,14 @@ import sqlite3
 import threading
 import gzip
 import io
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import json
 import logging
 
 from worker_health.pool_classifier import PhaseMemorySampler, PoolClassifier
-from worker_health.pool_classifier_web.storage import SqliteStorage
+from worker_health.pool_classifier_web.storage import PostgresStorage, SqliteStorage
 
 
 def test_compressed_log_fetch_keeps_true_plaintext_tail(monkeypatch, tmp_path):
@@ -721,11 +722,47 @@ def test_activity_heatmap_renders_unclassified_with_distinct_color(tmp_path):
     assert 'class="hm-cell hm-sev-unclassified"' in html
     assert 'background:#5b245f"></span>unclassified' in html
 
+    mixed_html = classifier._write_html(
+        {},
+        heatmap={"worker-1": {0: {"s": 2, "critical": 0, "high": 0, "low": 1, "unclassified": 1, "cats": {}}}},
+    )
+    assert 'class="hm-cell hm-sev-low"' in mixed_html
+
     offenders_html = classifier._write_html({"worker-1": {"failures_by_category": {"unclassified": 1}}}, quarantined=set())
     assert '<h2 id="s-offenders">Top Offenders</h2>' in offenders_html
     assert "Workers with the most failures in the last day, grouped by category." in offenders_html
     assert 'href="/pools/provisioner/worker-type/unclassified">unclassified</a>' in offenders_html
 
+
+def test_postgres_heatmap_does_not_mark_completed_rows_as_unclassified():
+    rows = [
+        {"worker_id": "worker-1", "hour_ago": 0, "run_state": "failed", "category": "unclassified", "cnt": 1},
+        {"worker_id": "worker-2", "hour_ago": 0, "run_state": "completed", "category": "unclassified", "cnt": 4},
+    ]
+
+    class Cursor:
+        def execute(self, *_args):
+            pass
+
+        def fetchall(self):
+            return rows
+
+    @contextmanager
+    def cursor():
+        yield Cursor()
+
+    storage = object.__new__(PostgresStorage)
+    storage.pool_id = "pool-id"
+    storage._cursor = cursor
+
+    heatmap = storage.query_heatmap("2026-08-18T00:00:00+00:00")
+
+    assert heatmap["worker-1"][0] == {
+        "s": 0, "critical": 0, "high": 0, "low": 0, "unclassified": 1,
+        "cats": {"unclassified": 1},
+    }
+    assert heatmap["worker-2"][0]["s"] == 4
+    assert heatmap["worker-2"][0]["unclassified"] == 0
 
 def test_utilization_timeline_explains_incomplete_coverage_with_break_diagnostics(tmp_path):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
