@@ -1968,6 +1968,7 @@ class PoolClassifier:
             "  #hm-tip .tip-critical { color: #f44; }",
             "  #hm-tip .tip-high { color: #f90; }",
             "  #hm-tip .tip-low { color: #88a; }",
+            "  #hm-tip .tip-unclassified { color: #c86ccd; }",
             "  #hm-tip .tip-dim { color: #888; }",
             "  .ok { color: #4c4; }",
             "  .bad { color: #f44; }",
@@ -2354,13 +2355,14 @@ class PoolClassifier:
         parts += ["  </tbody>", "</table>"]
 
         hm_sev_map = {cat: sev for sev in ("critical", "high", "low") for cat in categories_by_severity(sev)}
+        hm_sev_map["unclassified"] = "unclassified"
         parts += [
             '<div id="hm-tip"></div>',
             "<script>",
             f"  const HM_SEV = {json.dumps(hm_sev_map)};",
-            "  const SEV_ORDER = {critical: 0, high: 1, low: 2};",
-            "  const SEV_CLASS = {critical: 'tip-critical', high: 'tip-high', low: 'tip-low'};",
-            "  const SEV_ICON  = {critical: '✗', high: '⚠', low: '•'};",
+            "  const SEV_ORDER = {critical: 0, high: 1, low: 2, unclassified: 3};",
+            "  const SEV_CLASS = {critical: 'tip-critical', high: 'tip-high', low: 'tip-low', unclassified: 'tip-unclassified'};",
+            "  const SEV_ICON  = {critical: '✗', high: '⚠', low: '•', unclassified: '?'};",
             "  // Heatmap hover card",
             f"  const UTIL_SUMMARY_URL = {json.dumps(summary_url)};",
             f"  const UTIL_TIMELINE_URL = {json.dumps(timeline_url)};",

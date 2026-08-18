@@ -719,6 +719,8 @@ def test_activity_heatmap_renders_unclassified_with_distinct_color(tmp_path):
     )
 
     assert ".hm-sev-unclassified { background: #5b245f; }" in html
+    assert "#hm-tip .tip-unclassified { color: #c86ccd; }" in html
+    assert '"unclassified": "unclassified"' in html
     assert 'class="hm-cell hm-sev-unclassified"' in html
     assert 'background:#5b245f"></span>unclassified' in html
 
