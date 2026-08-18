@@ -74,6 +74,7 @@ REPOSITORY_URL = "https://github.com/mozilla-platform-ops/pool-classifier"
 DEFAULT_OVERVIEW_CACHE_TTL_SECONDS = 30
 DEFAULT_OVERVIEW_UTILIZATION_CONCURRENCY = 4
 ACTIVITY_COVERAGE_MINIMUM_PCT = 75
+FLEET_ACTIVITY_SNAPSHOT_VERSION = 1
 TEAM_ACTIVITY_WINDOWS = {
     "24 hours": timedelta(days=1),
     "7 days": timedelta(days=7),
@@ -653,6 +654,57 @@ def _snapshot_freshness_label(metadata: dict) -> str:
     return f"{label} (stale)" if metadata["stale"] else label
 
 
+def _team_activity_windows(end: datetime) -> dict[str, tuple[str, str]]:
+    """Return the fixed Fleet Activity reporting windows ending at ``end``."""
+    return {
+        name: ((end - duration).isoformat(), end.isoformat())
+        for name, duration in TEAM_ACTIVITY_WINDOWS.items()
+    }
+
+
+def _prepare_team_activity_summary(summary: dict) -> dict:
+    """Add display and withholding values shared by live and stored activity data."""
+    for values in summary["windows"].values():
+        values["machine_time"] = f"{values['machine_seconds'] / (365 * 86400):,.1f} machine-years"
+        values["coverage_sufficient"] = values["coverage_pct"] >= ACTIVITY_COVERAGE_MINIMUM_PCT
+    return summary
+
+
+def _fleet_activity_snapshot_summary(snapshot: dict) -> dict | None:
+    """Return compatible Fleet Activity data, or None so the page can fail open."""
+    activity = snapshot.get("payload", {}).get("fleet_activity")
+    if not isinstance(activity, dict) or activity.get("version") != FLEET_ACTIVITY_SNAPSHOT_VERSION:
+        return None
+    try:
+        _parse_utilization_datetime("fleet activity source_at", activity["source_at"])
+        _parse_utilization_datetime("fleet activity generated_at", activity["generated_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    summary = activity.get("summary")
+    if not isinstance(summary, dict) or not isinstance(summary.get("windows"), dict):
+        return None
+    if set(summary["windows"]) != set(TEAM_ACTIVITY_WINDOWS):
+        return None
+    try:
+        for values in summary["windows"].values():
+            if not isinstance(values, dict):
+                return None
+            task_runs = values["task_runs"]
+            machine_seconds = values["machine_seconds"]
+            coverage_pct = values["coverage_pct"]
+            if (
+                isinstance(task_runs, bool) or not isinstance(task_runs, int) or task_runs < 0
+                or isinstance(machine_seconds, bool) or not isinstance(machine_seconds, (int, float))
+                or isinstance(coverage_pct, bool) or not isinstance(coverage_pct, (int, float))
+                or not math.isfinite(machine_seconds) or not math.isfinite(coverage_pct)
+                or not 0 <= coverage_pct <= 100
+            ):
+                return None
+    except (KeyError, TypeError):
+        return None
+    return _prepare_team_activity_summary(copy.deepcopy(summary))
+
+
 def _relative_age(timestamp: datetime, *, now: datetime | None = None) -> str:
     """Return a compact, human-readable elapsed-time label."""
     seconds = int(((now or datetime.now(timezone.utc)) - timestamp).total_seconds())
@@ -876,10 +928,18 @@ def create_app() -> Flask:
         )
         generated_at = datetime.now(timezone.utc).replace(microsecond=0)
         _reset_overview_cache()
+        activity_windows = _team_activity_windows(generated_at)
         payload = {
             "pool_summaries": _global_pool_summaries(dsn, pool_ids),
             "lag_summaries": _global_observed_start_lag_summaries(dsn),
             "utilization_summaries": _overview_utilization_summaries({"1h": 3600, "24h": 86400}),
+            "fleet_activity": {
+                "version": FLEET_ACTIVITY_SNAPSHOT_VERSION,
+                "source_at": generated_at.isoformat(),
+                "generated_at": generated_at.isoformat(),
+                "reporting_windows": activity_windows,
+                "summary": team_activity_summary(dsn, pool_ids, activity_windows),
+            },
         }
         if classify_all_started_at is not None and classify_all_started_monotonic is not None and pool_timings is not None:
             completed_at = datetime.now(timezone.utc)
@@ -1174,25 +1234,24 @@ def create_app() -> Flask:
         pools = registry.all_pools()
         pool_ids = tuple(f"{pool.provisioner}/{pool.worker_type}" for pool in pools)
         os_counts = Counter(detect_os(pool) for pool in pools)
-        windows = {
-            name: ((now - duration).isoformat(), now.isoformat())
-            for name, duration in TEAM_ACTIVITY_WINDOWS.items()
-        }
         summary = None
         summary_error = None
         dsn = os.environ.get("DATABASE_URL")
+        snapshot = _read_dashboard_snapshot(dsn, OVERVIEW_SCOPE)
+        if snapshot is not None:
+            summary = _fleet_activity_snapshot_summary(snapshot)
+        snapshot_source = snapshot["source_at"] if summary is not None else None
         if dsn:
-            try:
-                summary = _cached_overview_result(
-                    ("team-activity", dsn, pool_ids, tuple(windows)),
-                    lambda: team_activity_summary(dsn, pool_ids, windows),
-                )
-                for values in summary["windows"].values():
-                    values["machine_time"] = f"{values['machine_seconds'] / (365 * 86400):,.1f} machine-years"
-                    values["coverage_sufficient"] = values["coverage_pct"] >= ACTIVITY_COVERAGE_MINIMUM_PCT
-            except Exception as exc:
-                logger.warning("activity: aggregate query failed: %s", exc)
-                summary_error = "Fleet activity metrics are temporarily unavailable because their aggregate query failed."
+            if summary is None:
+                windows = _team_activity_windows(now)
+                try:
+                    summary = _prepare_team_activity_summary(_cached_overview_result(
+                        ("team-activity", dsn, pool_ids, tuple(windows)),
+                        lambda: team_activity_summary(dsn, pool_ids, windows),
+                    ))
+                except Exception as exc:
+                    logger.warning("activity: aggregate query failed: %s", exc)
+                    summary_error = "Fleet activity metrics are temporarily unavailable because their aggregate query failed."
         return render_template(
             "activity.html",
             generated=_timestamp_label("generated on", now),
@@ -1200,6 +1259,7 @@ def create_app() -> Flask:
             os_counts=sorted(os_counts.items()),
             summary=summary,
             summary_error=summary_error,
+            snapshot_source=snapshot_source,
         )
 
     @app.get("/pool-discovery")

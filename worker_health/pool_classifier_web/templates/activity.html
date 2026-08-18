@@ -53,6 +53,6 @@
 </section>
 <p class="note">{{ summary_error or "Fleet activity metrics are unavailable because this instance has no database connection." }}</p>
 {% endif %}
-<p class="footer">{{ generated }}</p>
+<p class="footer">{{ generated }}{% if snapshot_source %} · Fleet Activity snapshot from completed scan: {{ snapshot_source }}{% endif %}</p>
 </body>
 </html>

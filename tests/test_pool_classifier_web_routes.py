@@ -105,6 +105,72 @@ def test_not_found_page_uses_shared_header_and_overview_link():
     assert b'<a href="/">Return to overview</a>' in response.data
 
 
+def _fleet_activity_snapshot(summary):
+    return {
+        "source_at": "2026-08-17T12:00:00+00:00",
+        "generated_at": "2026-08-17T12:01:00+00:00",
+        "payload": {
+            "fleet_activity": {
+                "version": app_module.FLEET_ACTIVITY_SNAPSHOT_VERSION,
+                "source_at": "2026-08-17T12:00:00+00:00",
+                "generated_at": "2026-08-17T12:01:00+00:00",
+                "reporting_windows": {},
+                "summary": summary,
+            },
+        },
+    }
+
+
+def _fleet_activity_summary():
+    return {
+        "data_start": "2026-07-01T00:00:00+00:00",
+        "data_through": "2026-08-17T12:00:00+00:00",
+        "windows": {
+            name: {"task_runs": 12, "machine_seconds": 365 * 86400, "coverage_pct": 80}
+            for name in app_module.TEAM_ACTIVITY_WINDOWS
+        },
+    }
+
+
+def test_activity_serves_compatible_overview_snapshot_without_live_aggregate(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(app_module.registry, "all_pools", lambda: [])
+    monkeypatch.setattr(app_module, "_read_dashboard_snapshot", lambda *_args: _fleet_activity_snapshot(_fleet_activity_summary()))
+    monkeypatch.setattr(app_module, "team_activity_summary", lambda *_args: pytest.fail("must use snapshot"))
+    app = create_app()
+    app.config["TESTING"] = True
+
+    response = app.test_client().get("/activity")
+
+    assert response.status_code == 200
+    assert b"12" in response.data
+    assert b"1.0 machine-years" in response.data
+    assert b"Fleet Activity snapshot from completed scan: 2026-08-17T12:00:00+00:00" in response.data
+
+
+def test_activity_falls_back_to_live_aggregate_for_incompatible_snapshot(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(app_module.registry, "all_pools", lambda: [])
+    snapshot = _fleet_activity_snapshot(_fleet_activity_summary())
+    snapshot["payload"]["fleet_activity"]["version"] = 999
+    monkeypatch.setattr(app_module, "_read_dashboard_snapshot", lambda *_args: snapshot)
+    calls = []
+
+    def live_summary(_dsn, _pool_ids, _windows):
+        calls.append(True)
+        return _fleet_activity_summary()
+
+    monkeypatch.setattr(app_module, "team_activity_summary", live_summary)
+    app = create_app()
+    app.config["TESTING"] = True
+
+    response = app.test_client().get("/activity")
+
+    assert response.status_code == 200
+    assert calls == [True]
+    assert b"Fleet Activity snapshot from completed scan" not in response.data
+
+
 def test_pool_html_returns_service_unavailable_when_database_pool_times_out(monkeypatch, caplog):
     pool = Pool("display", "provisioner", "worker-type", "*/15 * * * *")
     monkeypatch.setattr(app_module.registry, "get_pool", lambda *_args: pool)
@@ -989,6 +1055,18 @@ def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
     monkeypatch.setattr(app_module, "_global_pool_summaries", lambda *_args: {})
     monkeypatch.setattr(app_module, "_global_observed_start_lag_summaries", lambda *_args: {})
     monkeypatch.setattr(app_module, "_overview_utilization_summaries", lambda *_args: {})
+    monkeypatch.setattr(
+        app_module,
+        "team_activity_summary",
+        lambda *_args: {
+            "data_start": "2026-08-01T00:00:00+00:00",
+            "data_through": "2026-08-17T00:00:00+00:00",
+            "windows": {
+                name: {"task_runs": 1, "machine_seconds": 3600, "coverage_pct": 100}
+                for name in app_module.TEAM_ACTIVITY_WINDOWS
+            },
+        },
+    )
     monkeypatch.setattr(app_module, "write_snapshot", lambda *args, **kwargs: writes.append((args, kwargs)))
 
     app = create_app()
@@ -1000,6 +1078,14 @@ def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
     assert overview_payload["classify_all_duration_seconds"] >= 0
     assert overview_payload["classify_all_started_at"]
     assert overview_payload["classify_all_completed_at"]
+    activity = overview_payload["fleet_activity"]
+    assert activity["version"] == app_module.FLEET_ACTIVITY_SNAPSHOT_VERSION
+    assert activity["source_at"]
+    assert activity["generated_at"]
+    assert set(activity["reporting_windows"]) == set(app_module.TEAM_ACTIVITY_WINDOWS)
+    assert activity["summary"]["windows"]["30 days"] == {
+        "task_runs": 1, "machine_seconds": 3600, "coverage_pct": 100,
+    }
     pool_timing = overview_payload["pool_timings"]["proj/timed"]
     assert pool_timing["duration_seconds"] >= 0
     assert pool_timing["total_workers"] == 7
