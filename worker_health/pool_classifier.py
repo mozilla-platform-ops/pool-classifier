@@ -6,7 +6,7 @@ import logging
 import os
 import resource
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
+from threading import Event, Lock, Thread
 import re
 import signal
 import sys
@@ -29,18 +29,90 @@ from worker_health.utils import human_delta
 TC_REQUEST_TIMEOUT = 30  # seconds; SDK has no built-in timeout
 
 
-def process_memory_bytes() -> dict[str, int | None]:
-    """Return current RSS (Linux) and process-lifetime peak RSS in bytes."""
-    rss_bytes = None
+def current_rss_bytes() -> int | None:
+    """Return current process RSS in bytes when the platform exposes it."""
     try:
         with open("/proc/self/statm", encoding="ascii") as statm:
             rss_pages = int(statm.read().split()[1])
-        rss_bytes = rss_pages * os.sysconf("SC_PAGE_SIZE")
+        return rss_pages * os.sysconf("SC_PAGE_SIZE")
     except (FileNotFoundError, IndexError, OSError, ValueError):
-        pass
+        return None
+
+
+def process_memory_bytes() -> dict[str, int | None]:
+    """Return current RSS and process-lifetime peak RSS in bytes."""
+    rss_bytes = current_rss_bytes()
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     peak_rss_bytes = peak if sys.platform == "darwin" else peak * 1024
     return {"rss_bytes": rss_bytes, "peak_rss_bytes": peak_rss_bytes}
+
+
+class PhaseMemorySampler:
+    """Sample current RSS while one classify phase is running.
+
+    ``ru_maxrss`` is a process-lifetime high-water mark, so it cannot identify
+    which phase caused it.  This sampler reports phase-local RSS observations
+    without adding work to the classification thread.
+    """
+
+    def __init__(
+        self,
+        read_rss: Callable[[], int | None] = current_rss_bytes,
+        interval_seconds: float = 0.1,
+    ) -> None:
+        self._read_rss = read_rss
+        self._interval_seconds = interval_seconds
+        self._stop = Event()
+        self._thread: Thread | None = None
+        self._lock = Lock()
+        self._start_rss_bytes: int | None = None
+        self._end_rss_bytes: int | None = None
+        self._max_rss_bytes: int | None = None
+        self._sample_count = 0
+
+    def _sample(self, *, is_end: bool = False) -> None:
+        rss_bytes = self._read_rss()
+        if rss_bytes is None:
+            return
+        with self._lock:
+            if self._start_rss_bytes is None:
+                self._start_rss_bytes = rss_bytes
+            if self._max_rss_bytes is None or rss_bytes > self._max_rss_bytes:
+                self._max_rss_bytes = rss_bytes
+            self._sample_count += 1
+            if is_end:
+                self._end_rss_bytes = rss_bytes
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval_seconds):
+            self._sample()
+
+    def __enter__(self) -> "PhaseMemorySampler":
+        self._sample()
+        self._thread = Thread(target=self._run, name="phase-memory-sampler", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        self._sample(is_end=True)
+
+    def metrics(self) -> dict[str, int | None]:
+        """Return the phase-local RSS summary after the context exits."""
+        with self._lock:
+            start = self._start_rss_bytes
+            end = self._end_rss_bytes
+            maximum = self._max_rss_bytes
+            return {
+                "rss_start_bytes": start,
+                "rss_end_bytes": end,
+                "rss_max_bytes": maximum,
+                "rss_delta_bytes": None if start is None or end is None else end - start,
+                "rss_peak_delta_bytes": None if start is None or maximum is None else maximum - start,
+                "rss_sample_count": self._sample_count,
+            }
 
 
 class _TimeoutSession(requests.Session):
@@ -1156,70 +1228,80 @@ class PoolClassifier:
             task_window_fetch_failed = False
             fetched_windows = []
             phase_metrics = {}
-            poll_started = time.monotonic()
-            thread_pool = ThreadPool(WORKER_THREAD_COUNT)
-            terminated = False
-            try:
-                with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
-                    for worker_id, worker_group, recent, error_type in thread_pool.imap_unordered(
-                        self._poll_one_worker,
-                        workers,
-                    ):
-                        scanned += 1
-                        bar()
-                        if recent is None:
-                            # Keep coverage pending after a transient getWorker
-                            # failure.  A later overlapping window bridges the
-                            # missing poll; a later non-overlap proves a gap.
-                            task_window_fetch_failed = True
-                            self.storage.record_task_run_coverage_event(
-                                datetime.now(timezone.utc).isoformat(), "get_worker_error", worker_id, worker_group,
-                                self.storage.get_recent_task_window(worker_id), None, None, error_type,
-                            )
-                        else:
-                            fetched_windows.append((worker_id, worker_group, recent))
-                        if self._interrupted:
-                            thread_pool.terminate()
-                            terminated = True
-                            break
-            except Exception as e:
-                logger.warning(f"Poll error: {e}")
-                task_coverage_observed = True
-                task_coverage_continuous = False
-                thread_pool.terminate()
-                terminated = True
-            finally:
-                if not terminated:
-                    thread_pool.close()
-                thread_pool.join()
+            with PhaseMemorySampler() as poll_memory:
+                poll_started = time.monotonic()
+                thread_pool = ThreadPool(WORKER_THREAD_COUNT)
+                terminated = False
+                try:
+                    with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
+                        for worker_id, worker_group, recent, error_type in thread_pool.imap_unordered(
+                            self._poll_one_worker,
+                            workers,
+                        ):
+                            scanned += 1
+                            bar()
+                            if recent is None:
+                                # Keep coverage pending after a transient getWorker
+                                # failure.  A later overlapping window bridges the
+                                # missing poll; a later non-overlap proves a gap.
+                                task_window_fetch_failed = True
+                                self.storage.record_task_run_coverage_event(
+                                    datetime.now(timezone.utc).isoformat(), "get_worker_error", worker_id, worker_group,
+                                    self.storage.get_recent_task_window(worker_id), None, None, error_type,
+                                )
+                            else:
+                                fetched_windows.append((worker_id, worker_group, recent))
+                            if self._interrupted:
+                                thread_pool.terminate()
+                                terminated = True
+                                break
+                except Exception as e:
+                    logger.warning(f"Poll error: {e}")
+                    task_coverage_observed = True
+                    task_coverage_continuous = False
+                    thread_pool.terminate()
+                    terminated = True
+                finally:
+                    if not terminated:
+                        thread_pool.close()
+                    thread_pool.join()
             phase_metrics["worker_poll"] = {
                 "duration_seconds": time.monotonic() - poll_started,
                 "workers": total_workers,
                 "scanned": scanned,
-                **process_memory_bytes(),
+                **poll_memory.metrics(),
             }
 
             # getWorker requests are parallel, but all storage state changes
             # happen here on the classify thread.  PostgresStorage deliberately
             # owns one transaction connection per classifier instance.
-            prepared_by_task, continuity_by_worker, window_observed = self._prepare_observed_task_run_batch(
-                fetched_windows,
-            )
+            with PhaseMemorySampler() as preparation_memory:
+                preparation_started = time.monotonic()
+                prepared_by_task, continuity_by_worker, window_observed = self._prepare_observed_task_run_batch(
+                    fetched_windows,
+                )
+            phase_metrics["task_preparation"] = {
+                "duration_seconds": time.monotonic() - preparation_started,
+                "worker_windows": len(fetched_windows),
+                "tasks": len(prepared_by_task),
+                **preparation_memory.metrics(),
+            }
             if window_observed:
                 task_coverage_observed = True
                 task_coverage_continuous = task_coverage_continuous and all(
                     continuity is not False for continuity in continuity_by_worker.values()
                 )
 
-            status_started = time.monotonic()
-            status_results = self._fetch_prepared_task_statuses(prepared_by_task)
-            resolved, _complete = self._apply_prepared_task_statuses(
-                prepared_by_task, status_results,
-            )
+            with PhaseMemorySampler() as status_memory:
+                status_started = time.monotonic()
+                status_results = self._fetch_prepared_task_statuses(prepared_by_task)
+                resolved, _complete = self._apply_prepared_task_statuses(
+                    prepared_by_task, status_results,
+                )
             phase_metrics["task_status"] = {
                 "duration_seconds": time.monotonic() - status_started,
                 "tasks": len(prepared_by_task),
-                **process_memory_bytes(),
+                **status_memory.metrics(),
             }
             prepared_references = [
                 reference for references in prepared_by_task.values() for reference in references
@@ -1245,25 +1327,26 @@ class PoolClassifier:
 
             new_total = sum(len(tasks) for _, _wg, tasks in poll_results if tasks)
 
-            terminal_started = time.monotonic()
-            if new_total > 0 and not self._interrupted:
-                with alive_bar(new_total, title="processing tasks", enrich_print=False) as bar:
+            with PhaseMemorySampler() as terminal_memory:
+                terminal_started = time.monotonic()
+                if new_total > 0 and not self._interrupted:
+                    with alive_bar(new_total, title="processing tasks", enrich_print=False) as bar:
+                        for worker_id, worker_group, terminal_tasks in poll_results:
+                            if self._interrupted:
+                                break
+                            if terminal_tasks:
+                                self._process_results(worker_id, terminal_tasks, bar, worker_group)
+                else:
                     for worker_id, worker_group, terminal_tasks in poll_results:
                         if self._interrupted:
                             break
                         if terminal_tasks:
-                            self._process_results(worker_id, terminal_tasks, bar, worker_group)
-            else:
-                for worker_id, worker_group, terminal_tasks in poll_results:
-                    if self._interrupted:
-                        break
-                    if terminal_tasks:
-                        self._process_results(worker_id, terminal_tasks, worker_group=worker_group)
+                            self._process_results(worker_id, terminal_tasks, worker_group=worker_group)
 
             phase_metrics["terminal_task_processing"] = {
                 "duration_seconds": time.monotonic() - terminal_started,
                 "terminal_tasks": new_total,
-                **process_memory_bytes(),
+                **terminal_memory.metrics(),
             }
 
             self._update_reports()

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import logging
 
-from worker_health.pool_classifier import PoolClassifier
+from worker_health.pool_classifier import PhaseMemorySampler, PoolClassifier
 from worker_health.pool_classifier_web.storage import SqliteStorage
 
 
@@ -43,6 +43,23 @@ def test_sqlite_records_resolved_time_and_distinct_retries(tmp_path):
     ]
     assert storage.get_seen_task_runs() == {
         "worker-1": {("task-1", 0), ("task-1", 1), ("task-1", 2)},
+    }
+
+
+def test_phase_memory_sampler_reports_local_peak_and_deltas():
+    readings = iter([100, 140, 125])
+    sampler = PhaseMemorySampler(lambda: next(readings), interval_seconds=60)
+
+    with sampler:
+        sampler._sample()
+
+    assert sampler.metrics() == {
+        "rss_start_bytes": 100,
+        "rss_end_bytes": 125,
+        "rss_max_bytes": 140,
+        "rss_delta_bytes": 25,
+        "rss_peak_delta_bytes": 40,
+        "rss_sample_count": 3,
     }
 
 
@@ -217,6 +234,19 @@ def test_classify_cycle_deduplicates_status_io_and_serializes_storage(tmp_path, 
     ])
 
     assert summary["new_terminal"] == 2
+    for phase in ("worker_poll", "task_preparation", "task_status", "terminal_task_processing"):
+        metrics = summary["memory_phases"][phase]
+        assert set(metrics) >= {
+            "rss_start_bytes", "rss_end_bytes", "rss_max_bytes", "rss_delta_bytes",
+            "rss_peak_delta_bytes", "rss_sample_count",
+        }
+        if metrics["rss_sample_count"]:
+            assert metrics["rss_sample_count"] >= 2
+            assert metrics["rss_max_bytes"] >= metrics["rss_start_bytes"]
+            assert metrics["rss_end_bytes"] is not None
+        else:
+            assert metrics["rss_start_bytes"] is metrics["rss_end_bytes"] is metrics["rss_max_bytes"] is None
+        assert "peak_rss_bytes" not in metrics
     assert len(status_threads) == 1
     assert status_threads[0] != main_thread
     assert storage_threads and set(storage_threads) == {main_thread}
