@@ -207,8 +207,8 @@ def test_team_activity_summary_counts_resolved_runs_and_clips_duration_to_window
         },
     )
 
-    assert summary["windows"]["1 week"] == {"task_runs": 1, "machine_seconds": 6 * 24 * 60 * 60}
-    assert summary["windows"]["1 month"] == {"task_runs": 2, "machine_seconds": 8 * 24 * 60 * 60}
+    assert summary["windows"]["1 week"] == {"task_runs": 1, "machine_seconds": 6 * 24 * 60 * 60, "coverage_pct": 0}
+    assert summary["windows"]["1 month"] == {"task_runs": 2, "machine_seconds": 8 * 24 * 60 * 60, "coverage_pct": 0}
     assert summary["data_start"] == old_end.isoformat()
     assert summary["data_through"] == recent_end.isoformat()
 
@@ -228,9 +228,11 @@ def test_activity_page_renders_recorded_metrics(client):
     response = client.get("/activity")
 
     assert response.status_code == 200
-    assert b"Recorded terminal task runs" in response.data
-    assert b'aria-label="1 week: 1 task runs resolved"' in response.data
-    assert b'aria-label="1 week: 1 day of recorded machine time"' in response.data
+    assert b"Tasks resolved" in response.data
+    assert b"Reporting windows" in response.data
+    assert b"30 days" in response.data
+    assert b"machine-years" in response.data
+    assert b"Task-run coverage" in response.data
 
 
 def test_failures_and_workers_api_postgres_integration(client):

@@ -39,7 +39,7 @@ def test_global_navigation_has_six_consistent_items():
     assert menu.count('<a href="') == 6
     for label, path in (
         ("Overview", "/"),
-        ("Activity", "/activity"),
+        ("Fleet Activity", "/activity"),
         ("Patterns", "/patterns"),
         ("Pool Discovery", "/pool-discovery"),
         ("API", "/api"),
@@ -54,9 +54,9 @@ def test_activity_renders_without_a_database():
     response = app.test_client().get("/activity")
 
     assert response.status_code == 200
-    assert b"Team Activity" in response.data
+    assert b"Fleet Activity" in response.data
     assert b"Worker pools monitored" in response.data
-    assert b"Activity metrics are unavailable" in response.data
+    assert b"Fleet activity metrics are unavailable" in response.data
 
 
 def test_machine_time_formatting_is_compact_and_human_readable():

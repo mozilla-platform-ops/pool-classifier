@@ -73,9 +73,11 @@ COVERAGE_STALE_AFTER = timedelta(hours=1)
 REPOSITORY_URL = "https://github.com/mozilla-platform-ops/pool-classifier"
 DEFAULT_OVERVIEW_CACHE_TTL_SECONDS = 30
 DEFAULT_OVERVIEW_UTILIZATION_CONCURRENCY = 4
+ACTIVITY_COVERAGE_MINIMUM_PCT = 75
 TEAM_ACTIVITY_WINDOWS = {
-    "1 week": timedelta(days=7),
-    "1 month": timedelta(days=30),
+    "24 hours": timedelta(days=1),
+    "7 days": timedelta(days=7),
+    "30 days": timedelta(days=30),
     "6 months": timedelta(days=180),
 }
 DEBUG_INSTANCE_COLORS = (
@@ -1177,6 +1179,7 @@ def create_app() -> Flask:
             for name, duration in TEAM_ACTIVITY_WINDOWS.items()
         }
         summary = None
+        summary_error = None
         dsn = os.environ.get("DATABASE_URL")
         if dsn:
             try:
@@ -1185,15 +1188,18 @@ def create_app() -> Flask:
                     lambda: team_activity_summary(dsn, pool_ids, windows),
                 )
                 for values in summary["windows"].values():
-                    values["machine_time"] = _format_machine_time(values["machine_seconds"])
+                    values["machine_time"] = f"{values['machine_seconds'] / (365 * 86400):,.1f} machine-years"
+                    values["coverage_sufficient"] = values["coverage_pct"] >= ACTIVITY_COVERAGE_MINIMUM_PCT
             except Exception as exc:
                 logger.warning("activity: aggregate query failed: %s", exc)
+                summary_error = "Fleet activity metrics are temporarily unavailable because their aggregate query failed."
         return render_template(
             "activity.html",
             generated=_timestamp_label("generated on", now),
             pool_count=len(pools),
             os_counts=sorted(os_counts.items()),
             summary=summary,
+            summary_error=summary_error,
         )
 
     @app.get("/pool-discovery")

@@ -1352,7 +1352,14 @@ def team_activity_summary(
     if psycopg is None:
         raise ImportError("psycopg (psycopg[binary]) is required")
     if not pool_ids:
-        return {"windows": {name: {"task_runs": 0, "machine_seconds": 0} for name in windows}, "data_start": None, "data_through": None}
+        return {
+            "windows": {
+                name: {"task_runs": 0, "machine_seconds": 0, "coverage_pct": 0}
+                for name in windows
+            },
+            "data_start": None,
+            "data_through": None,
+        }
 
     result = {"windows": {}, "data_start": None, "data_through": None}
     with postgres_connect(dsn, "web") as conn:
@@ -1377,9 +1384,20 @@ def team_activity_summary(
                     (end, start, list(pool_ids), start, end),
                 )
                 task_runs, machine_seconds = cur.fetchone()
+                cur.execute(
+                    "SELECT COALESCE(SUM(EXTRACT(EPOCH FROM ("
+                    " LEAST(end_at, %s::timestamptz) - GREATEST(start_at, %s::timestamptz)"
+                    "))) FILTER (WHERE end_at > %s::timestamptz AND start_at < %s::timestamptz), 0)"
+                    " FROM collection_coverage_intervals"
+                    " WHERE pool_id = ANY(%s) AND source = 'task_runs'",
+                    (end, start, start, end, list(pool_ids)),
+                )
+                (coverage_seconds,) = cur.fetchone()
+                window_seconds = (_parse_iso(end) - _parse_iso(start)).total_seconds()
                 result["windows"][name] = {
                     "task_runs": task_runs,
                     "machine_seconds": float(machine_seconds),
+                    "coverage_pct": min(100, float(coverage_seconds) / (window_seconds * len(pool_ids)) * 100),
                 }
     return result
 
