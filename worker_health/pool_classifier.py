@@ -1945,7 +1945,7 @@ class PoolClassifier:
         def fmt_expires(iso: Optional[str]) -> str:
             if not iso:
                 return "—"
-            return f'<span data-utc="{iso}" title="{iso[:19].replace("T", " ")} UTC">{_humanize_future(iso)}</span>'
+            return f'<span class="utc-tooltip" data-utc="{iso}" title="{iso[:19].replace("T", " ")} UTC">{_humanize_future(iso)}</span>'
 
         def tc_link(wid: str, label: str = None) -> str:
             wg = (workers.get(wid) or {}).get("worker_group")
@@ -2566,14 +2566,20 @@ class PoolClassifier:
             "    if (mode === 'utc') return iso.slice(0,19).replace('T',' ') + ' UTC';",
             "    return d.toLocaleString(undefined, {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});",
             "  }",
+            "  function updateUtilFreshness() { if (!utilDataThrough) return; const age=Math.max(0,Math.round((Date.now()-new Date(utilDataThrough))/60000));utilFreshness.textContent=`Data through ${formatTime(utilDataThrough, timezoneMode)} (${age<60?age+'m':Math.floor(age/60)+'h'} old)`; }",
+            "  function updateUtilizationTimelineTimes() { utilTimeline.querySelectorAll('.util-hour').forEach(cell=>{if(!cell.dataset.utcStart){const [range]=cell.title.split('\\n'),[start,end]=range.split(' – ');cell.dataset.utcStart=start;cell.dataset.utcEnd=end;}const details=cell.title.split('\\n').slice(1).join('\\n');cell.title=`${formatTime(cell.dataset.utcStart,timezoneMode)} – ${formatTime(cell.dataset.utcEnd,timezoneMode)}\\n${details}`;}); }",
+            "  new MutationObserver(updateUtilizationTimelineTimes).observe(utilTimeline,{childList:true});",
             "  const timezoneButtons = [...document.querySelectorAll('[data-timezone]')];",
             "  function updateTimes(mode) {",
             "    document.querySelectorAll('.utc-time').forEach(el => el.textContent = formatTime(el.dataset.utc, mode));",
+            "    document.querySelectorAll('.utc-tooltip').forEach(el => { el.title = formatTime(el.dataset.utc, mode); });",
             "  }",
             "  function setTimezone(mode) {",
             "    timezoneMode = mode;",
             "    timezoneButtons.forEach(button => { const active = button.dataset.timezone === mode; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); });",
             "    updateTimes(mode);",
+            "    updateUtilFreshness();",
+            "    updateUtilizationTimelineTimes();",
             "    if (startLagData) { renderLag(startLagData); bindLagHover(); }",
             "  }",
             "  timezoneButtons.forEach(button => button.addEventListener('click', () => setTimezone(button.dataset.timezone)));",

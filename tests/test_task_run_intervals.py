@@ -809,6 +809,11 @@ def test_utilization_timeline_explains_incomplete_coverage_with_break_diagnostic
     assert "windows: ${previous} → ${current}; overlap: ${overlap}" in html
     assert "No retained coverage-break event explains this gap." in html
     assert "Coverage: ${bucket.coverage_pct.toFixed(1)}%" in html
+    assert "function updateUtilFreshness()" in html
+    assert "function updateUtilizationTimelineTimes()" in html
+    assert "new MutationObserver(updateUtilizationTimelineTimes)" in html
+    assert "updateUtilFreshness();" in html
+    assert "updateUtilizationTimelineTimes();" in html
 
 
 def test_all_workers_summary_describes_tracked_workers_and_all_quarantines(tmp_path):
@@ -829,11 +834,19 @@ def test_quarantine_section_uses_a_plain_heading_with_supporting_count(tmp_path)
     classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
     classifier._init_db()
 
-    html = classifier._write_html({}, quarantine_details={"worker-1": {}, "worker-2": {}})
+    html = classifier._write_html(
+        {},
+        quarantine_details={
+            "worker-1": {"quarantine_until": "2026-08-19T12:00:00+00:00"},
+            "worker-2": {},
+        },
+    )
 
     assert '<h2 id="s-quarantined">Quarantined Workers</h2>' in html
     assert "2 workers currently quarantined." in html
     assert "&#x1F512; Quarantined Workers" not in html
+    assert 'class="utc-tooltip" data-utc="2026-08-19T12:00:00+00:00"' in html
+    assert "document.querySelectorAll('.utc-tooltip').forEach" in html
 
 
 def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
