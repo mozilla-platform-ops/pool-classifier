@@ -56,6 +56,7 @@ def test_task_source_chart_uses_accessible_colors_order_and_custom_tooltip(tmp_p
     assert "rows.map(b=>{const key=encodeURIComponent(`${d}:${b.source}`);tooltipDetails.set" in html
     assert 'id="source-tooltip" class="source-tooltip" role="tooltip"' in html
     assert ".source-tooltip-row.active { background:#2a3545" in html
+    assert "padding:.18rem .25rem .18rem .6rem" in html
     assert "grid-template-columns:minmax(0,1fr) auto" in html
     assert "font-variant-numeric:tabular-nums" in html
     assert "max-height:calc(100vh - 1rem); overflow-y:auto" in html
