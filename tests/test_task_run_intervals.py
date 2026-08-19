@@ -798,6 +798,9 @@ def test_utilization_timeline_explains_incomplete_coverage_with_break_diagnostic
     assert "coverageEventsForBucket" in html
     assert "Recent task windows did not overlap" in html
     assert "group.length >= 5" in html
+    assert "Possible general task collection interruption" in html
+    assert "collectionInterruption(bucketEvents)" in html
+    assert "util-hour-collection-interruption" in html
     assert "${group.length} workers" in html
     assert "windows: ${previous} → ${current}; overlap: ${overlap}" in html
     assert "No retained coverage-break event explains this gap." in html
