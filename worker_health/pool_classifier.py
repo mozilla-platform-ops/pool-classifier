@@ -1089,8 +1089,9 @@ class PoolClassifier:
             run_scheduled, reason_created = (queue_fields + [None, None])[:2]
             if category == "unclassified" and log_text:
                 self._save_unclassified(task_id, run_id, worker_id, log_text)
-            cat_colored = self._color("1;35" if category == "unclassified" else "1;31", str(category))
-            logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} → {cat_colored}")
+            if run_state != "completed":
+                cat_colored = self._color("1;35" if category == "unclassified" else "1;31", str(category))
+                logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} → {cat_colored}")
             self.storage.record_task_result(task_id, worker_id, run_id, run_state, category, reason_resolved,
                                             run_started, run_resolved, classified_at,
                                             run_scheduled=run_scheduled, reason_created=reason_created)

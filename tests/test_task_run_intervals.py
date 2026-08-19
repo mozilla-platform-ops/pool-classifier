@@ -96,6 +96,25 @@ def test_phase_memory_sampler_reports_local_peak_and_deltas():
     }
 
 
+def test_completed_task_is_logged_once_without_a_category(tmp_path, monkeypatch, caplog):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(classifier, "_record_job_source", lambda *_args: None)
+    task = (
+        "task-1", 0, "completed", "2026-08-18T10:00:00+00:00",
+        "2026-08-18T10:01:00+00:00", None,
+    )
+
+    with caplog.at_level(logging.INFO, logger="worker_health.pool_classifier"):
+        classifier._process_results("worker-1", [task])
+
+    assert caplog.text.count("completed task=task-1 run=0") == 1
+    assert "→ None" not in caplog.text
+
+
 def test_sqlite_persists_observed_runs_and_guards_terminal_transitions(tmp_path):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     storage.init_schema()
