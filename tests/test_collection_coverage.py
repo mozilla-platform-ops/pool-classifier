@@ -5,11 +5,30 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from worker_health.pool_classifier_web.storage import SqliteStorage
-from worker_health.pool_classifier import PoolClassifier
+from worker_health.pool_classifier import PoolClassifier, _is_devicepool_dormant_reactivation
 
 
 def _iso(base, minutes):
     return (base + timedelta(minutes=minutes)).isoformat()
+
+
+def test_devicepool_dormant_reactivation_requires_listed_mode_and_retention_gap():
+    start = datetime(2026, 7, 21, 10, 0, tzinfo=timezone.utc)
+    previous = {
+        "observed_at": start.isoformat(),
+        "recent_tasks": [[f"task-{index}", 0] for index in range(20)],
+    }
+    current = [("new-task", 0)]
+
+    assert _is_devicepool_dormant_reactivation(
+        "listed", previous, current, (start + timedelta(hours=24)).isoformat(),
+    )
+    assert not _is_devicepool_dormant_reactivation(
+        "recent_contact", previous, current, (start + timedelta(hours=24)).isoformat(),
+    )
+    assert not _is_devicepool_dormant_reactivation(
+        "listed", previous, current, (start + timedelta(hours=23, minutes=59)).isoformat(),
+    )
 
 
 def test_startup_accumulates_and_uninterrupted_polls_coalesce(tmp_path):

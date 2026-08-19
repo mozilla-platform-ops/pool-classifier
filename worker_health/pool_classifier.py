@@ -160,6 +160,8 @@ TASK_STATUS_THREAD_COUNT = 8
 UNRESOLVED_TASK_RUN_BATCH_SIZE = 1000
 CONSECUTIVE_FAILURE_ALERT = 2
 DEFAULT_WORKER_CONTACT_THRESHOLD_SECONDS = 60 * 60
+DEVICEPOOL_DORMANT_REACTIVATION_SECONDS = 24 * 60 * 60
+RECENT_TASK_WINDOW_LIMIT = 20
 
 
 logger = logging.getLogger(__name__)
@@ -202,6 +204,29 @@ def _recent_task_window_continuity(
     previous_runs = set(map(tuple, previous_window["recent_tasks"]))
     overlap_count = len(previous_runs.intersection(current_window))
     return (True if not previous_runs else bool(overlap_count)), overlap_count
+
+
+def _is_devicepool_dormant_reactivation(
+    availability_mode: str,
+    previous_window: Optional[dict],
+    current_window: List[Tuple[str, Optional[int]]],
+    observed_at: str,
+) -> bool:
+    """Recognize a wake-on-dispatch worker returning after retained tasks expire.
+
+    TODO: Investigate equivalent resets on non-devicepool queues and decide
+    whether this lifecycle rule should be generalized beyond ``listed`` pools.
+    """
+    if availability_mode != "listed" or previous_window is None:
+        return False
+    previous_at = _parse_datetime(previous_window.get("observed_at"))
+    current_at = _parse_datetime(observed_at)
+    return bool(
+        previous_at and current_at
+        and current_at - previous_at >= timedelta(seconds=DEVICEPOOL_DORMANT_REACTIVATION_SECONDS)
+        and len(previous_window["recent_tasks"]) >= RECENT_TASK_WINDOW_LIMIT
+        and len(current_window) == 1
+    )
 
 
 class _RequestRateLimiter:
@@ -751,6 +776,8 @@ class PoolClassifier:
         eventual result-application phase.
         """
         continuity_by_worker: Dict[str, Optional[bool]] = {}
+        reset_details: Dict[str, tuple[str, dict, list, int]] = {}
+        dormant_reactivation_by_worker: Dict[str, tuple[str, str, dict, list, int]] = {}
         references_by_key: Dict[Tuple[str, str, Optional[int]], dict] = {}
         window_observed = False
         observed_at = datetime.now(timezone.utc).isoformat()
@@ -769,11 +796,14 @@ class PoolClassifier:
             continuity_by_worker[worker_id], overlap_count = _recent_task_window_continuity(
                 previous_window, window,
             )
-            if continuity_by_worker[worker_id] is False:
-                self.storage.record_task_run_coverage_event(
-                    observed_at, "recent_tasks_no_overlap", worker_id, worker_group,
-                    previous_window, window, overlap_count,
+            if continuity_by_worker[worker_id] is False and _is_devicepool_dormant_reactivation(
+                self.availability_mode, previous_window, window, observed_at,
+            ):
+                dormant_reactivation_by_worker[worker_id] = (
+                    worker_id, worker_group, previous_window, window, overlap_count,
                 )
+            if continuity_by_worker[worker_id] is False:
+                reset_details[worker_id] = (worker_group, previous_window, window, overlap_count)
             self.storage.record_recent_task_window(worker_id, worker_group, window, observed_at)
             seen = self.seen_task_runs.setdefault(worker_id, set())
             for task_id, run_id in window:
@@ -786,6 +816,21 @@ class PoolClassifier:
                     "worker_group": worker_group,
                     "run_id": run_id,
                 }
+
+        # A cohort of reset windows is a collection interruption, not a set of
+        # independent devicepool wake-ups.  Keep its strict coverage break.
+        interrupted_workers = [worker_id for worker_id, continuity in continuity_by_worker.items() if continuity is False]
+        general_interruption = len(interrupted_workers) >= 5
+        for worker_id in interrupted_workers:
+            worker_group, previous_window, current_window, overlap_count = reset_details[worker_id]
+            if worker_id in dormant_reactivation_by_worker and not general_interruption:
+                continuity_by_worker[worker_id] = True
+                reason = "dormant_reactivation"
+            else:
+                reason = "recent_tasks_no_overlap"
+            self.storage.record_task_run_coverage_event(
+                observed_at, reason, worker_id, worker_group, previous_window, current_window, overlap_count,
+            )
 
         # Newly observed rows are now visible to the restart-safe backlog
         # query.  Merge that bounded backlog before marking attempts so an
@@ -2452,7 +2497,7 @@ class PoolClassifier:
             "    const quality = u.utilization_pct > 100 ? `<p class='warn'>Over 100% — possible data-quality issue</p>` : '';",
             "    return `<article class='util-card complete'><h3>${label}</h3><p><strong>${u.utilization_pct.toFixed(1)}%</strong> utilization</p><p class='util-detail'>Busy: ${u.busy_worker_hours.toFixed(2)} worker-hours<br>Available: ${u.available_worker_hours.toFixed(2)} worker-hours<br>Coverage: 100%</p>${quality}</article>`;",
             "  };",
-            "  const coverageReason = reason => ({get_worker_error:'Worker lookup failed', recent_tasks_no_overlap:'Recent task windows did not overlap', incomplete_poll:'Task poll was incomplete'})[reason] || reason;",
+            "  const coverageReason = reason => ({get_worker_error:'Worker lookup failed', recent_tasks_no_overlap:'Recent task windows did not overlap', dormant_reactivation:'Dormant devicepool worker reactivated', incomplete_poll:'Task poll was incomplete'})[reason] || reason;",
             "  function coverageEventsForBucket(events, bucket) { const bucketStart = new Date(bucket.start_at), bucketEnd = new Date(bucket.end_at); return events.filter(event => { const observed = new Date(event.observed_at), previous = event.previous_observed_at ? new Date(event.previous_observed_at) : observed; return previous < bucketEnd && observed > bucketStart; }); }",
             "  function collectionInterruption(events) { const groups = new Map(); events.filter(event => event.reason === 'recent_tasks_no_overlap').forEach(event => { const group = groups.get(event.observed_at) || []; group.push(event); groups.set(event.observed_at, group); }); return [...groups.values()].find(group => group.length >= 5) || null; }",
             "  function coverageBreakDetail(events, diagnosticsAvailable) { if (!diagnosticsAvailable) return 'Coverage-break diagnostics could not be loaded.'; if (!events.length) return 'No retained coverage-break event explains this gap.'; const groups = new Map(); events.forEach(event => { const key = `${event.observed_at}\\u0000${event.reason}`; groups.set(key, [...(groups.get(key) || []), event]); }); return [...groups.values()].flatMap(group => { if (group.length >= 5) { const event = group[0], previous = event.previous_window_count ?? '—', current = event.current_window_count ?? '—', overlap = event.overlap_count ?? '—'; return `Possible general task collection interruption: ${group.length} workers; windows: ${previous} → ${current}; overlap: ${overlap}`; } return group.map(event => { const workers = event.worker_id || 'unknown worker'; const previous = event.previous_window_count ?? '—', current = event.current_window_count ?? '—', overlap = event.overlap_count ?? '—'; return `${coverageReason(event.reason)}; worker: ${workers}; windows: ${previous} → ${current}; overlap: ${overlap}`; }); }).join('\\n'); }",
