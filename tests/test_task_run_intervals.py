@@ -865,6 +865,10 @@ def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
     ]
     positions = [html.index(heading) for heading in headings]
     assert positions == sorted(positions)
+    assert '.pool-highlights-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));' in html
+    assert '.pool-highlights-grid { grid-template-columns:1fr; }' in html
+    assert '<section aria-labelledby="s-device-turnaround">' in html
+    assert '<section aria-labelledby="s-attention">' in html
 
 
 def test_pool_detail_renders_scan_time_busy_device_turnaround(tmp_path, monkeypatch):

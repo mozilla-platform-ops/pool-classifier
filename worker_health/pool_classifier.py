@@ -1973,7 +1973,7 @@ class PoolClassifier:
             "  .page-nav a:hover { color:#a0c8ff; background:#2a2a2a; text-decoration:none; }",
             "  .page-nav a:visited { color: #58a6ff; }",
             "  .page-nav span.sep { color: #444; user-select: none; }",
-            "  @media (max-width:54rem) { .tz-toggle { margin-left:0; } }",
+            "  @media (max-width:54rem) { .tz-toggle { margin-left:0; } .pool-highlights-grid { grid-template-columns:1fr; } }",
             "  .site-header { display:flex; align-items:last baseline; gap:1.5rem; margin:0 0 1.5rem; }",
             "  .site-title { color:#ccc; font-size:1.1rem; letter-spacing:.02em; }",
             "  .global-menu { position:relative; margin-left:auto; }",
@@ -2036,8 +2036,8 @@ class PoolClassifier:
             "  .hm-copy:hover { color: #bbb; }",
             "  .hm-copy.copied { color: #4c4; }",
             "  .hm-copy svg { width: .7rem; height: .7rem; }",
-            "  .summary-grid { display: grid; grid-template-columns: max-content 1fr; gap: 0 3rem; }",
-            "  .summary-grid > div { min-width: 0; }",
+            "  .pool-highlights-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1.5rem 2rem; margin:2rem 0 0; align-items:start; }",
+            "  .pool-highlights-grid > section { min-width:0; } .pool-highlights-grid h2 { margin-top:0; }",
             "  .offenders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .25rem 2rem; }",
             "  .availability-note { max-width:80rem; margin:.75rem 0 0; color:#777; font-size:.85em; line-height:1.45; }",
             "  .footnote-ref, .footnote-ref:visited, .footnote-marker { color:#f90; } .footnote-ref { font-size:.75em; margin-left:.1em; vertical-align:super; }",
@@ -2169,16 +2169,16 @@ class PoolClassifier:
                 if self.availability_mode == "listed"
                 else []
             ),
+            '<div class="pool-highlights-grid">',
+            '<section aria-labelledby="s-device-turnaround">',
             '<h2 id="s-device-turnaround">Device Turnaround</h2>',
             '<p class="gen">Observed time from one task resolving to the next already-scheduled task starting on the same device. It includes all between-task overhead—cleanup, reset, maintenance, readiness, and dispatch—but excludes ordinary idle periods without a next scheduled task.</p>',
             f'<div class="util-grid">{turnaround_card}</div>',
+            '</section>',
         ]
 
         if alerting:
-            parts.append('<div class="summary-grid">')
-
-        if alerting:
-            parts += ["<div>", '<h2 id="s-attention">Consecutive Failures</h2>', "<ul>"]
+            parts += ['<section aria-labelledby="s-attention">', '<h2 id="s-attention">Consecutive Failures</h2>', "<ul>"]
             for wid, w in sorted(alerting.items(), key=lambda x: -x[1].get("consecutive_failures", 0)):
                 sr_display = f'<span class="{sr_class(w)}">{sr_str(w)}</span>'
                 if quarantined and wid in quarantined:
@@ -2202,10 +2202,9 @@ class PoolClassifier:
                     f"({w.get('last_failure_category', '?')}) — SR: {sr_display} — "
                     f"<span{last_style}>last: {fmt_relative(last_iso)}</span>{q_badge}</li>",
                 )
-            parts += ["</ul>", "</div>"]
+            parts += ["</ul>", "</section>"]
 
-        if alerting:
-            parts.append("</div>")
+        parts.append("</div>")
 
         if quarantine_details:
             quarantine_count = len(quarantine_details)
