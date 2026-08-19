@@ -181,6 +181,14 @@ def test_capacity_scenarios_api_returns_model_and_coverage(monkeypatch, tmp_path
     assert {row["host_delta"] for row in response.json["scenarios"]} == {-2, 0, 1, 2}
 
 
+def test_storage_returns_busy_turnaround_summary(tmp_path):
+    summary = _storage(tmp_path).get_busy_turnaround(START.isoformat(), END.isoformat())
+
+    assert summary["sample_count"] == 1
+    assert summary["p50_seconds"] == 0
+    assert summary["p95_seconds"] == 0
+
+
 @pytest.mark.parametrize(
     ("query", "message"),
     [

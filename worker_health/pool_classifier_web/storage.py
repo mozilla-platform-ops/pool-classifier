@@ -872,6 +872,17 @@ class SqliteStorage:
         ]
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
 
+    def get_busy_turnaround(self, range_start: str, range_end: str) -> dict:
+        from worker_health.pool_classifier_web.capacity_scenarios import busy_turnaround_summary
+
+        runs = [dict(row) for row in self.db.execute(
+            "SELECT worker_id, run_scheduled AS scheduled, run_started AS started, run_resolved AS resolved FROM task_results"
+            " WHERE run_scheduled IS NOT NULL AND julianday(run_scheduled) >= julianday(?)"
+            " AND julianday(run_scheduled) < julianday(?)",
+            (range_start, range_end),
+        )]
+        return busy_turnaround_summary(runs, range_start, range_end)
+
     def get_capacity_scenarios(
         self, range_start: str, range_end: str, target_p95_seconds: int, host_delta_min: int, host_delta_max: int, turnaround_seconds: int,
     ) -> dict:
@@ -2198,6 +2209,22 @@ class PostgresStorage:
                 for row in cur.fetchall()
             ]
         return calculate_observed_start_lag(self.pool_id, range_start, range_end, slo_seconds, runs)
+
+    def get_busy_turnaround(self, range_start: str, range_end: str) -> dict:
+        from worker_health.pool_classifier_web.capacity_scenarios import busy_turnaround_summary
+
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT worker_id, run_scheduled AS scheduled, run_started AS started, run_resolved AS resolved FROM task_results"
+                " WHERE pool_id = %s AND run_scheduled IS NOT NULL AND run_scheduled >= %s::timestamptz"
+                " AND run_scheduled < %s::timestamptz",
+                (self.pool_id, range_start, range_end),
+            )
+            runs = [
+                {"worker_id": row["worker_id"], **{key: _to_iso(row[key]) if row[key] is not None else None for key in ("scheduled", "started", "resolved")}}
+                for row in cur.fetchall()
+            ]
+        return busy_turnaround_summary(runs, range_start, range_end)
 
     def get_capacity_scenarios(
         self, range_start: str, range_end: str, target_p95_seconds: int, host_delta_min: int, host_delta_max: int, turnaround_seconds: int,

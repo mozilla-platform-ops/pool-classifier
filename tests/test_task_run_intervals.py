@@ -855,6 +855,7 @@ def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
         'id="s-job-sources"',
         'id="s-start-lag"',
         'id="s-utilization"',
+        'id="s-device-turnaround"',
         'id="s-attention"',
         'id="s-quarantined"',
         'id="s-categories"',
@@ -864,6 +865,32 @@ def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
     ]
     positions = [html.index(heading) for heading in headings]
     assert positions == sorted(positions)
+
+
+def test_pool_detail_renders_scan_time_busy_device_turnaround(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+    monkeypatch.setattr(
+        storage,
+        "get_busy_turnaround",
+        lambda _start, _end: {
+            "sample_count": 45,
+            "p50_seconds": 130,
+            "p95_seconds": 340,
+            "available": True,
+            "minimum_samples": 30,
+        },
+    )
+
+    html = classifier.render_html()
+
+    assert 'href="#s-device-turnaround">Device Turnaround</a>' in html
+    assert '<h2 id="s-device-turnaround">Device Turnaround</h2>' in html
+    assert "2m 10s median" in html
+    assert "p95: 5m 40s" in html
+    assert "Observed handoffs: 45" in html
+    assert "all between-task overhead" in html
 
 
 def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatch):
