@@ -57,6 +57,13 @@ target-version = "py314"
 # Additional Ruff rule families can be enabled incrementally.
 select = ["F"]
 
+[tool.coverage.run]
+source = ["worker_health"]
+relative_files = true
+
+[tool.coverage.report]
+skip_empty = true
+
 [dependency-groups]
 dev = [
     "ipdb>=0.13.13",

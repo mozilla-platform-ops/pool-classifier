@@ -23,3 +23,8 @@ __pycache__/
 .backfill-start-lag-state/
 pool_classifier_results/
 debugging_results/
+
+# Local coverage outputs.
+.coverage
+coverage.xml
+htmlcov/

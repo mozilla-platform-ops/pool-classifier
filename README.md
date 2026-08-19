@@ -1,5 +1,10 @@
 # Pool Classifier
 
+[![CI](https://github.com/mozilla-platform-ops/pool-classifier/actions/workflows/ci.yml/badge.svg)](https://github.com/mozilla-platform-ops/pool-classifier/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/mozilla-platform-ops/pool-classifier/graph/badge.svg)](https://codecov.io/gh/mozilla-platform-ops/pool-classifier)
+[![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
+[![Code style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+
 Pool Classifier is a Cloud Run service and Flask dashboard for monitoring
 Taskcluster worker pools. It periodically classifies recent task results,
 matches task logs against failure patterns, and surfaces pool health, alerting
@@ -61,6 +66,15 @@ PC_PORT=8081 POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS=1 ./pc_start.sh
 ### Development
 
 - [Local setup, configuration, tests, and local tools](docs/development/local-setup.md)
+
+Run the PostgreSQL-backed suite with a terminal coverage report locally:
+
+```sh
+scripts/run_local_postgres_tests.sh --cov=worker_health --cov-report=term-missing
+```
+
+CI enforces 65% overall coverage, publishes `coverage.xml` as a workflow
+artifact, and reports coverage to Codecov.
 
 ### Operations
 
