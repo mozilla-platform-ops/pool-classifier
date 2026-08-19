@@ -716,6 +716,10 @@ def test_start_lag_dashboard_links_trend_and_heatmap_hover(tmp_path):
     assert "formatLagRenderedTimes" in html
     assert "formatLagTime(b.start_at)" in html
     assert "if (startLagData) { renderLag(startLagData); bindLagHover(); }" in html
+    assert "const TIMEZONE_STORAGE_KEY = 'pool-classifier:detail:timezone';" in html
+    assert "localStorage.setItem(TIMEZONE_STORAGE_KEY,mode)" in html
+    assert "localStorage.getItem(TIMEZONE_STORAGE_KEY)" in html
+    assert "setTimezone(initialTimezone);" in html
     assert ".lag-hm-cell.lag-linked-hover" in html
     assert "box-shadow:inset 0 0 0 2px #fff" in html
     assert '<h2 id="s-start-lag">Start Lag</h2>' in html
