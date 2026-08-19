@@ -158,11 +158,17 @@ class TmuxLauncher:
 def main() -> None:
     launcher = TmuxLauncher(
         session_name="pool-classifier",
-        num_panes=3,
+        num_panes=4,
         root=Path(__file__).resolve().parent.parent,
         default_shell="zsh",
         panes=[
             PaneSpec(name="pool-classifier", commands=["./pc_start.sh --debug"]),
+            PaneSpec(
+                name="pool-classifier-8081",
+                commands=[
+                    "PC_PORT=8081 POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS=1 ./pc_start.sh"
+                ],
+            ),
             PaneSpec(name="fetch-data", commands=["watchp -n 15 ./pc_fetch_data.sh"]),
             PaneSpec(name="shell"),
         ],
