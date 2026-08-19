@@ -255,11 +255,12 @@ def test_classify_cycle_deduplicates_status_io_and_serializes_storage(tmp_path, 
         status_threads.append(threading.get_ident())
         assert task_id == "shared"
         return {"status": {"runs": [
-            {"runId": 0, "workerId": "worker-a", "state": "completed"},
+            {"runId": 0, "workerId": "worker-a", "state": "failed"},
             {"runId": 1, "workerId": "worker-b", "state": "completed"},
         ]}}
 
     monkeypatch.setattr(classifier, "_get_task_status", status)
+    monkeypatch.setattr(classifier, "_fetch_log_tail", lambda *_args: ("", "empty"))
     monkeypatch.setattr(classifier, "_update_reports", lambda: None)
     summary = classifier.classify_cycle(workers=[
         {"workerId": "worker-a", "workerGroup": "group-a"},
@@ -267,6 +268,7 @@ def test_classify_cycle_deduplicates_status_io_and_serializes_storage(tmp_path, 
     ])
 
     assert summary["new_terminal"] == 2
+    assert summary["category_counts"] == {"unclassified": 1}
     for phase in ("worker_poll", "task_preparation", "task_status", "terminal_task_processing"):
         metrics = summary["memory_phases"][phase]
         assert set(metrics) >= {

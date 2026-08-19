@@ -1775,14 +1775,39 @@ def create_app() -> Flask:
                 results.append({"pool": label, "status": "error", "error": str(e)})
         ok = sum(1 for r in results if r["status"] == "ok")
         counts = Counter(r["status"] for r in results)
-        body = {"pools": len(results), "ok": ok, "status_counts": dict(counts), "results": results}
-        log_msg = "classify-all summary: pools=%d ok=%d busy=%d error=%d not_found=%d"
+        new_terminal = sum(
+            summary["new_terminal"]
+            for result in results
+            if result["status"] == "ok"
+            for summary in [result["summary"]]
+            if isinstance(summary.get("new_terminal"), int) and not isinstance(summary["new_terminal"], bool)
+        )
+        unclassified = sum(
+            summary["category_counts"].get("unclassified", 0)
+            for result in results
+            if result["status"] == "ok"
+            for summary in [result["summary"]]
+            if isinstance(summary.get("category_counts"), dict)
+            and isinstance(summary["category_counts"].get("unclassified", 0), int)
+            and not isinstance(summary["category_counts"].get("unclassified", 0), bool)
+        )
+        body = {
+            "pools": len(results),
+            "ok": ok,
+            "status_counts": dict(counts),
+            "new_terminal": new_terminal,
+            "unclassified": unclassified,
+            "results": results,
+        }
+        log_msg = "classify-all summary: pools=%d ok=%d busy=%d error=%d not_found=%d new_terminal=%d unclassified=%d"
         log_args = (
             len(results),
             counts["ok"],
             counts["busy"],
             counts["error"],
             counts["not_found"],
+            new_terminal,
+            unclassified,
         )
         if counts["error"] or counts["not_found"]:
             logger.warning(log_msg, *log_args)

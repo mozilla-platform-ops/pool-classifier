@@ -965,7 +965,7 @@ def test_classify_all_logs_summary_counts(monkeypatch, caplog):
 
     class OkClassifier:
         def classify_cycle(self):
-            return {"scanned": 1}
+            return {"scanned": 1, "new_terminal": 3, "category_counts": {"unclassified": 2}}
 
     def fake_get_classifier(provisioner, worker_type, role="web"):
         if worker_type == "ok":
@@ -985,7 +985,9 @@ def test_classify_all_logs_summary_counts(monkeypatch, caplog):
 
     assert response.status_code == 200
     assert response.json["status_counts"] == {"busy": 1, "ok": 1}
-    assert "classify-all summary: pools=2 ok=1 busy=1 error=0 not_found=0" in caplog.text
+    assert response.json["new_terminal"] == 3
+    assert response.json["unclassified"] == 2
+    assert "classify-all summary: pools=2 ok=1 busy=1 error=0 not_found=0 new_terminal=3 unclassified=2" in caplog.text
 
 
 def test_classify_all_warns_on_partial_failure(monkeypatch, caplog):
@@ -994,7 +996,7 @@ def test_classify_all_warns_on_partial_failure(monkeypatch, caplog):
 
     class OkClassifier:
         def classify_cycle(self):
-            return {"scanned": 1}
+            return {"scanned": 1, "new_terminal": 4, "category_counts": {"unclassified": 1}}
 
     class ErrorClassifier:
         def classify_cycle(self):
@@ -1016,7 +1018,9 @@ def test_classify_all_warns_on_partial_failure(monkeypatch, caplog):
 
     assert response.status_code == 200
     assert response.json["status_counts"] == {"error": 1, "ok": 1}
-    assert "classify-all summary: pools=2 ok=1 busy=0 error=1 not_found=0" in caplog.text
+    assert response.json["new_terminal"] == 4
+    assert response.json["unclassified"] == 1
+    assert "classify-all summary: pools=2 ok=1 busy=0 error=1 not_found=0 new_terminal=4 unclassified=1" in caplog.text
 
 
 def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):

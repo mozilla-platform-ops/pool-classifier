@@ -1080,7 +1080,10 @@ class PoolClassifier:
         self.storage.commit()
         return transition_count
 
-    def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], bar=None, worker_group: str = None):
+    def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], bar=None, worker_group: str = None) -> collections.Counter:
+        """Persist terminal tasks and return counts grouped by failure category."""
+        category_counts: collections.Counter = collections.Counter()
+
         def persist(task, category, log_text, classified_at):
             task_id, run_id, run_state, run_started, run_resolved, reason_resolved, *queue_fields = task
             run_scheduled, reason_created = (queue_fields + [None, None])[:2]
@@ -1096,6 +1099,7 @@ class PoolClassifier:
                 self.storage.increment_success(worker_id, run_started)
             else:
                 self.storage.increment_failure(worker_id, run_started, category)
+                category_counts[category] += 1
             self.storage.commit()
 
         for task in terminal_tasks:
@@ -1116,6 +1120,8 @@ class PoolClassifier:
                 log_text, fetch_status = self._fetch_log_tail(task_id, run_id)
             category = "artifact_too_large" if fetch_status == "too_large" else self._classify(log_text, run_state, reason_resolved)
             persist(task, category, log_text, classified_at)
+
+        return category_counts
 
     # --- main loop ---
 
@@ -1258,19 +1264,20 @@ class PoolClassifier:
 
             with PhaseMemorySampler() as terminal_memory:
                 terminal_started = time.monotonic()
+                category_counts: collections.Counter = collections.Counter()
                 if new_total > 0 and not self._interrupted:
                     with alive_bar(new_total, title="processing tasks", enrich_print=False) as bar:
                         for worker_id, worker_group, terminal_tasks in poll_results:
                             if self._interrupted:
                                 break
                             if terminal_tasks:
-                                self._process_results(worker_id, terminal_tasks, bar, worker_group)
+                                category_counts.update(self._process_results(worker_id, terminal_tasks, bar, worker_group))
                 else:
                     for worker_id, worker_group, terminal_tasks in poll_results:
                         if self._interrupted:
                             break
                         if terminal_tasks:
-                            self._process_results(worker_id, terminal_tasks, worker_group=worker_group)
+                            category_counts.update(self._process_results(worker_id, terminal_tasks, worker_group=worker_group))
 
             phase_metrics["terminal_task_processing"] = {
                 "duration_seconds": time.monotonic() - terminal_started,
@@ -1295,6 +1302,7 @@ class PoolClassifier:
                 "scanned": scanned,
                 "total_workers": total_workers,
                 "new_terminal": new_total,
+                "category_counts": dict(category_counts),
                 "alerting": alerting_count,
                 "availability_transitions": availability_transitions,
                 "memory_phases": phase_metrics,
