@@ -1,6 +1,7 @@
 """Pool failure classifier: monitors all workers in a TC pool and classifies task failures from logs."""
 
 import collections
+from contextlib import nullcontext
 import gzip
 import json
 import logging
@@ -233,6 +234,7 @@ class PoolClassifier:
         worker_contact_threshold_seconds: Optional[int] = None,
         coverage_max_gap_seconds: Optional[int] = None,
         availability_mode: str = "recent_contact",
+        show_progress: bool = True,
     ):
         self.provisioner = provisioner
         self.worker_type = worker_type
@@ -263,6 +265,7 @@ class PoolClassifier:
         self.seen_task_runs: Dict[str, set] = {}  # in-memory cache, reloaded from storage each cycle
         self._interrupted = False
         self.use_color = use_color
+        self.show_progress = show_progress
         self._cached_workers: List[dict] = []
         self._last_worker_refresh: float = 0.0
         self._cached_quarantined: Optional[Dict] = None
@@ -1169,7 +1172,11 @@ class PoolClassifier:
                 thread_pool = ThreadPool(WORKER_THREAD_COUNT)
                 terminated = False
                 try:
-                    with alive_bar(total_workers, title="scanning workers", enrich_print=False) as bar:
+                    progress_bar = (
+                        alive_bar(total_workers, title="scanning workers", enrich_print=False)
+                        if self.show_progress else nullcontext(lambda: None)
+                    )
+                    with progress_bar as bar:
                         for worker_id, worker_group, recent, error_type in thread_pool.imap_unordered(
                             self._poll_one_worker,
                             workers,
@@ -1267,7 +1274,11 @@ class PoolClassifier:
                 terminal_started = time.monotonic()
                 category_counts: collections.Counter = collections.Counter()
                 if new_total > 0 and not self._interrupted:
-                    with alive_bar(new_total, title="processing tasks", enrich_print=False) as bar:
+                    progress_bar = (
+                        alive_bar(new_total, title="processing tasks", enrich_print=False)
+                        if self.show_progress else nullcontext(lambda: None)
+                    )
+                    with progress_bar as bar:
                         for worker_id, worker_group, terminal_tasks in poll_results:
                             if self._interrupted:
                                 break
@@ -1630,6 +1641,8 @@ class PoolClassifier:
         }
         windowed_sr = self._query_windowed_sr()
         heatmap = self._query_heatmap(since_12h)
+        turnaround_start = now - timedelta(days=7)
+        busy_turnaround = self.storage.get_busy_turnaround(turnaround_start.isoformat(), now.isoformat())
         return self._write_html(
             workers,
             quarantined,
@@ -1637,6 +1650,7 @@ class PoolClassifier:
             since_1d,
             heatmap,
             quarantine_details,
+            busy_turnaround=busy_turnaround,
             os_label=os_label,
             navigation_html=navigation_html,
             navigation_styles=navigation_styles,
@@ -1669,10 +1683,18 @@ class PoolClassifier:
         since_1d = (now - timedelta(days=1)).isoformat()
         since_12h = (now - timedelta(hours=12)).isoformat()
         heatmap = _timed("query_heatmap", lambda: self._query_heatmap(since_12h))
+        turnaround_start = now - timedelta(days=7)
+        busy_turnaround = _timed(
+            "query_busy_turnaround",
+            lambda: self.storage.get_busy_turnaround(turnaround_start.isoformat(), now.isoformat()),
+        )
         md = _timed("write_md", lambda: self._write_md(workers, quarantined, windowed_sr, since_1d))
         html = _timed(
             "write_html",
-            lambda: self._write_html(workers, quarantined, windowed_sr, since_1d, heatmap, quarantine_details),
+            lambda: self._write_html(
+                workers, quarantined, windowed_sr, since_1d, heatmap, quarantine_details,
+                busy_turnaround=busy_turnaround,
+            ),
         )
         if self.results_dir:
             self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -1800,6 +1822,7 @@ class PoolClassifier:
         since_1d: Optional[str] = None,
         heatmap: Dict[str, Dict[int, dict]] = None,
         quarantine_details: Dict[str, dict] = None,
+        busy_turnaround: Dict[str, object] = None,
         os_label: str = "",
         navigation_html: Optional[str] = None,
         navigation_styles: str = "",
@@ -1808,6 +1831,7 @@ class PoolClassifier:
         total_failures = sum(w.get("failures", 0) for w in workers.values())
         total_successes = sum(w.get("successes", 0) for w in workers.values())
         oldest_ts = self.storage.oldest_classified_at()
+        busy_turnaround = busy_turnaround or {"sample_count": 0, "p50_seconds": None, "p95_seconds": None}
         clipboard_svg = (
             '<svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512">'
             '<path fill="currentColor" d="M280 64l40 0c35.3 0 64 28.7 64 64l0 320c0 35.3-28.7 64-64 64L64 512'
@@ -2073,6 +2097,7 @@ class PoolClassifier:
             '  <a href="#s-job-sources">Task Source</a><span class="sep">|</span>',
             '  <a href="#s-start-lag">Start Lag</a><span class="sep">|</span>',
             '  <a href="#s-utilization">Utilization</a><span class="sep">|</span>',
+            '  <a href="#s-device-turnaround">Device Turnaround</a><span class="sep">|</span>',
             '  <a href="#s-attention">Consecutive Failures</a><span class="sep">|</span>',
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
             '  <a href="#s-categories">Failure Categories</a><span class="sep">|</span>',
@@ -2099,6 +2124,28 @@ class PoolClassifier:
             if self.availability_mode == "listed"
             else ""
         )
+        turnaround_samples = int(busy_turnaround["sample_count"])
+        turnaround_minimum = int(busy_turnaround.get("minimum_samples", 0))
+        if turnaround_samples:
+            turnaround_quality = "" if busy_turnaround.get("available") else " Preliminary"
+            turnaround_card = (
+                '<article class="util-card complete">'
+                f'<h3>Last 7 days{turnaround_quality}</h3>'
+                f'<p><strong>{human_delta(busy_turnaround["p50_seconds"])} median</strong></p>'
+                f'<p class="util-detail">p95: {human_delta(busy_turnaround["p95_seconds"])}<br>'
+                f'Observed handoffs: {turnaround_samples:,}'
+                + (
+                    f'<br>Preliminary until {turnaround_minimum:,} handoffs.'
+                    if not busy_turnaround.get("available") else ""
+                )
+                + '</p></article>'
+            )
+        else:
+            turnaround_card = (
+                '<article class="util-card incomplete"><h3>Last 7 days</h3>'
+                '<p>Not enough observed handoffs</p>'
+                '<p class="util-detail">No consecutive busy-device task pairs were recorded.</p></article>'
+            )
         parts += [
             '<h2 id="s-job-sources">Task Source</h2>',
             '<p class="gen">Terminal task runs grouped by the Taskcluster project tag or an explicit reviewed source mapping.</p>',
@@ -2122,6 +2169,9 @@ class PoolClassifier:
                 if self.availability_mode == "listed"
                 else []
             ),
+            '<h2 id="s-device-turnaround">Device Turnaround</h2>',
+            '<p class="gen">Observed time from one task resolving to the next already-scheduled task starting on the same device. It includes all between-task overhead—cleanup, reset, maintenance, readiness, and dispatch—but excludes ordinary idle periods without a next scheduled task.</p>',
+            f'<div class="util-grid">{turnaround_card}</div>',
         ]
 
         if alerting:

@@ -443,6 +443,7 @@ def _get_classifier(provisioner: str, worker_type: str, role: str = "web") -> Po
             worker_type=worker_type,
             storage=storage,
             availability_mode=pool.availability_mode,
+            show_progress=False,
         )
         pc._init_db()
         _classifiers[key] = pc

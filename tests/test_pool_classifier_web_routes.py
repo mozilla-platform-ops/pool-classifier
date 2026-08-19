@@ -77,6 +77,28 @@ def _api_client(monkeypatch, storage, availability_mode="recent_contact"):
     return app.test_client()
 
 
+def test_web_classifier_disables_terminal_progress(monkeypatch):
+    pool = SimpleNamespace(provisioner="provisioner", worker_type="worker-type", availability_mode="recent_contact")
+    constructor_args = []
+
+    class Classifier:
+        def __init__(self, **kwargs):
+            constructor_args.append(kwargs)
+
+        def _init_db(self):
+            pass
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(app_module.registry, "get_pool", lambda *_args: pool)
+    monkeypatch.setattr(app_module, "PostgresStorage", lambda **_kwargs: object())
+    monkeypatch.setattr(app_module, "PoolClassifier", Classifier)
+    app_module._classifiers.clear()
+
+    assert app_module._get_classifier("provisioner", "worker-type") is not None
+    assert constructor_args[0]["show_progress"] is False
+    app_module._classifiers.clear()
+
+
 def test_favicon_serves_svg_icon():
     app = create_app()
     app.config["TESTING"] = True
