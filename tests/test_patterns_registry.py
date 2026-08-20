@@ -109,6 +109,22 @@ def test_taskcluster_command_abort_at_max_runtime_beats_test_outcome():
     assert pattern.severity == "high"
 
 
+def test_fetch_content_missing_artifact_is_a_high_severity_harness_failure():
+    category, pattern = classify_patterns(
+        all_patterns(),
+        "[fetches 2026-08-20T21:40:57.167+00:00] "
+        "FileNotFoundError: [Errno 2] No such file or directory: "
+        "'/home/cltbld/tasks/task_178726041684297/fetches/samply.tar.zst'",
+        "failed",
+        None,
+    )
+
+    assert category == "fetch-content-file-not-found"
+    assert pattern is not None
+    assert pattern.severity == "high"
+    assert pattern.tags == ["taskcluster", "fetch-content"]
+
+
 def test_test_outcomes_are_low_priority_but_max_runtime_remains_high():
     severity_by_name = {pattern.name: pattern.severity for pattern in all_patterns()}
 

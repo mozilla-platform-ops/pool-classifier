@@ -143,6 +143,12 @@ patterns:
     severity: high
     tags: [android]
 
+  - name: fetch-content-file-not-found
+    regex: "\\[fetches [^\\]]+\\] FileNotFoundError: \\[Errno 2\\] No such file or directory: '[^']+/fetches/[^']+'"
+    severity: high
+    tags: [taskcluster, fetch-content]
+    description: fetch-content attempted to access a fetched artifact that was no longer present.
+
   - name: macos_refresh_rate_mismatch
     regex: "ERROR: expected refresh rate = 60\\.00, instead got [0-9]+(?:\\.[0-9]+)?\\."
     severity: high
