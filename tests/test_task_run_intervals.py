@@ -759,10 +759,24 @@ def test_activity_heatmap_renders_unclassified_with_distinct_color(tmp_path):
     )
     assert 'class="hm-cell hm-sev-low"' in mixed_html
 
-    offenders_html = classifier._write_html({"worker-1": {"failures_by_category": {"unclassified": 1}}}, quarantined=set())
-    assert '<h2 id="s-offenders">Top Offenders</h2>' in offenders_html
-    assert "Workers with the most failures in the last day, grouped by category." in offenders_html
+    offenders_html = classifier._write_html(
+        {"worker-1": {"failures_by_category": {"unclassified": 1}}},
+        quarantined=set(),
+        recent_failures={
+            "24h": {"unclassified": {"total": 1, "offenders": [("worker-1", 1)]}},
+            "7d": {"unclassified": {"total": 3, "offenders": [("worker-1", 3)]}},
+        },
+    )
+    assert '<h2 id="recent-failures-heading">Recent Failures</h2>' in offenders_html
+    assert 'data-recent-failures-window="24h"' in offenders_html
+    assert 'data-recent-failures-window="7d"' in offenders_html
+    assert 'data-failure-count24h="1" data-failure-count7d="3"' in offenders_html
+    assert "1 in 24h &middot; 3 in 7d" in offenders_html
     assert 'href="/pools/provisioner/worker-type/unclassified">unclassified</a>' in offenders_html
+    assert "const RECENT_FAILURES_STORAGE_KEY = 'pool-classifier:detail:recent-failures-window';" in offenders_html
+    assert "localStorage.setItem(RECENT_FAILURES_STORAGE_KEY, window)" in offenders_html
+    assert "localStorage.getItem(RECENT_FAILURES_STORAGE_KEY)" in offenders_html
+    assert "setRecentFailuresWindow(initialRecentFailuresWindow);" in offenders_html
 
 
 def test_postgres_heatmap_does_not_mark_completed_rows_as_unclassified():
@@ -872,6 +886,7 @@ def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
         quarantined={"worker-1": "2026-08-08T12:00:00+00:00"},
         heatmap={"worker-1": {0: {"s": 1, "critical": 0, "high": 0, "low": 0}}},
         quarantine_details={"worker-1": {}},
+        recent_failures={"24h": {"test": {"total": 2, "offenders": [("worker-1", 2)]}}, "7d": {}},
     )
 
     headings = [
@@ -882,9 +897,8 @@ def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
         'id="s-device-turnaround"',
         'id="s-attention"',
         'id="s-quarantined"',
-        'id="s-categories"',
         'id="s-heatmap"',
-        'id="s-offenders"',
+        'id="s-recent-failures"',
         'id="s-all"',
     ]
     positions = [html.index(heading) for heading in headings]

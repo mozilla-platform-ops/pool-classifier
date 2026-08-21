@@ -1199,6 +1199,23 @@ class SqliteStorage:
                 offenders.append((row["worker_id"], row["cnt"]))
         return result
 
+    def recent_failure_summary(self, since: str, n: int = 5) -> Dict[str, dict]:
+        """Return bounded category totals and their most affected workers."""
+        result: Dict[str, dict] = {}
+        rows = self.db.execute(
+            "SELECT category, worker_id, COUNT(*) AS cnt FROM task_results"
+            " WHERE category IS NOT NULL AND run_state != 'completed' AND run_started >= ?"
+            " GROUP BY category, worker_id ORDER BY category, cnt DESC, worker_id ASC",
+            (since,),
+        )
+        for row in rows:
+            category = row["category"]
+            summary = result.setdefault(category, {"total": 0, "offenders": []})
+            summary["total"] += row["cnt"]
+            if len(summary["offenders"]) < n:
+                summary["offenders"].append((row["worker_id"], row["cnt"]))
+        return result
+
     def oldest_classified_at(self) -> Optional[str]:
         row = self.db.execute("SELECT MIN(classified_at) FROM task_results").fetchone()
         return row[0] if row and row[0] else None
@@ -2578,6 +2595,26 @@ class PostgresStorage:
             offenders = result.setdefault(category, [])
             if len(offenders) < n:
                 offenders.append((row["worker_id"], row["cnt"]))
+        return result
+
+    def recent_failure_summary(self, since: str, n: int = 5) -> Dict[str, dict]:
+        """Return bounded category totals and their most affected workers."""
+        result: Dict[str, dict] = {}
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT category, worker_id, COUNT(*) AS cnt FROM task_results"
+                " WHERE pool_id = %s AND category IS NOT NULL AND run_state != 'completed'"
+                "   AND run_started >= %s::timestamptz"
+                " GROUP BY category, worker_id ORDER BY category, cnt DESC, worker_id ASC",
+                (self.pool_id, since),
+            )
+            rows = cur.fetchall()
+        for row in rows:
+            category = row["category"]
+            summary = result.setdefault(category, {"total": 0, "offenders": []})
+            summary["total"] += row["cnt"]
+            if len(summary["offenders"]) < n:
+                summary["offenders"].append((row["worker_id"], row["cnt"]))
         return result
 
     def oldest_classified_at(self) -> Optional[str]:

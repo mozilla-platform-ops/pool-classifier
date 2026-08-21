@@ -1546,6 +1546,9 @@ class PoolClassifier:
     def _top_offenders_by_category(self, since: str, n: int = 5) -> Dict[str, List[Tuple[str, int]]]:
         return self.storage.top_offenders_by_category(since, n=n)
 
+    def _recent_failure_summary(self, since: str, n: int = 5) -> Dict[str, dict]:
+        return self.storage.recent_failure_summary(since, n=n)
+
     def _sr_pct(self, worker_state: dict) -> Optional[float]:
         s = worker_state.get("successes", 0)
         f = worker_state.get("failures", 0)
@@ -1677,6 +1680,7 @@ class PoolClassifier:
         """
         now = datetime.now(timezone.utc)
         since_1d = (now - timedelta(days=1)).isoformat()
+        since_7d = (now - timedelta(days=7)).isoformat()
         since_12h = (now - timedelta(hours=12)).isoformat()
         workers = self._query_workers()
         quarantine_details = self.storage.get_current_quarantine_details()
@@ -1686,6 +1690,10 @@ class PoolClassifier:
         }
         windowed_sr = self._query_windowed_sr()
         heatmap = self._query_heatmap(since_12h)
+        recent_failures = {
+            "24h": self._recent_failure_summary(since_1d),
+            "7d": self._recent_failure_summary(since_7d),
+        }
         turnaround_start = now - timedelta(days=7)
         busy_turnaround = self.storage.get_busy_turnaround(turnaround_start.isoformat(), now.isoformat())
         return self._write_html(
@@ -1695,6 +1703,7 @@ class PoolClassifier:
             since_1d,
             heatmap,
             quarantine_details,
+            recent_failures=recent_failures,
             busy_turnaround=busy_turnaround,
             os_label=os_label,
             navigation_html=navigation_html,
@@ -1726,8 +1735,13 @@ class PoolClassifier:
         windowed_sr = _timed("query_windowed_sr", self._query_windowed_sr)
         now = datetime.now(timezone.utc)
         since_1d = (now - timedelta(days=1)).isoformat()
+        since_7d = (now - timedelta(days=7)).isoformat()
         since_12h = (now - timedelta(hours=12)).isoformat()
         heatmap = _timed("query_heatmap", lambda: self._query_heatmap(since_12h))
+        recent_failures = _timed(
+            "query_recent_failures",
+            lambda: {"24h": self._recent_failure_summary(since_1d), "7d": self._recent_failure_summary(since_7d)},
+        )
         turnaround_start = now - timedelta(days=7)
         busy_turnaround = _timed(
             "query_busy_turnaround",
@@ -1738,6 +1752,7 @@ class PoolClassifier:
             "write_html",
             lambda: self._write_html(
                 workers, quarantined, windowed_sr, since_1d, heatmap, quarantine_details,
+                recent_failures=recent_failures,
                 busy_turnaround=busy_turnaround,
             ),
         )
@@ -1867,6 +1882,7 @@ class PoolClassifier:
         since_1d: Optional[str] = None,
         heatmap: Dict[str, Dict[int, dict]] = None,
         quarantine_details: Dict[str, dict] = None,
+        recent_failures: Optional[Dict[str, Dict[str, dict]]] = None,
         busy_turnaround: Dict[str, object] = None,
         os_label: str = "",
         navigation_html: Optional[str] = None,
@@ -1890,12 +1906,6 @@ class PoolClassifier:
             link = tc_link(wid, label)
             btn = f'<span class="hm-copy" data-wid="{wid}" title="Copy hostname">{clipboard_svg}</span>'
             return f'<span style="white-space:nowrap">{btn}{link}</span>'
-
-        category_totals: Dict[str, int] = {}
-        for w in workers.values():
-            for cat, count in w.get("failures_by_category", {}).items():
-                category_totals[cat] = category_totals.get(cat, 0) + count
-        top_offenders = self._top_offenders_by_category(since_1d) if category_totals else {}
 
         alerting = {
             wid: w for wid, w in workers.items() if w.get("consecutive_failures", 0) >= CONSECUTIVE_FAILURE_ALERT
@@ -2083,7 +2093,7 @@ class PoolClassifier:
             "  .hm-copy svg { width: .7rem; height: .7rem; }",
             "  .pool-highlights-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1.5rem 2rem; margin:2rem 0 0; align-items:start; }",
             "  .pool-highlights-grid > section { min-width:0; } .pool-highlights-grid h2 { margin-top:0; }",
-            "  .offenders-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .25rem 2rem; }",
+            "  .recent-failures-controls { display:flex; gap:.45rem; margin:0 0 .6rem; } .recent-failures-controls button { border:0; background:transparent; color:#777; cursor:pointer; font:inherit; padding:0; } .recent-failures-controls button:hover, .recent-failures-controls button.active { color:#f90; } .recent-failures-empty { color:#777; }",
             "  .availability-note { max-width:80rem; margin:.75rem 0 0; color:#777; font-size:.85em; line-height:1.45; }",
             "  .footnote-ref, .footnote-ref:visited, .footnote-marker { color:#f90; } .footnote-ref { font-size:.75em; margin-left:.1em; vertical-align:super; }",
             "  .util-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:.8rem; max-width:80rem; }",
@@ -2145,9 +2155,8 @@ class PoolClassifier:
             '  <a href="#s-device-turnaround">Device Turnaround</a><span class="sep">|</span>',
             '  <a href="#s-attention">Consecutive Failures</a><span class="sep">|</span>',
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
-            '  <a href="#s-categories">Failure Categories</a><span class="sep">|</span>',
             '  <a href="#s-heatmap">Worker Activity</a><span class="sep">|</span>',
-            '  <a href="#s-offenders">Top Offenders</a><span class="sep">|</span>',
+            '  <a href="#s-recent-failures">Recent Failures</a><span class="sep">|</span>',
             '  <a href="#s-all">All Workers</a>',
             "</nav>",
             '<div class="tz-toggle" aria-label="Display controls">',
@@ -2306,12 +2315,6 @@ class PoolClassifier:
                 )
             parts += ["  </tbody>", "</table>"]
 
-        if category_totals:
-            parts += ["<div>", '<h2 id="s-categories">Failure Categories</h2>', "<ul>"]
-            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                parts.append(f"  <li>{cat}: <strong>{count}</strong></li>")
-            parts += ["</ul>", "</div>"]
-
         if heatmap:
             hour_period = ["< 1h ago"] + [f"{i}–{i + 1}h ago" for i in range(1, 12)]
 
@@ -2387,32 +2390,47 @@ class PoolClassifier:
                 "</div>",
             ]
 
-        if category_totals:
+        if recent_failures is not None:
+            recent_24h = recent_failures.get("24h", {})
+            recent_7d = recent_failures.get("7d", {})
+            categories = set(recent_24h) | set(recent_7d)
             parts += [
-                "<h2 id=\"s-offenders\">Top Offenders</h2>",
-                '<p class="gen">Workers with the most failures in the last day, grouped by category.</p>',
-                '<div class="offenders-grid">',
+                '<section id="s-recent-failures" aria-labelledby="recent-failures-heading">',
+                '<h2 id="recent-failures-heading">Recent Failures</h2>',
+                '<p class="gen">Failure categories and the most affected workers in the selected reporting window.</p>',
+                '<div class="recent-failures-controls" aria-label="Recent failures reporting window">',
+                '<button type="button" class="active" data-recent-failures-window="24h" aria-pressed="true">[24h]</button>',
+                '<button type="button" data-recent-failures-window="7d" aria-pressed="false">[7d]</button>',
+                '</div>',
+                '<div id="recent-failures-list">',
             ]
-            for cat, count in sorted(category_totals.items(), key=lambda x: -x[1]):
-                offenders = top_offenders.get(cat, [])
-                offender_items = ""
-                for wid, n in offenders:
-                    q_badge = ""
-                    if quarantined and wid in quarantined:
-                        dur = self._quarantine_duration(quarantined[wid])
-                        dur_str = f" ({dur})" if dur and dur != "expired" else ""
-                        q_badge = f' <span class="quarantine">&#x1F512;{dur_str}</span>'
-                    offender_items += f"<li>{tc_link(wid)}{q_badge}: {n}</li>"
+            for cat in sorted(categories, key=lambda c: (-recent_24h.get(c, {}).get("total", 0), c)):
+                count_24h = recent_24h.get(cat, {}).get("total", 0)
+                count_7d = recent_7d.get(cat, {}).get("total", 0)
                 category_label = cat
                 if cat == "unclassified":
-                    category_label = (
-                        f'<a href="/pools/{self.provisioner}/{self.worker_type}/unclassified">{cat}</a>'
-                    )
+                    category_label = f'<a href="/pools/{self.provisioner}/{self.worker_type}/unclassified">{cat}</a>'
                 parts.append(
-                    f'<div><h3 class="cat-header">{category_label} <span class="cat-total">({count} total all-time)</span></h3>'
-                    f'<ul class="offenders">{offender_items}</ul></div>',
+                    f'<article class="recent-failure" data-failure-count24h="{count_24h}" '
+                    f'data-failure-count7d="{count_7d}">'
+                    f'<h3 class="cat-header">{category_label} <span class="cat-total">{count_24h} in 24h &middot; {count_7d} in 7d</span></h3>',
                 )
-            parts.append("</div>")
+                for window, summary in (("24h", recent_24h.get(cat, {})), ("7d", recent_7d.get(cat, {}))):
+                    offender_items = ""
+                    for wid, n in summary.get("offenders", []):
+                        q_badge = ""
+                        if quarantined and wid in quarantined:
+                            dur = self._quarantine_duration(quarantined[wid])
+                            dur_str = f" ({dur})" if dur and dur != "expired" else ""
+                            q_badge = f' <span class="quarantine">&#x1F512;{dur_str}</span>'
+                        offender_items += f"<li>{tc_link(wid)}{q_badge}: {n}</li>"
+                    parts.append(f'<ul class="offenders" data-recent-failure-offenders="{window}">{offender_items}</ul>')
+                parts.append("</article>")
+            parts += [
+                '</div>',
+                '<p id="recent-failures-empty" class="recent-failures-empty" hidden>No failures in the selected reporting window.</p>',
+                '</section>',
+            ]
 
         total_w = len(workers)
         quarantined_w = len(quarantined or {})
@@ -2550,6 +2568,23 @@ class PoolClassifier:
             "      });",
             "    });",
             "  });",
+            "  // Recent failure reporting window persists across pool detail pages.",
+            "  const RECENT_FAILURES_STORAGE_KEY = 'pool-classifier:detail:recent-failures-window';",
+            "  const recentFailureButtons = [...document.querySelectorAll('[data-recent-failures-window]')];",
+            "  const recentFailureList = document.getElementById('recent-failures-list');",
+            "  const recentFailureEmpty = document.getElementById('recent-failures-empty');",
+            "  function setRecentFailuresWindow(window) {",
+            "    recentFailureButtons.forEach(button => { const active = button.dataset.recentFailuresWindow === window; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); });",
+            "    if (!recentFailureList) return;",
+            "    const cards = [...recentFailureList.querySelectorAll('.recent-failure')];",
+            "    cards.sort((a, b) => Number(b.dataset[`failureCount${window}`]) - Number(a.dataset[`failureCount${window}`]) || a.textContent.localeCompare(b.textContent));",
+            "    let visible = 0;",
+            "    cards.forEach(card => { const active = Number(card.dataset[`failureCount${window}`]) > 0; card.hidden = !active; card.querySelectorAll('[data-recent-failure-offenders]').forEach(list => { list.hidden = list.dataset.recentFailureOffenders !== window; }); if (active) { recentFailureList.appendChild(card); visible += 1; } });",
+            "    recentFailureEmpty.hidden = visible !== 0;",
+            "  }",
+            "  recentFailureButtons.forEach(button => button.addEventListener('click', () => { const window = button.dataset.recentFailuresWindow; try { localStorage.setItem(RECENT_FAILURES_STORAGE_KEY, window); } catch (_) {} setRecentFailuresWindow(window); }));",
+            "  let initialRecentFailuresWindow = '24h'; try { const saved = localStorage.getItem(RECENT_FAILURES_STORAGE_KEY); if (saved === '24h' || saved === '7d') initialRecentFailuresWindow = saved; } catch (_) {}",
+            "  setRecentFailuresWindow(initialRecentFailuresWindow);",
             "  // Auto-refresh via localStorage so preference survives reloads.",
             "  const arButtons = [...document.querySelectorAll('[data-autorefresh]')];",
             "  let arTimer = null;",

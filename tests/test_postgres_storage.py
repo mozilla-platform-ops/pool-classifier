@@ -587,6 +587,17 @@ def test_top_offenders_by_category(sqlite, pg):
     assert pg.top_offenders_by_category(_now_iso(-24)) == expected
 
 
+def test_recent_failure_summary(sqlite, pg):
+    _seed(sqlite)
+    _seed(pg)
+
+    expected = {
+        "bad_device": {"total": 2, "offenders": [("w1", 1), ("w2", 1)]},
+    }
+    assert sqlite.recent_failure_summary(_now_iso(-24)) == expected
+    assert pg.recent_failure_summary(_now_iso(-24)) == expected
+
+
 # --- query_windowed_sr ---
 
 
