@@ -54,8 +54,9 @@ The command only fetches task data and prints a comparison; it does not update
 classification storage or patterns.
 
 To inspect current detail-page code without waiting for a classifier to replace
-a cached dashboard snapshot, start a separate local listener with snapshots
-disabled:
+a cached dashboard snapshot, start the port-8081 debug listener with snapshots
+disabled. `pc_start.sh` enables Flask debug mode automatically on port 8081;
+the default port 8080 remains the stable target for `pc_fetch_data.sh`:
 
 ```sh
 PC_PORT=8081 POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS=1 ./pc_start.sh

@@ -162,14 +162,16 @@ def main() -> None:
         root=Path(__file__).resolve().parent.parent,
         default_shell="zsh",
         panes=[
-            PaneSpec(name="pool-classifier", commands=["./pc_start.sh --debug"]),
+            # Keep classification on the stable default instance: pc_fetch_data.sh
+            # targets :8080 unless PC_BASE_URL is explicitly overridden.
+            PaneSpec(name="pool-classifier", commands=["./pc_start.sh"]),
             PaneSpec(
-                name="pool-classifier-8081",
+                name="pool-classifier-debug-8081",
                 commands=[
                     "PC_PORT=8081 POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS=1 ./pc_start.sh"
                 ],
             ),
-            PaneSpec(name="fetch-data", commands=["watchp -n 15 ./pc_fetch_data.sh"]),
+            PaneSpec(name="fetch-data", commands=["watchp -n 15m ./pc_fetch_data.sh"]),
             PaneSpec(name="shell"),
         ],
     )
