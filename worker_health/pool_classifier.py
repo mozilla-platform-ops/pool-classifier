@@ -2151,7 +2151,7 @@ class PoolClassifier:
             '  <a href="#s-start-lag">Start Lag</a><span class="sep">|</span>',
             '  <a href="#s-utilization">Utilization</a><span class="sep">|</span>',
             '  <a href="#s-device-turnaround">Device Turnaround</a><span class="sep">|</span>',
-            '  <a href="#s-attention">Consecutive Failures</a><span class="sep">|</span>',
+            '  <a href="#s-attention">Alerting Workers</a><span class="sep">|</span>',
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
             '  <a href="#s-heatmap">Worker Activity</a><span class="sep">|</span>',
             '  <a href="#s-recent-failures">Recent Failures</a><span class="sep">|</span>',
@@ -2230,7 +2230,12 @@ class PoolClassifier:
         ]
 
         if alerting:
-            parts += ['<section aria-labelledby="s-attention">', '<h2 id="s-attention">Consecutive Failures</h2>', "<ul>"]
+            parts += [
+                '<section aria-labelledby="s-attention">',
+                '<h2 id="s-attention">Alerting Workers</h2>',
+                f'<p class="gen">Workers with at least {CONSECUTIVE_FAILURE_ALERT} consecutive failures.</p>',
+                "<ul>",
+            ]
             for wid, w in sorted(alerting.items(), key=lambda x: -x[1].get("consecutive_failures", 0)):
                 sr_display = f'<span class="{sr_class(w)}">{sr_str(w)}</span>'
                 if quarantined and wid in quarantined:

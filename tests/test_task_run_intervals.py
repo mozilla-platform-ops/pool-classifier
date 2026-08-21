@@ -915,6 +915,9 @@ def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
     assert '.pool-highlights-grid { grid-template-columns:1fr; }' in html
     assert '<section aria-labelledby="s-device-turnaround">' in html
     assert '<section aria-labelledby="s-attention">' in html
+    assert '<a href="#s-attention">Alerting Workers</a>' in html
+    assert '<h2 id="s-attention">Alerting Workers</h2>' in html
+    assert "Workers with at least 2 consecutive failures." in html
 
 
 def test_pool_detail_renders_scan_time_busy_device_turnaround(tmp_path, monkeypatch):
