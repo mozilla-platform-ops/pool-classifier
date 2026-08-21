@@ -3,6 +3,7 @@
 import collections
 from contextlib import nullcontext
 import gzip
+from html import escape
 import json
 import logging
 import os
@@ -2065,10 +2066,7 @@ class PoolClassifier:
             "  li.bad { color: #f44; margin-bottom: .3rem; }",
             "  .quarantine { color: #f90; font-size: .85em; margin-left: .4em; }",
             "  .reason-trunc { display: inline-block; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; cursor: default; }",
-            "  h3.cat-header { color: #ccc; font-size: .95em; margin: 1rem 0 .2rem; }",
-            "  .cat-total { color: #666; font-weight: normal; }",
-            "  ul.offenders { margin:0 0 0 1.2rem; padding:0; list-style:none; font-size:.85em; color:#aaa; }",
-            "  ul.offenders li { padding: .1rem 0; }",
+            "  .recent-failures-table { width:100%; table-layout:auto; font-size:.85em; } .recent-failures-table .failure-category-col, .recent-failures-table .failure-count-col { width:1%; } .recent-failures-table th { cursor:default; padding-left:1.25rem; padding-right:1.25rem; } .recent-failures-table td { padding:.35rem 1.25rem; vertical-align:top; } .recent-failures-table .failure-category, .recent-failures-table .failure-counts { white-space:nowrap; } .recent-failures-table .failure-counts { color:#777; } .recent-failures-table .failure-count.active { color:#ccc; font-weight:bold; } .recent-failures-table .failure-workers { color:#aaa; overflow:hidden; } .recent-failures-table [data-recent-failure-workers]:not([hidden]) { display:block; overflow:hidden; white-space:nowrap; } .recent-failure-worker, .recent-failure-more { white-space:nowrap; } .recent-failures-table .unclassified-category { color:#c86ccd; font-weight:bold; } .recent-failures-table [title] { cursor:help; }",
             "  a { color: inherit; text-decoration: none; }",
             "  a:visited { color: inherit; }",
             "  a:hover { text-decoration: underline; }",
@@ -2402,32 +2400,43 @@ class PoolClassifier:
                 '<button type="button" class="active" data-recent-failures-window="24h" aria-pressed="true">[24h]</button>',
                 '<button type="button" data-recent-failures-window="7d" aria-pressed="false">[7d]</button>',
                 '</div>',
-                '<div id="recent-failures-list">',
+                '<table class="recent-failures-table not-sortable">',
+                '<colgroup><col class="failure-category-col"><col class="failure-count-col"><col></colgroup>',
+                '<thead><tr><th>Category</th><th>Failures</th><th>Top affected workers</th></tr></thead>',
+                '<tbody id="recent-failures-list">',
             ]
             for cat in sorted(categories, key=lambda c: (-recent_24h.get(c, {}).get("total", 0), c)):
                 count_24h = recent_24h.get(cat, {}).get("total", 0)
                 count_7d = recent_7d.get(cat, {}).get("total", 0)
                 category_label = cat
                 if cat == "unclassified":
-                    category_label = f'<a href="/pools/{self.provisioner}/{self.worker_type}/unclassified">{cat}</a>'
+                    category_label = f'<a class="unclassified-category" href="/pools/{self.provisioner}/{self.worker_type}/unclassified">{cat}</a>'
                 parts.append(
-                    f'<article class="recent-failure" data-failure-count24h="{count_24h}" '
+                    f'<tr class="recent-failure" data-category="{cat}" data-failure-count24h="{count_24h}" '
                     f'data-failure-count7d="{count_7d}">'
-                    f'<h3 class="cat-header">{category_label} <span class="cat-total">{count_24h} in 24h &middot; {count_7d} in 7d</span></h3>',
+                    f'<td class="failure-category">{category_label}</td>'
+                    f'<td class="failure-counts"><span class="failure-count" data-failure-count-window="24h">{count_24h} in 24h</span> &middot; '
+                    f'<span class="failure-count" data-failure-count-window="7d">{count_7d} in 7d</span></td><td class="failure-workers">',
                 )
                 for window, summary in (("24h", recent_24h.get(cat, {})), ("7d", recent_7d.get(cat, {}))):
-                    offender_items = ""
-                    for wid, n in summary.get("offenders", []):
+                    offenders = summary.get("offenders", [])
+                    parts.append(f'<span data-recent-failure-workers="{window}">')
+                    for index, (wid, n) in enumerate(offenders):
                         q_badge = ""
                         if quarantined and wid in quarantined:
                             dur = self._quarantine_duration(quarantined[wid])
                             dur_str = f" ({dur})" if dur and dur != "expired" else ""
                             q_badge = f' <span class="quarantine">&#x1F512;{dur_str}</span>'
-                        offender_items += f"<li>{tc_link(wid)}{q_badge}: {n}</li>"
-                    parts.append(f'<ul class="offenders" data-recent-failure-offenders="{window}">{offender_items}</ul>')
-                parts.append("</article>")
+                        separator = " &middot; " if index else ""
+                        worker_label = f"{wid}: {n}"
+                        parts.append(
+                            f'<span class="recent-failure-worker" data-worker-summary="{escape(worker_label, quote=True)}">'
+                            f'{separator}{tc_link(wid)}{q_badge}: {n}</span>',
+                        )
+                    parts.append('<span class="recent-failure-more" hidden></span></span>')
+                parts.append("</td></tr>")
             parts += [
-                '</div>',
+                '</tbody></table>',
                 '<p id="recent-failures-empty" class="recent-failures-empty" hidden>No failures in the selected reporting window.</p>',
                 '</section>',
             ]
@@ -2575,13 +2584,17 @@ class PoolClassifier:
             "  const recentFailureEmpty = document.getElementById('recent-failures-empty');",
             "  function setRecentFailuresWindow(window) {",
             "    recentFailureButtons.forEach(button => { const active = button.dataset.recentFailuresWindow === window; button.classList.toggle('active', active); button.setAttribute('aria-pressed', String(active)); });",
+            "    document.querySelectorAll('[data-failure-count-window]').forEach(count => count.classList.toggle('active', count.dataset.failureCountWindow === window));",
             "    if (!recentFailureList) return;",
             "    const cards = [...recentFailureList.querySelectorAll('.recent-failure')];",
             "    cards.sort((a, b) => Number(b.dataset[`failureCount${window}`]) - Number(a.dataset[`failureCount${window}`]) || a.textContent.localeCompare(b.textContent));",
             "    let visible = 0;",
-            "    cards.forEach(card => { const active = Number(card.dataset[`failureCount${window}`]) > 0; card.hidden = !active; card.querySelectorAll('[data-recent-failure-offenders]').forEach(list => { list.hidden = list.dataset.recentFailureOffenders !== window; }); if (active) { recentFailureList.appendChild(card); visible += 1; } });",
+            "    cards.forEach(card => { const active = Number(card.dataset[`failureCount${window}`]) > 0; card.hidden = !active; card.querySelectorAll('[data-recent-failure-workers]').forEach(list => { list.hidden = list.dataset.recentFailureWorkers !== window; }); if (active) { recentFailureList.appendChild(card); visible += 1; } });",
             "    recentFailureEmpty.hidden = visible !== 0;",
+            "    layoutRecentFailureWorkers();",
             "  }",
+            "  function layoutRecentFailureWorkers() { document.querySelectorAll('[data-recent-failure-workers]:not([hidden])').forEach(list => { const workers = [...list.querySelectorAll('.recent-failure-worker')], more = list.querySelector('.recent-failure-more'), hidden = []; workers.forEach(worker => { worker.hidden = false; }); more.hidden = true; more.textContent = ''; while (workers.length - hidden.length > 1 && list.scrollWidth > list.clientWidth) { const worker = workers[workers.length - hidden.length - 1]; worker.hidden = true; hidden.unshift(worker); } if (hidden.length) { more.hidden = false; const updateMore = () => { more.textContent = ` · +${hidden.length} more`; more.title = hidden.map(worker => worker.dataset.workerSummary).join(' · '); }; updateMore(); while (workers.length - hidden.length > 1 && list.scrollWidth > list.clientWidth) { const worker = workers[workers.length - hidden.length - 1]; worker.hidden = true; hidden.unshift(worker); updateMore(); } } }); }",
+            "  window.addEventListener('resize', layoutRecentFailureWorkers);",
             "  recentFailureButtons.forEach(button => button.addEventListener('click', () => { const window = button.dataset.recentFailuresWindow; try { localStorage.setItem(RECENT_FAILURES_STORAGE_KEY, window); } catch (_) {} setRecentFailuresWindow(window); }));",
             "  let initialRecentFailuresWindow = '24h'; try { const saved = localStorage.getItem(RECENT_FAILURES_STORAGE_KEY); if (saved === '24h' || saved === '7d') initialRecentFailuresWindow = saved; } catch (_) {}",
             "  setRecentFailuresWindow(initialRecentFailuresWindow);",

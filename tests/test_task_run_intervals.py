@@ -764,19 +764,27 @@ def test_activity_heatmap_renders_unclassified_with_distinct_color(tmp_path):
         quarantined=set(),
         recent_failures={
             "24h": {"unclassified": {"total": 1, "offenders": [("worker-1", 1)]}},
-            "7d": {"unclassified": {"total": 3, "offenders": [("worker-1", 3)]}},
+            "7d": {"unclassified": {"total": 6, "offenders": [("worker-1", 3), ("worker-2", 2), ("worker-3", 1)]}},
         },
     )
     assert '<h2 id="recent-failures-heading">Recent Failures</h2>' in offenders_html
+    assert '<table class="recent-failures-table not-sortable">' in offenders_html
+    assert '<colgroup><col class="failure-category-col"><col class="failure-count-col"><col></colgroup>' in offenders_html
     assert 'data-recent-failures-window="24h"' in offenders_html
     assert 'data-recent-failures-window="7d"' in offenders_html
-    assert 'data-failure-count24h="1" data-failure-count7d="3"' in offenders_html
-    assert "1 in 24h &middot; 3 in 7d" in offenders_html
-    assert 'href="/pools/provisioner/worker-type/unclassified">unclassified</a>' in offenders_html
+    assert 'data-failure-count24h="1" data-failure-count7d="6"' in offenders_html
+    assert 'data-failure-count-window="24h">1 in 24h' in offenders_html
+    assert 'data-failure-count-window="7d">6 in 7d' in offenders_html
+    assert 'data-worker-summary="worker-1: 3"' in offenders_html
+    assert 'data-worker-summary="worker-3: 1"' in offenders_html
+    assert "layoutRecentFailureWorkers" in offenders_html
+    assert 'class="unclassified-category" href="/pools/provisioner/worker-type/unclassified">unclassified</a>' in offenders_html
+    assert ".unclassified-category { color:#c86ccd; font-weight:bold; }" in offenders_html
     assert "const RECENT_FAILURES_STORAGE_KEY = 'pool-classifier:detail:recent-failures-window';" in offenders_html
     assert "localStorage.setItem(RECENT_FAILURES_STORAGE_KEY, window)" in offenders_html
     assert "localStorage.getItem(RECENT_FAILURES_STORAGE_KEY)" in offenders_html
     assert "setRecentFailuresWindow(initialRecentFailuresWindow);" in offenders_html
+    assert "data-failure-count-window" in offenders_html
 
 
 def test_postgres_heatmap_does_not_mark_completed_rows_as_unclassified():
