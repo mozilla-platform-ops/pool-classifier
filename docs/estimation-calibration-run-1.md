@@ -91,7 +91,7 @@ hypothesis, not a guarantee.
 | Pool | Window | Observed p95 | Within 1 hour? | Coverage | Notes |
 | --- | --- | ---: | --- | --- | --- |
 | 1804 | <!-- fill --> | | | | |
-| 2404 | <!-- fill --> | | | | |
+| 2404 | `2026-08-18T16:48:29Z` to `2026-08-19T16:48:29Z` | 55m 54s | pass | task runs 100.0%; availability 100.0% | 3,235 observed starts; 96.6% (3,125) started within one hour. |
 
 ### Seven-day calibration comparison
 
