@@ -2133,7 +2133,7 @@ class PoolClassifier:
             worker_label = f"{worker_os} workers" if worker_os else "workers"
             pool_summary.append(
                 '<section class="pool-summary" aria-labelledby="summary-heading">'
-                '<h2 id="summary-heading">Summary</h2>'
+                '<h2 id="summary-heading"><a href="#summary-heading">Summary</a></h2>'
                 '<dl class="pool-summary-metrics">'
                 f'<div><dt>Period:</dt> <dd>{window_str}</dd></div>'
                 f'<div><dt>Completed:</dt> <dd>{total_tasks:,}</dd></div>'
@@ -2199,17 +2199,17 @@ class PoolClassifier:
                 '<p class="util-detail">No consecutive busy-device task pairs were recorded.</p></article>'
             )
         parts += [
-            '<h2 id="s-job-sources">Task Source</h2>',
+            '<h2 id="s-job-sources"><a href="#s-job-sources">Task Source</a></h2>',
             '<p class="gen">Terminal task runs grouped by the Taskcluster project tag or an explicit reviewed source mapping.</p>',
             '<p class="source-summary gen"><span id="source-freshness">Loading job sources…</span><span aria-hidden="true">·</span><span class="source-controls" role="group" aria-label="Task Source range"><button type="button" class="active" data-source-days="7">[7d]</button><button type="button" data-source-days="14">[14d]</button></span></p><div id="source-chart" class="source-chart" role="group" aria-label="Daily job volume by source"></div><div id="source-tooltip" class="source-tooltip" role="tooltip" aria-hidden="true"></div>',
-            '<h2 id="s-start-lag">Start Lag</h2>',
+            '<h2 id="s-start-lag"><a href="#s-start-lag">Start Lag</a></h2>',
             '<p class="gen">Observed scheduled-to-start time for terminal task runs. This excludes jobs that never started, so it is not a queue total, drop rate, or pool-health verdict.</p>',
             '<p id="lag-freshness" class="gen">Loading observed start lag…</p>',
             '<div class="lag-legend"><span><span class="lag-line" style="border-color:#5dd"></span>p50</span><span><span class="lag-line" style="border-color:#f90"></span>p95</span><span><span class="lag-line" style="border-color:#f44;border-top-style:dashed"></span>SLO</span><span>bars: sample count</span></div>',
             '<div id="lag-chart-wrap" class="lag-chart-wrap"><svg id="lag-chart" class="lag-chart" viewBox="0 0 960 240" role="img" aria-label="Hourly observed start lag p50 and p95 trend"></svg></div>',
             '<p class="gen">UTC weekday/hour p95. Striped cells have fewer than five observations.</p>',
             '<div id="lag-heatmap-wrap" class="lag-heatmap-wrap"><div id="lag-heatmap" class="lag-heatmap"></div></div>',
-            '<h2 id="s-utilization">Utilization</h2>',
+            '<h2 id="s-utilization"><a href="#s-utilization">Utilization</a></h2>',
             f'<p class="gen">Duration-weighted task time versus available worker capacity{capacity_note_ref}. <a href="{guide_url}">API guide</a></p>',
             '<p id="util-freshness" class="gen">Loading utilization…</p>',
             '<div id="util-cards" class="util-grid"></div>',
@@ -2223,7 +2223,7 @@ class PoolClassifier:
             ),
             '<div class="pool-highlights-grid">',
             '<section aria-labelledby="s-device-turnaround">',
-            '<h2 id="s-device-turnaround">Device Turnaround</h2>',
+            '<h2 id="s-device-turnaround"><a href="#s-device-turnaround">Device Turnaround</a></h2>',
             '<p class="gen">Observed time from one task resolving to the next already-scheduled task starting on the same device. It includes all between-task overhead—cleanup, reset, maintenance, readiness, and dispatch—but excludes ordinary idle periods without a next scheduled task.</p>',
             f'<div class="util-grid">{turnaround_card}</div>',
             '</section>',
@@ -2232,7 +2232,7 @@ class PoolClassifier:
         if alerting:
             parts += [
                 '<section aria-labelledby="s-attention">',
-                '<h2 id="s-attention">Alerting Workers</h2>',
+                '<h2 id="s-attention"><a href="#s-attention">Alerting Workers</a></h2>',
                 f'<p class="gen">Workers with at least {CONSECUTIVE_FAILURE_ALERT} consecutive failures.</p>',
                 "<ul>",
             ]
@@ -2272,7 +2272,7 @@ class PoolClassifier:
             )
             snapshot_note = f" Snapshot: {fmt(snapshot_at)}." if snapshot_at else ""
             parts += [
-                '<h2 id="s-quarantined">Quarantined Workers</h2>',
+                '<h2 id="s-quarantined"><a href="#s-quarantined">Quarantined Workers</a></h2>',
                 f'<p class="gen">{quarantine_count} {quarantine_label} currently quarantined.{snapshot_note}</p>',
                 "<table>",
                 "  <thead><tr>",
@@ -2377,7 +2377,7 @@ class PoolClassifier:
                 )
 
             parts += [
-                '<h2 id="s-heatmap">Worker Activity</h2>',
+                '<h2 id="s-heatmap"><a href="#s-heatmap">Worker Activity</a></h2>',
                 '<p class="gen">Only hosts with activity in the last 12 hours are shown. Workers are ordered by recent failure severity (critical counts twice), then hostname.</p>',
                 '<div class="hm-legend">',
                 '  <span><span class="hm-swatch" style="background:#1a4a20"></span>success</span>',
@@ -2398,8 +2398,8 @@ class PoolClassifier:
             recent_7d = recent_failures.get("7d", {})
             categories = set(recent_24h) | set(recent_7d)
             parts += [
-                '<section id="s-recent-failures" aria-labelledby="recent-failures-heading">',
-                '<h2 id="recent-failures-heading">Recent Failures</h2>',
+                '<section aria-labelledby="s-recent-failures">',
+                '<h2 id="s-recent-failures"><a href="#s-recent-failures">Recent Failures</a></h2>',
                 '<p class="gen">Failure categories and the most affected workers in the selected reporting window.</p>',
                 '<div class="recent-failures-controls" aria-label="Recent failures reporting window">',
                 '<button type="button" class="active" data-recent-failures-window="24h" aria-pressed="true">[24h]</button>',
@@ -2449,7 +2449,7 @@ class PoolClassifier:
         total_w = len(workers)
         quarantined_w = len(quarantined or {})
         parts += [
-            '<h2 id="s-all">All Workers</h2>',
+            '<h2 id="s-all"><a href="#s-all">All Workers</a></h2>',
             f'<p class="gen">{total_w} tracked workers &middot; {quarantined_w} currently quarantined. '
             'Tracked workers have recorded task history; this is not a liveness or readiness check.</p>',
             "<table>",

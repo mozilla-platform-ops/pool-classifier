@@ -722,7 +722,7 @@ def test_start_lag_dashboard_links_trend_and_heatmap_hover(tmp_path):
     assert "setTimezone(initialTimezone);" in html
     assert ".lag-hm-cell.lag-linked-hover" in html
     assert "box-shadow:inset 0 0 0 2px #fff" in html
-    assert '<h2 id="s-start-lag">Start Lag</h2>' in html
+    assert '<h2 id="s-start-lag"><a href="#s-start-lag">Start Lag</a></h2>' in html
     assert "Observed scheduled-to-start time for terminal task runs." in html
     assert '<a href="#s-start-lag">Start Lag</a>' in html
     assert '<a href="#s-heatmap">Worker Activity</a>' in html
@@ -767,7 +767,7 @@ def test_activity_heatmap_renders_unclassified_with_distinct_color(tmp_path):
             "7d": {"unclassified": {"total": 6, "offenders": [("worker-1", 3), ("worker-2", 2), ("worker-3", 1)]}},
         },
     )
-    assert '<h2 id="recent-failures-heading">Recent Failures</h2>' in offenders_html
+    assert '<h2 id="s-recent-failures"><a href="#s-recent-failures">Recent Failures</a></h2>' in offenders_html
     assert '<table class="recent-failures-table not-sortable">' in offenders_html
     assert '<colgroup><col class="failure-category-col"><col class="failure-count-col"><col></colgroup>' in offenders_html
     assert 'data-recent-failures-window="24h"' in offenders_html
@@ -849,7 +849,7 @@ def test_all_workers_summary_describes_tracked_workers_and_all_quarantines(tmp_p
 
     html = classifier._write_html({"worker-1": {}}, quarantined={"untracked-worker": None})
 
-    assert '<h2 id="s-all">All Workers</h2>' in html
+    assert '<h2 id="s-all"><a href="#s-all">All Workers</a></h2>' in html
     assert "1 tracked workers &middot; 1 currently quarantined." in html
     assert "Tracked workers have recorded task history; this is not a liveness or readiness check." in html
     assert "workers available" not in html
@@ -868,7 +868,7 @@ def test_quarantine_section_uses_a_plain_heading_with_supporting_count(tmp_path)
         },
     )
 
-    assert '<h2 id="s-quarantined">Quarantined Workers</h2>' in html
+    assert '<h2 id="s-quarantined"><a href="#s-quarantined">Quarantined Workers</a></h2>' in html
     assert "2 workers currently quarantined." in html
     assert "&#x1F512; Quarantined Workers" not in html
     assert 'class="utc-tooltip" data-utc="2026-08-19T12:00:00+00:00"' in html
@@ -911,12 +911,25 @@ def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
     ]
     positions = [html.index(heading) for heading in headings]
     assert positions == sorted(positions)
+    for anchor, label in (
+        ("summary-heading", "Summary"),
+        ("s-job-sources", "Task Source"),
+        ("s-start-lag", "Start Lag"),
+        ("s-utilization", "Utilization"),
+        ("s-device-turnaround", "Device Turnaround"),
+        ("s-attention", "Alerting Workers"),
+        ("s-quarantined", "Quarantined Workers"),
+        ("s-heatmap", "Worker Activity"),
+        ("s-recent-failures", "Recent Failures"),
+        ("s-all", "All Workers"),
+    ):
+        assert f'<h2 id="{anchor}"><a href="#{anchor}">{label}</a></h2>' in html
     assert '.pool-highlights-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));' in html
     assert '.pool-highlights-grid { grid-template-columns:1fr; }' in html
     assert '<section aria-labelledby="s-device-turnaround">' in html
     assert '<section aria-labelledby="s-attention">' in html
     assert '<a href="#s-attention">Alerting Workers</a>' in html
-    assert '<h2 id="s-attention">Alerting Workers</h2>' in html
+    assert '<h2 id="s-attention"><a href="#s-attention">Alerting Workers</a></h2>' in html
     assert "Workers with at least 2 consecutive failures." in html
 
 
@@ -939,7 +952,7 @@ def test_pool_detail_renders_scan_time_busy_device_turnaround(tmp_path, monkeypa
     html = classifier.render_html()
 
     assert 'href="#s-device-turnaround">Device Turnaround</a>' in html
-    assert '<h2 id="s-device-turnaround">Device Turnaround</h2>' in html
+    assert '<h2 id="s-device-turnaround"><a href="#s-device-turnaround">Device Turnaround</a></h2>' in html
     assert "2m 10s median" in html
     assert "p95: 5m 40s" in html
     assert "Observed handoffs: 45" in html
