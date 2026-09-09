@@ -29,6 +29,19 @@ def test_macos_refresh_rate_mismatch_ignores_incidental_payload_validation_text(
     assert pattern.severity == "high"
 
 
+def test_macos_refresh_rate_mismatch_accepts_empty_observed_value():
+    category, pattern = classify_patterns(
+        all_patterns(),
+        "ERROR: expected refresh rate = 60.00, instead got .",
+        "failed",
+        None,
+    )
+
+    assert category == "macos_refresh_rate_mismatch"
+    assert pattern is not None
+    assert pattern.severity == "high"
+
+
 def test_payload_validation_text_alone_is_unclassified():
     category, pattern = classify_patterns(
         all_patterns(),
