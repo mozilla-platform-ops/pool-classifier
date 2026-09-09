@@ -75,6 +75,7 @@ def _truncate_pg():
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", DSN)
+    monkeypatch.setenv("POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS", "1")
     # Clear the module-level classifier cache between tests.
     import worker_health.pool_classifier_web.app as app_module
     from worker_health.pool_classifier_web.registry import Pool
