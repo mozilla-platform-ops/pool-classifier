@@ -49,7 +49,7 @@ resource "google_cloud_run_v2_service" "pc" {
       resources {
         limits = {
           cpu    = "1"
-          memory = "1Gi"
+          memory = "2Gi"
         }
         # Idle CPU is fine — work is driven by Cloud Scheduler, no in-process scheduler.
         cpu_idle = true
