@@ -629,6 +629,12 @@ def _overview_utilization_summaries(windows: dict[str, int]) -> dict:
                 lambda: pc.storage.get_utilization_summary(windows),
             )
             result.update({"availability_mode": pc.availability_mode})
+            data_through = result.get("data_through")
+            result["freshness"] = {
+                "data_through": data_through,
+                "stale": data_through is None or datetime.now(timezone.utc)
+                - _parse_utilization_datetime("data_through", data_through) > COVERAGE_STALE_AFTER,
+            }
             return f"{pool.provisioner}/{pool.worker_type}", result
 
         if not classifiers:
@@ -968,8 +974,9 @@ def create_app() -> Flask:
         classify_all_started_at: datetime | None = None,
         classify_all_started_monotonic: float | None = None,
         pool_timings: dict[str, dict] | None = None,
+        pool_scan_statuses: dict[str, str] | None = None,
     ) -> None:
-        """Publish the fixed overview only after a complete aggregate scan."""
+        """Publish current aggregates and preserve each pool's scan outcome."""
         dsn = os.environ.get("DATABASE_URL")
         if not dsn:
             return
@@ -1003,6 +1010,9 @@ def create_app() -> Flask:
                     "pool_timings": pool_timings,
                 }
             )
+        if pool_scan_statuses is not None:
+            payload["pool_scan_statuses"] = pool_scan_statuses
+            payload["scan_status_counts"] = dict(Counter(pool_scan_statuses.values()))
         write_snapshot(dsn, OVERVIEW_SCOPE, payload, source_at=generated_at)
 
     # Warn at startup if TC credentials are missing, but don't fail.
@@ -1157,6 +1167,8 @@ def create_app() -> Flask:
         # query refactor history in docs/history/dashboard-query-refactor.md.
         summaries: dict = {}
         lag_summaries: dict = {}
+        snapshot_stale = False
+        pool_scan_statuses: dict[str, str] = {}
         dsn = os.environ.get("DATABASE_URL")
         if dsn:
             snapshot = _read_dashboard_snapshot(dsn, OVERVIEW_SCOPE)
@@ -1166,6 +1178,8 @@ def create_app() -> Flask:
                 lag_summaries = payload.get("lag_summaries", {})
                 metadata = _snapshot_metadata(snapshot)
                 now = _snapshot_freshness_label(metadata)
+                snapshot_stale = metadata["stale"]
+                pool_scan_statuses = payload.get("pool_scan_statuses", {})
             else:
                 overview_pool_ids = tuple(
                     f"{pool.provisioner}/{pool.worker_type}"
@@ -1232,6 +1246,9 @@ def create_app() -> Flask:
                 {
                     "pool": pool,
                     "os": detect_os(pool),
+                    "utilization_stale": snapshot_stale or pool_scan_statuses.get(
+                        f"{pool.provisioner}/{pool.worker_type}", "ok",
+                    ) != "ok",
                     "alerting": alerting,
                     "coverage": coverage,
                     "coverage_seconds": coverage_seconds,
@@ -1653,6 +1670,8 @@ def create_app() -> Flask:
                 "windows": list(windows),
                 "pools": pools,
                 "snapshot": _snapshot_metadata(snapshot),
+                "scan_status_counts": snapshot["payload"].get("scan_status_counts"),
+                "pool_scan_statuses": snapshot["payload"].get("pool_scan_statuses"),
             })
         return jsonify({"api_version": 1, "windows": list(windows), "pools": _overview_utilization_summaries(windows)})
 
@@ -1865,7 +1884,7 @@ def create_app() -> Flask:
             logger.warning(log_msg, *log_args)
         else:
             logger.info(log_msg, *log_args)
-        if counts["ok"] == len(pools):
+        if counts["ok"]:
             try:
                 with PhaseMemorySampler() as snapshot_memory:
                     snapshot_started = monotonic()
@@ -1873,6 +1892,7 @@ def create_app() -> Flask:
                         classify_all_started_at=classify_all_started_at,
                         classify_all_started_monotonic=classify_all_started_monotonic,
                         pool_timings=pool_timings,
+                        pool_scan_statuses={result["pool"]: result["status"] for result in results},
                     )
                 logger.info(
                     "classify-all overview snapshot memory: %s",

@@ -688,7 +688,7 @@ class PoolClassifier:
                         if len(head_buf) < LOG_HEAD_BYTES:
                             head_buf.extend(chunk[: LOG_HEAD_BYTES - len(head_buf)])
                         tail_buf.extend(chunk)
-        except (OSError, requests.RequestException, ValueError) as exc:
+        except (EOFError, OSError, requests.RequestException, ValueError) as exc:
             logger.warning("fetch_compressed_log %s/%s failed: %s", task_id, run_id, exc)
             return "", "empty"
         return bytes(head_buf).decode("utf-8", errors="replace") + bytes(tail_buf).decode("utf-8", errors="replace"), "ok"

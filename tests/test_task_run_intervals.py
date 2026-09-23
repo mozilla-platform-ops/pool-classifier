@@ -44,6 +44,26 @@ def test_compressed_log_fetch_keeps_true_plaintext_tail(monkeypatch, tmp_path):
     assert len(log_text.encode()) <= 20480 + 51200
 
 
+def test_truncated_compressed_log_is_unavailable_not_a_failed_scan(monkeypatch, tmp_path):
+    truncated = gzip.compress(b"incomplete task log\n")[:-8]
+
+    class Response:
+        status_code = 200
+        headers = {"x-goog-stored-content-length": str(len(truncated))}
+
+        def __enter__(self):
+            self.raw = io.BytesIO(truncated)
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr("worker_health.pool_classifier.requests.get", lambda *_args, **_kwargs: Response())
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=object(), use_color=False)
+
+    assert classifier._fetch_log_tail("task-id", 0) == ("", "empty")
+
+
 def test_sqlite_records_resolved_time_and_distinct_retries(tmp_path):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     storage.init_schema()

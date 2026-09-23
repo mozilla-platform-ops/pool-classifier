@@ -521,6 +521,36 @@ def test_index_uses_overview_snapshot_without_global_aggregates(monkeypatch):
     assert b"data from" in response.data
 
 
+def test_index_marks_only_failed_pool_utilization_stale(monkeypatch):
+    pools = [
+        Pool("working", "proj", "working", "*/15 * * * *"),
+        Pool("failed", "proj", "failed", "*/15 * * * *"),
+    ]
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: pools)
+    monkeypatch.setattr(
+        app_module, "_read_dashboard_snapshot",
+        lambda *_args: {
+            "source_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "payload": {
+                "pool_summaries": {}, "lag_summaries": {},
+                "pool_scan_statuses": {"proj/working": "ok", "proj/failed": "error"},
+            },
+        },
+    )
+    app = create_app()
+    app.config["TESTING"] = True
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    working = response.text.split('data-worker-type="working"', 1)[1].split("</td>", 1)[0]
+    failed = response.text.split('data-worker-type="failed"', 1)[1].split("</td>", 1)[0]
+    assert 'title="stale data" aria-label="stale data" hidden' in working
+    assert 'title="stale data" aria-label="stale data">' in failed
+
+
 def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
     pool = Pool("display-only-id", "proj", "worker", "*/15 * * * *")
     monkeypatch.setenv("DATABASE_URL", "postgresql://example")
@@ -603,6 +633,7 @@ def test_overview_utilization_batch_returns_enabled_pools_and_caches_result(monk
         def get_utilization_summary(self, windows):
             calls.append(windows)
             return {
+                "data_through": datetime.now(timezone.utc).isoformat(),
                 "windows": {
                     name: {"utilization": {"utilization_pct": 25.0 if name == "1h" else 50.0}}
                     for name in windows
@@ -631,6 +662,7 @@ def test_overview_utilization_batch_returns_enabled_pools_and_caches_result(monk
     assert first.json["windows"] == ["1h", "24h"]
     assert set(first.json["pools"]) == {"proj/worker", "proj/other-worker"}
     assert first.json["pools"]["proj/other-worker"]["availability_mode"] == "listed"
+    assert first.json["pools"]["proj/worker"]["freshness"]["stale"] is False
     assert second.json == first.json
     assert calls == [{"1h": 3600, "24h": 86400}, {"1h": 3600, "24h": 86400}]
 
@@ -672,6 +704,27 @@ def test_overview_utilization_batch_caps_cold_database_workers(monkeypatch):
 
     assert response.status_code == 200
     assert worker_limits == [6]
+
+
+def test_overview_utilization_marks_old_pool_data_stale(monkeypatch):
+    pool = Pool("display", "proj", "worker", "*/15 * * * *")
+    storage = SimpleNamespace(get_utilization_summary=lambda _windows: {
+        "data_through": "2026-09-05T06:07:00+00:00",
+        "windows": {"24h": {"utilization": {"utilization_pct": 0.0}}},
+    })
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: [pool])
+    monkeypatch.setattr(
+        app_module, "_get_classifier",
+        lambda *_args: SimpleNamespace(storage=storage, availability_mode="recent_contact"),
+    )
+    app = create_app()
+    app.config["TESTING"] = True
+
+    response = app.test_client().get("/api/v1/overview/utilization?windows=24h")
+
+    assert response.status_code == 200
+    assert response.json["pools"]["proj/worker"]["freshness"]["stale"] is True
+    assert "summary?.freshness?.stale === true" in app.test_client().get("/").text
 
 
 @pytest.mark.parametrize(
@@ -1154,6 +1207,57 @@ def test_classify_all_persists_total_and_per_pool_timings(monkeypatch, caplog):
     ):
         assert f"pool snapshot step start: pool=proj/timed step={step}" in caplog.text
         assert f"pool snapshot step memory: pool=proj/timed step={step} status=ok" in caplog.text
+
+
+def test_classify_all_publishes_partial_overview_with_pool_status(monkeypatch):
+    pools = [
+        SimpleNamespace(provisioner="proj", worker_type="ok", enabled=True),
+        SimpleNamespace(provisioner="proj", worker_type="failed", enabled=True),
+    ]
+    writes = []
+
+    class Classifier:
+        def __init__(self, worker_type):
+            self.worker_type = worker_type
+            self.storage = SimpleNamespace(
+                get_utilization_summary=lambda _windows: {},
+                get_observed_start_lag_visualization=lambda *_args: {},
+                get_job_source_volume=lambda *_args: [],
+            )
+            self.availability_mode = "recent_contact"
+
+        def classify_cycle(self):
+            if self.worker_type == "failed":
+                raise EOFError("truncated log")
+            return {"scanned": 1, "total_workers": 1, "new_terminal": 0, "category_counts": {}}
+
+        def render_html(self, **_kwargs):
+            return "<html></html>"
+
+    monkeypatch.delenv("CLASSIFY_OIDC_AUDIENCE", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(app_module.registry, "all_pools", lambda: pools)
+    monkeypatch.setattr(app_module.registry, "all_pools_including_disabled", lambda: pools)
+    monkeypatch.setattr(app_module, "_get_classifier", lambda _provisioner, worker_type, **_kwargs: Classifier(worker_type))
+    monkeypatch.setattr(app_module, "_global_pool_summaries", lambda *_args: {})
+    monkeypatch.setattr(app_module, "_global_observed_start_lag_summaries", lambda *_args: {})
+    monkeypatch.setattr(
+        app_module, "_overview_utilization_summaries",
+        lambda *_args: {"proj/ok": {"windows": {}}, "proj/failed": {"windows": {}}},
+    )
+    monkeypatch.setattr(app_module, "team_activity_summary", lambda *_args: {})
+    monkeypatch.setattr(app_module, "write_snapshot", lambda *args, **_kwargs: writes.append(args))
+
+    app = create_app()
+    app.config["TESTING"] = True
+    response = app.test_client().post("/classify-all")
+
+    assert response.status_code == 200
+    assert response.json["status_counts"] == {"ok": 1, "error": 1}
+    overview = next(args[2] for args in writes if args[1] == app_module.OVERVIEW_SCOPE)
+    assert overview["scan_status_counts"] == {"ok": 1, "error": 1}
+    assert overview["pool_scan_statuses"] == {"proj/ok": "ok", "proj/failed": "error"}
+    assert set(overview["utilization_summaries"]) == {"proj/ok", "proj/failed"}
 
 
 def test_classify_all_orders_pools_by_prior_workers_per_second(monkeypatch):
