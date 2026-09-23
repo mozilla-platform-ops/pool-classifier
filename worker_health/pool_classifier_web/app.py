@@ -22,7 +22,13 @@ from flask import Flask, Response, abort, jsonify, render_template, request
 from psycopg import OperationalError
 from psycopg_pool import PoolTimeout
 
-from worker_health.pool_classifier import CONSECUTIVE_FAILURE_ALERT, PhaseMemorySampler, PoolClassifier
+from worker_health.pool_classifier import (
+    CONSECUTIVE_FAILURE_ALERT,
+    PhaseMemorySampler,
+    PoolClassifier,
+    current_container_memory_bytes,
+    process_memory_bytes,
+)
 from worker_health.pool_classifier_web import registry
 from worker_health.pool_classifier_web import discovery
 from worker_health.pool_classifier_web.auth import (
@@ -832,6 +838,33 @@ def _replace_detail_navigation(detail_html: str, navigation_html: str) -> str:
     )
 
 
+def _measure_pool_snapshot_step(pool_id: str, step: str, action):
+    """Log a step boundary even if the container dies before sampling ends."""
+    logger.info(
+        "pool snapshot step start: pool=%s step=%s rss_bytes=%s container_bytes=%s",
+        pool_id,
+        step,
+        process_memory_bytes()["rss_bytes"],
+        current_container_memory_bytes(),
+    )
+    started = monotonic()
+    sampler = PhaseMemorySampler()
+    status = "error"
+    try:
+        with sampler:
+            result = action()
+        status = "ok"
+        return result
+    finally:
+        logger.info(
+            "pool snapshot step memory: pool=%s step=%s status=%s metrics=%s",
+            pool_id,
+            step,
+            status,
+            {"duration_seconds": monotonic() - started, **sampler.metrics()},
+        )
+
+
 def create_app() -> Flask:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     app = Flask(__name__)
@@ -866,20 +899,29 @@ def create_app() -> Flask:
         dsn = os.environ.get("DATABASE_URL")
         if not dsn:
             return
+        pool_id = f"{pool.provisioner}/{pool.worker_type}"
+
+        def measure(step: str, action):
+            return _measure_pool_snapshot_step(pool_id, step, action)
+
         generated_at = datetime.now(timezone.utc).replace(microsecond=0)
-        summary = pc.storage.get_utilization_summary(UTILIZATION_WINDOWS)
+        summary = measure("utilization_summary", lambda: pc.storage.get_utilization_summary(UTILIZATION_WINDOWS))
         summary.update({"api_version": 1, "availability_mode": pc.availability_mode})
         timeline = None
         if data_through := summary.get("data_through"):
             end = _parse_utilization_datetime("data_through", data_through)
-            timeline = pc.storage.get_utilization(
-                (end - timedelta(hours=24)).isoformat(), end.isoformat(), 3600,
+            timeline = measure(
+                "utilization_timeline_24h",
+                lambda: pc.storage.get_utilization((end - timedelta(hours=24)).isoformat(), end.isoformat(), 3600),
             )
             timeline.update({"api_version": 1, "availability_mode": pc.availability_mode})
         lag_end = generated_at
-        lag = pc.storage.get_observed_start_lag_visualization(
-            (lag_end - timedelta(days=7)).isoformat(), lag_end.isoformat(),
-            DEFAULT_OBSERVED_START_LAG_SLO_SECONDS, DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES,
+        lag = measure(
+            "observed_start_lag_7d",
+            lambda: pc.storage.get_observed_start_lag_visualization(
+                (lag_end - timedelta(days=7)).isoformat(), lag_end.isoformat(),
+                DEFAULT_OBSERVED_START_LAG_SLO_SECONDS, DEFAULT_OBSERVED_START_LAG_MIN_SAMPLES,
+            ),
         )
         lag["api_version"] = 1
         job_sources_end = generated_at
@@ -889,27 +931,36 @@ def create_app() -> Flask:
             "start_at": job_sources_start.isoformat(),
             "end_at": job_sources_end.isoformat(),
             "days": 14,
-            "buckets": pc.storage.get_job_source_volume(
-                job_sources_start.isoformat(), job_sources_end.isoformat(),
+            "buckets": measure(
+                "job_source_volume_14d",
+                lambda: pc.storage.get_job_source_volume(
+                    job_sources_start.isoformat(), job_sources_end.isoformat(),
+                ),
             ),
         }
-        detail_html = pc.render_html(
-            os_label=detect_os(pool),
-            navigation_html=navigation_html(f"{pool.provisioner}/{pool.worker_type}"),
-            navigation_styles=str(app.jinja_env.get_template("base.html").module.navigation_styles()),
+        detail_html = measure(
+            "detail_html",
+            lambda: pc.render_html(
+                os_label=detect_os(pool),
+                navigation_html=navigation_html(pool_id),
+                navigation_styles=str(app.jinja_env.get_template("base.html").module.navigation_styles()),
+            ),
         )
-        write_snapshot(
-            dsn,
-            POOL_SCOPE,
-            {
-                "detail_html": detail_html,
-                "utilization_summary": summary,
-                "utilization_timeline_24h": timeline,
-                "observed_start_lag_visualization_7d": lag,
-                "job_source_volume_14d": job_sources,
-            },
-            pool_id=f"{pool.provisioner}/{pool.worker_type}",
-            source_at=generated_at,
+        measure(
+            "write_snapshot",
+            lambda: write_snapshot(
+                dsn,
+                POOL_SCOPE,
+                {
+                    "detail_html": detail_html,
+                    "utilization_summary": summary,
+                    "utilization_timeline_24h": timeline,
+                    "observed_start_lag_visualization_7d": lag,
+                    "job_source_volume_14d": job_sources,
+                },
+                pool_id=pool_id,
+                source_at=generated_at,
+            ),
         )
 
     def publish_overview_snapshot(

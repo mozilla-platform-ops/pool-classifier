@@ -81,7 +81,10 @@ def test_sqlite_records_resolved_time_and_distinct_retries(tmp_path):
 
 def test_phase_memory_sampler_reports_local_peak_and_deltas():
     readings = iter([100, 140, 125])
-    sampler = PhaseMemorySampler(lambda: next(readings), interval_seconds=60)
+    container_readings = iter([200, 260, 220])
+    sampler = PhaseMemorySampler(
+        lambda: next(readings), interval_seconds=60, read_container_memory=lambda: next(container_readings),
+    )
 
     with sampler:
         sampler._sample()
@@ -92,6 +95,11 @@ def test_phase_memory_sampler_reports_local_peak_and_deltas():
         "rss_max_bytes": 140,
         "rss_delta_bytes": 25,
         "rss_peak_delta_bytes": 40,
+        "container_start_bytes": 200,
+        "container_end_bytes": 220,
+        "container_max_bytes": 260,
+        "container_delta_bytes": 20,
+        "container_peak_delta_bytes": 60,
         "rss_sample_count": 3,
     }
 

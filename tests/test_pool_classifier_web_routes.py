@@ -1045,12 +1045,35 @@ def test_classify_all_warns_on_partial_failure(monkeypatch, caplog):
     assert "classify-all summary: pools=2 ok=1 busy=0 error=1 not_found=0 new_terminal=4 unclassified=1" in caplog.text
 
 
-def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
+def test_pool_snapshot_step_logs_memory_on_failure(monkeypatch, caplog):
+    monkeypatch.setattr(app_module, "process_memory_bytes", lambda: {"rss_bytes": 100})
+    monkeypatch.setattr(app_module, "current_container_memory_bytes", lambda: 200)
+
+    def fail():
+        raise RuntimeError("snapshot query failed")
+
+    with caplog.at_level(logging.INFO, logger="worker_health.pool_classifier_web.app"):
+        with pytest.raises(RuntimeError, match="snapshot query failed"):
+            app_module._measure_pool_snapshot_step("proj/worker", "utilization_summary", fail)
+
+    starts = [record for record in caplog.records if "pool snapshot step start:" in record.message]
+    ends = [record for record in caplog.records if "pool snapshot step memory:" in record.message]
+    assert len(starts) == len(ends) == 1
+    assert starts[0].created <= ends[0].created
+    assert "pool=proj/worker step=utilization_summary rss_bytes=100 container_bytes=200" in starts[0].message
+    assert "status=error" in ends[0].message
+    assert "duration_seconds" in ends[0].message
+
+
+def test_classify_all_persists_total_and_per_pool_timings(monkeypatch, caplog):
     pool = SimpleNamespace(provisioner="proj", worker_type="timed", enabled=True)
     writes = []
 
     class Storage:
         def get_utilization_summary(self, _windows):
+            return {"data_through": "2026-08-17T00:00:00+00:00"}
+
+        def get_utilization(self, *_args):
             return {}
 
         def get_observed_start_lag_visualization(self, *_args):
@@ -1097,7 +1120,8 @@ def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
 
     app = create_app()
     app.config["TESTING"] = True
-    response = app.test_client().post("/classify-all")
+    with caplog.at_level(logging.INFO, logger="worker_health.pool_classifier_web.app"):
+        response = app.test_client().post("/classify-all")
 
     assert response.status_code == 200
     overview_payload = next(args[2] for args, _kwargs in writes if args[1] == app_module.OVERVIEW_SCOPE)
@@ -1124,6 +1148,12 @@ def test_classify_all_persists_total_and_per_pool_timings(monkeypatch):
     assert job_sources["days"] == 14
     assert job_sources["buckets"] == []
     assert datetime.fromisoformat(job_sources["end_at"]) - datetime.fromisoformat(job_sources["start_at"]) == timedelta(days=14)
+    for step in (
+        "utilization_summary", "utilization_timeline_24h", "observed_start_lag_7d",
+        "job_source_volume_14d", "detail_html", "write_snapshot",
+    ):
+        assert f"pool snapshot step start: pool=proj/timed step={step}" in caplog.text
+        assert f"pool snapshot step memory: pool=proj/timed step={step} status=ok" in caplog.text
 
 
 def test_classify_all_orders_pools_by_prior_workers_per_second(monkeypatch):

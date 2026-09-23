@@ -42,6 +42,16 @@ def current_rss_bytes() -> int | None:
         return None
 
 
+def current_container_memory_bytes() -> int | None:
+    """Return current cgroup memory usage when running in a container."""
+    for path in ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+        try:
+            return int(Path(path).read_text(encoding="ascii").strip())
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+    return None
+
+
 def process_memory_bytes() -> dict[str, int | None]:
     """Return current RSS and process-lifetime peak RSS in bytes."""
     rss_bytes = current_rss_bytes()
@@ -62,8 +72,11 @@ class PhaseMemorySampler:
         self,
         read_rss: Callable[[], int | None] = current_rss_bytes,
         interval_seconds: float = 0.1,
+        *,
+        read_container_memory: Callable[[], int | None] = current_container_memory_bytes,
     ) -> None:
         self._read_rss = read_rss
+        self._read_container_memory = read_container_memory
         self._interval_seconds = interval_seconds
         self._stop = Event()
         self._thread: Thread | None = None
@@ -71,20 +84,32 @@ class PhaseMemorySampler:
         self._start_rss_bytes: int | None = None
         self._end_rss_bytes: int | None = None
         self._max_rss_bytes: int | None = None
+        self._start_container_bytes: int | None = None
+        self._end_container_bytes: int | None = None
+        self._max_container_bytes: int | None = None
         self._sample_count = 0
 
     def _sample(self, *, is_end: bool = False) -> None:
         rss_bytes = self._read_rss()
-        if rss_bytes is None:
+        container_bytes = self._read_container_memory()
+        if rss_bytes is None and container_bytes is None:
             return
         with self._lock:
-            if self._start_rss_bytes is None:
-                self._start_rss_bytes = rss_bytes
-            if self._max_rss_bytes is None or rss_bytes > self._max_rss_bytes:
-                self._max_rss_bytes = rss_bytes
+            if rss_bytes is not None:
+                if self._start_rss_bytes is None:
+                    self._start_rss_bytes = rss_bytes
+                if self._max_rss_bytes is None or rss_bytes > self._max_rss_bytes:
+                    self._max_rss_bytes = rss_bytes
+                if is_end:
+                    self._end_rss_bytes = rss_bytes
+            if container_bytes is not None:
+                if self._start_container_bytes is None:
+                    self._start_container_bytes = container_bytes
+                if self._max_container_bytes is None or container_bytes > self._max_container_bytes:
+                    self._max_container_bytes = container_bytes
+                if is_end:
+                    self._end_container_bytes = container_bytes
             self._sample_count += 1
-            if is_end:
-                self._end_rss_bytes = rss_bytes
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval_seconds):
@@ -108,12 +133,20 @@ class PhaseMemorySampler:
             start = self._start_rss_bytes
             end = self._end_rss_bytes
             maximum = self._max_rss_bytes
+            container_start = self._start_container_bytes
+            container_end = self._end_container_bytes
+            container_maximum = self._max_container_bytes
             return {
                 "rss_start_bytes": start,
                 "rss_end_bytes": end,
                 "rss_max_bytes": maximum,
                 "rss_delta_bytes": None if start is None or end is None else end - start,
                 "rss_peak_delta_bytes": None if start is None or maximum is None else maximum - start,
+                "container_start_bytes": container_start,
+                "container_end_bytes": container_end,
+                "container_max_bytes": container_maximum,
+                "container_delta_bytes": None if container_start is None or container_end is None else container_end - container_start,
+                "container_peak_delta_bytes": None if container_start is None or container_maximum is None else container_maximum - container_start,
                 "rss_sample_count": self._sample_count,
             }
 
