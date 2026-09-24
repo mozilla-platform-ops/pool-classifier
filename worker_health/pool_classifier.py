@@ -1760,12 +1760,17 @@ class PoolClassifier:
             logger.info(f"  {label}: {time.time() - t:.2f}s")
             return result
 
-        workers = _timed("query_workers", self._query_workers)
         quarantined = _timed("list_quarantined_workers", self._list_quarantined_workers)
         quarantine_details = _timed("update_quarantine_cache", lambda: self._update_quarantine_cache(quarantined))
         self._cached_quarantined = quarantined
         self._cached_quarantine_details = quarantine_details
         self._last_quarantine_refresh = time.time()
+        if self.results_dir is None:
+            # Web snapshots render the detail page separately. Keep quarantine
+            # details current for that page without building discarded reports.
+            return
+
+        workers = _timed("query_workers", self._query_workers)
         windowed_sr = _timed("query_windowed_sr", self._query_windowed_sr)
         now = datetime.now(timezone.utc)
         since_1d = (now - timedelta(days=1)).isoformat()
@@ -1790,10 +1795,9 @@ class PoolClassifier:
                 busy_turnaround=busy_turnaround,
             ),
         )
-        if self.results_dir:
-            self.results_dir.mkdir(parents=True, exist_ok=True)
-            (self.results_dir / "OVERVIEW.md").write_text(md)
-            (self.results_dir / "OVERVIEW.html").write_text(html)
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+        (self.results_dir / "OVERVIEW.md").write_text(md)
+        (self.results_dir / "OVERVIEW.html").write_text(html)
 
     def _write_md(
         self,
