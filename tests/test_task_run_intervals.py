@@ -334,6 +334,34 @@ def test_classify_cycle_deduplicates_status_io_and_serializes_storage(tmp_path, 
     assert storage_threads and set(storage_threads) == {main_thread}
 
 
+def test_classify_cycle_skips_old_terminal_run_without_loading_history(tmp_path, monkeypatch):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    storage.init_schema()
+    old = "2025-01-01T00:00:00+00:00"
+    storage.record_task_result("old-task", "worker-1", 0, "completed", None, None, old, old, old)
+    storage.upsert_worker("worker-1", "group-1")
+    storage.increment_success("worker-1", old)
+    storage.commit()
+    monkeypatch.setattr(storage, "get_seen_task_runs", lambda: (_ for _ in ()).throw(AssertionError("history loaded")))
+
+    classifier = PoolClassifier(
+        "provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False,
+    )
+    classifier._init_db()
+    monkeypatch.setattr(classifier, "_update_reports", lambda: None)
+    monkeypatch.setattr(
+        classifier, "_get_recent_tasks", lambda _group, _worker: [{"taskId": "old-task", "runId": 0}],
+    )
+    monkeypatch.setattr(
+        classifier, "_get_task_status", lambda _task: (_ for _ in ()).throw(AssertionError("old task fetched")),
+    )
+
+    summary = classifier.classify_cycle(workers=[{"workerId": "worker-1", "workerGroup": "group-1"}])
+
+    assert summary["new_terminal"] == 0
+    assert storage.db.execute("SELECT successes FROM workers WHERE worker_id = 'worker-1'").fetchone()[0] == 1
+
+
 def test_sqlite_expired_observed_runs_are_not_reopened(tmp_path):
     storage = SqliteStorage("provisioner/worker-type", tmp_path)
     storage.init_schema()

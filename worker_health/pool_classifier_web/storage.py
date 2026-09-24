@@ -16,6 +16,7 @@ from worker_health.pool_classifier_web.postgres import application_name, connect
 
 COLLECTION_SOURCES = {"task_runs", "worker_availability"}
 AVAILABILITY_MODES = {"recent_contact", "listed"}
+TASK_RUN_LOOKUP_BATCH_SIZE = 200
 
 
 def _parse_iso(value: str) -> datetime:
@@ -332,6 +333,24 @@ class SqliteStorage:
         ):
             seen.setdefault(row["worker_id"], set()).add((row["task_id"], row["run_id"]))
         return seen
+
+    def get_terminal_task_runs(self, references: List[Tuple[str, Optional[int]]]) -> set[Tuple[str, Optional[int]]]:
+        """Look up only recent-window identities, in bounded batches."""
+        found: set[Tuple[str, Optional[int]]] = set()
+        identities = list(dict.fromkeys(references))
+        for start in range(0, len(identities), TASK_RUN_LOOKUP_BATCH_SIZE):
+            batch = identities[start:start + TASK_RUN_LOOKUP_BATCH_SIZE]
+            placeholders = ", ".join("(?, ?)" for _ in batch)
+            parameters = [value for task_id, run_id in batch for value in (task_id, -1 if run_id is None else run_id)]
+            rows = self.db.execute(
+                f"WITH refs(task_id, run_key) AS (VALUES {placeholders})"
+                " SELECT t.task_id, t.run_id FROM refs JOIN task_results AS t"
+                " ON t.task_id = refs.task_id AND COALESCE(t.run_id, -1) = refs.run_key"
+                " WHERE t.run_state IN ('completed','failed','exception','expired')",
+                parameters,
+            )
+            found.update((row["task_id"], row["run_id"]) for row in rows)
+        return found
 
     def list_task_runs_missing_schedule(
         self, limit: int, offset: int = 0, not_before: Optional[str] = None,
@@ -1736,6 +1755,26 @@ class PostgresStorage:
             for row in cur.fetchall():
                 seen.setdefault(row["worker_id"], set()).add((row["task_id"], row["run_id"]))
         return seen
+
+    def get_terminal_task_runs(self, references: List[Tuple[str, Optional[int]]]) -> set[Tuple[str, Optional[int]]]:
+        """Look up only recent-window identities using the pool/task/run index."""
+        found: set[Tuple[str, Optional[int]]] = set()
+        identities = list(dict.fromkeys(references))
+        for start in range(0, len(identities), TASK_RUN_LOOKUP_BATCH_SIZE):
+            batch = identities[start:start + TASK_RUN_LOOKUP_BATCH_SIZE]
+            placeholders = ", ".join("(%s, %s)" for _ in batch)
+            parameters = [value for task_id, run_id in batch for value in (task_id, -1 if run_id is None else run_id)]
+            with self._cursor() as cur:
+                cur.execute(
+                    f"WITH refs(task_id, run_key) AS (VALUES {placeholders})"
+                    " SELECT t.task_id, t.run_id FROM refs JOIN task_results AS t"
+                    " ON t.pool_id = %s AND t.task_id = refs.task_id"
+                    " AND COALESCE(t.run_id, -1) = refs.run_key"
+                    " WHERE t.run_state IN ('completed','failed','exception','expired')",
+                    (*parameters, self.pool_id),
+                )
+                found.update((row["task_id"], row["run_id"]) for row in cur.fetchall())
+        return found
 
     def list_task_runs_missing_schedule(
         self, limit: int, offset: int = 0, not_before: Optional[str] = None,

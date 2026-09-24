@@ -321,7 +321,7 @@ class PoolClassifier:
             raise ValueError("collection coverage max gap must be greater than zero")
         self.coverage_max_gap_seconds = coverage_max_gap_seconds
         self.queue_base = f"{TC_ROOT}/api/queue/v1"
-        self.seen_task_runs: Dict[str, set] = {}  # in-memory cache, reloaded from storage each cycle
+        self.seen_task_runs: Dict[str, set] = {}  # terminal runs resolved during this scan
         self._interrupted = False
         self.use_color = use_color
         self.show_progress = show_progress
@@ -380,12 +380,6 @@ class PoolClassifier:
                 self.worker_type,
                 self.availability_mode,
             )
-        self.seen_task_runs = self.storage.get_seen_task_runs()
-        seen_count = sum(len(s) for s in self.seen_task_runs.values())
-        logger.info(
-            f"[{self.provisioner}/{self.worker_type}] Storage: {seen_count} "
-            f"previously seen task runs across {len(self.seen_task_runs)} workers",
-        )
 
     # --- TC API calls ---
 
@@ -815,6 +809,19 @@ class PoolClassifier:
         references_by_key: Dict[Tuple[str, str, Optional[int]], dict] = {}
         window_observed = False
         observed_at = datetime.now(timezone.utc).isoformat()
+        recent_run_ids = [
+            (task["taskId"], task.get("runId"))
+            for _worker_id, _worker_group, recent in fetched_windows
+            for task in recent
+            if task.get("taskId")
+        ]
+        lookup_started = time.monotonic()
+        terminal_runs = self.storage.get_terminal_task_runs(recent_run_ids)
+        logger.info(
+            "terminal task-run lookup: pool=%s/%s references=%d terminal=%d duration_seconds=%.3f",
+            self.provisioner, self.worker_type, len(recent_run_ids), len(terminal_runs),
+            time.monotonic() - lookup_started,
+        )
 
         for worker_id, worker_group, recent in fetched_windows:
             window = [
@@ -839,9 +846,8 @@ class PoolClassifier:
             if continuity_by_worker[worker_id] is False:
                 reset_details[worker_id] = (worker_group, previous_window, window, overlap_count)
             self.storage.record_recent_task_window(worker_id, worker_group, window, observed_at)
-            seen = self.seen_task_runs.setdefault(worker_id, set())
             for task_id, run_id in window:
-                if (task_id, run_id) in seen:
+                if (task_id, run_id) in terminal_runs or (task_id, run_id) in self.seen_task_runs.get(worker_id, ()):
                     continue
                 self.storage.record_observed_task_run(task_id, worker_id, run_id, observed_at)
                 references_by_key[(task_id, worker_id, run_id)] = {
@@ -983,8 +989,8 @@ class PoolClassifier:
         self, worker_id: str, worker_group: str, recent: List[dict],
     ) -> Tuple[List[Tuple], bool, Optional[bool], bool]:
         """Persist and resolve one worker's already-fetched recent-task window."""
-        seen = self.seen_task_runs.setdefault(worker_id, set())
         window = [(task.get("taskId"), task.get("runId")) for task in recent if task.get("taskId")]
+        terminal_runs = self.storage.get_terminal_task_runs(window)
         references = []
         observed_at = datetime.now(timezone.utc).isoformat()
         previous_window = self.storage.get_recent_task_window(worker_id)
@@ -1001,7 +1007,7 @@ class PoolClassifier:
         for task in recent:
             task_id = task.get("taskId")
             run_id = task.get("runId")
-            if task_id and (task_id, run_id) not in seen:
+            if task_id and (task_id, run_id) not in terminal_runs and (task_id, run_id) not in self.seen_task_runs.get(worker_id, ()):
                 self.storage.record_observed_task_run(task_id, worker_id, run_id, observed_at)
                 references.append({"task_id": task_id, "worker_id": worker_id, "run_id": run_id})
         # getWorker references must be durable before any Queue status request.
@@ -1215,6 +1221,7 @@ class PoolClassifier:
     ) -> dict:
         """One classify pass: poll all workers, process results, write reports. Returns summary dict."""
         with self.storage.classify_lock():
+            self.seen_task_runs.clear()
             if workers is None:
                 now = time.time()
                 if now - self._last_worker_refresh > WORKER_REFRESH_INTERVAL or not self._cached_workers:

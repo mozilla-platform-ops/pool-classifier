@@ -95,6 +95,23 @@ def _seed(storage):
     storage.commit()
 
 
+def test_terminal_run_lookup_is_bounded_and_has_sqlite_postgres_parity(sqlite, pg):
+    old = "2025-01-01T00:00:00+00:00"
+    for storage in (sqlite, pg):
+        storage.record_task_result("old", "w1", 0, "completed", None, None, old, old, old)
+        storage.record_observed_task_run("nil", "w1", None, old)
+        storage.expire_task_run("nil", None, old)
+        storage.record_observed_task_run("unresolved", "w1", 1, old)
+        storage.commit()
+
+    references = [(f"missing-{i}", 0) for i in range(201)] + [
+        ("old", 0), ("nil", None), ("unresolved", 1), ("old", 0),
+    ]
+    expected = {("old", 0), ("nil", None)}
+    assert sqlite.get_terminal_task_runs(references) == pg.get_terminal_task_runs(references) == expected
+    assert sqlite.get_terminal_task_runs([]) == pg.get_terminal_task_runs([]) == set()
+
+
 # --- get_seen_tasks ---
 
 
