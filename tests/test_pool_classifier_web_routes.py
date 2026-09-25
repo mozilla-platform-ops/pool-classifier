@@ -480,16 +480,16 @@ def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch)
         response = client.get("/")
 
     html = response.text
-    assert 'Start lag p95' in html
-    assert 'data-lag-sort="7d">[7d]</button>' in html
+    assert 'Start lag (7d p95)' in html
+    assert 'data-lag-sort="7d">[overall]</button>' in html
     assert 'data-lag-sort="peak">[worst 1h]</button>' in html
     assert html.index('Live hosts</th>') < html.index('Utilization') < html.index('id="lag-header"')
     assert 'data-sort-value="252.0"' in html
     assert 'data-lag-peak="720.0"' in html
-    assert 'p50: 38s' in html
-    assert 'p95: 4m 12s (5 starts)' in html
-    assert 'worst 1h p95: 12m at 2026-09-24T12:00:00+00:00 (5 starts)' in html
-    assert '7d <span class="ok">4m 12s</span>' in html
+    assert 'overall p95: 4m 12s (5 starts)' in html
+    assert 'worst 1h p95: 12m (5 starts)' in html
+    assert 'scheduled hour: 2026-09-24T12:00:00+00:00' in html
+    assert 'overall <span class="ok">4m 12s</span>' in html
     assert 'worst 1h <span class="ok">12m</span>' in html
     assert '<span class="ok">4m 12s</span>' in html
     assert "/api/v1/overview/utilization?windows=1h,24h" in html
@@ -574,8 +574,9 @@ def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
     with app.test_client() as client:
         response = client.get("/")
 
-    assert '7d <span class="no-data">—</span>' in response.text
+    assert 'overall <span class="no-data">—</span>' in response.text
     assert 'worst 1h <span class="no-data">—</span>' in response.text
+    assert 'overall p95 unavailable: 2 starts (minimum 5)' in response.text
     assert 'data-sort-value="252.0"' not in response.text
 
 
