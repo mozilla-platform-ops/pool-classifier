@@ -469,7 +469,9 @@ def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch)
     monkeypatch.setattr(
         app_module,
         "observed_start_lag_summaries_global",
-        lambda *_args: {"proj/worker": {"sample_count": 5, "p50_seconds": 38.0, "p95_seconds": 252.0}},
+        lambda *_args: {"proj/worker": {"sample_count": 5, "p50_seconds": 38.0, "p95_seconds": 252.0,
+                                         "peak_hour_start_at": "2026-09-24T12:00:00+00:00",
+                                         "peak_hour_sample_count": 5, "peak_hour_p95_seconds": 720.0}},
     )
     app = create_app()
     app.config["TESTING"] = True
@@ -478,12 +480,17 @@ def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch)
         response = client.get("/")
 
     html = response.text
-    assert 'Lag p95</th>' in html
-    assert html.index('Live hosts</th>') < html.index('Utilization') < html.index('Lag p95')
+    assert 'Start lag p95' in html
+    assert 'data-lag-sort="7d">[7d]</button>' in html
+    assert 'data-lag-sort="peak">[worst 1h]</button>' in html
+    assert html.index('Live hosts</th>') < html.index('Utilization') < html.index('id="lag-header"')
     assert 'data-sort-value="252.0"' in html
+    assert 'data-lag-peak="720.0"' in html
     assert 'p50: 38s' in html
-    assert 'p95: 4m 12s' in html
-    assert '5 observed starts' in html
+    assert 'p95: 4m 12s (5 starts)' in html
+    assert 'peak hour: 12m at 2026-09-24T12:00:00+00:00 (5 starts)' in html
+    assert '7d <span class="ok">4m 12s</span>' in html
+    assert 'peak <span class="ok">12m</span>' in html
     assert '<span class="ok">4m 12s</span>' in html
     assert "/api/v1/overview/utilization?windows=1h,24h" in html
     assert "async function loadOverviewUtilizationSummaries()" in html
@@ -567,7 +574,8 @@ def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
     with app.test_client() as client:
         response = client.get("/")
 
-    assert 'P95 unavailable: 2 observed starts (minimum 5).' in response.text
+    assert '7d <span class="no-data">—</span>' in response.text
+    assert 'peak <span class="no-data">—</span>' in response.text
     assert 'data-sort-value="252.0"' not in response.text
 
 

@@ -1466,13 +1466,25 @@ def observed_start_lag_summaries_global(
     with postgres_connect(dsn, "web") as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT pool_id, COUNT(*) AS sample_count,"
+                "WITH lag_groups AS ("
+                " SELECT pool_id, date_trunc('hour', run_scheduled, 'UTC') AS hour_start,"
+                " GROUPING(date_trunc('hour', run_scheduled, 'UTC')) AS all_hours,"
+                " COUNT(*) AS sample_count,"
                 " percentile_disc(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (run_started - run_scheduled))) AS p50_seconds,"
                 " percentile_disc(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (run_started - run_scheduled))) AS p95_seconds"
                 " FROM task_results"
                 " WHERE run_scheduled >= %s::timestamptz AND run_scheduled < %s::timestamptz"
                 " AND run_started IS NOT NULL AND run_started >= run_scheduled"
-                " GROUP BY pool_id",
+                " GROUP BY GROUPING SETS ((pool_id), (pool_id, date_trunc('hour', run_scheduled, 'UTC')))"
+                "), peak_hours AS ("
+                " SELECT DISTINCT ON (pool_id) pool_id, hour_start, sample_count, p95_seconds"
+                " FROM lag_groups WHERE all_hours = 0 AND sample_count >= 5"
+                " ORDER BY pool_id, p95_seconds DESC, hour_start DESC"
+                ")"
+                " SELECT lag_groups.pool_id, lag_groups.sample_count, lag_groups.p50_seconds, lag_groups.p95_seconds,"
+                " peak_hours.hour_start, peak_hours.sample_count, peak_hours.p95_seconds"
+                " FROM lag_groups LEFT JOIN peak_hours USING (pool_id)"
+                " WHERE lag_groups.all_hours = 1",
                 (range_start, range_end),
             )
             return {
@@ -1480,8 +1492,12 @@ def observed_start_lag_summaries_global(
                     "sample_count": sample_count,
                     "p50_seconds": float(p50_seconds),
                     "p95_seconds": float(p95_seconds),
+                    "peak_hour_start_at": peak_hour_start.isoformat() if peak_hour_start else None,
+                    "peak_hour_sample_count": peak_hour_sample_count,
+                    "peak_hour_p95_seconds": float(peak_hour_p95_seconds) if peak_hour_p95_seconds is not None else None,
                 }
-                for pool_id, sample_count, p50_seconds, p95_seconds in cur.fetchall()
+                for pool_id, sample_count, p50_seconds, p95_seconds,
+                    peak_hour_start, peak_hour_sample_count, peak_hour_p95_seconds in cur.fetchall()
             }
 
 

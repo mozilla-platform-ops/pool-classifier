@@ -665,8 +665,9 @@ def test_pool_summaries_global_returns_zero_summary_for_requested_empty_pool(pg)
 
 def test_observed_start_lag_summaries_global_uses_nearest_rank_percentiles(pg):
     now = datetime.now(timezone.utc).replace(microsecond=0)
+    hour_start = (now - timedelta(hours=1)).replace(minute=0, second=0)
     for index, lag_seconds in enumerate((10, 20, 30, 40, 50)):
-        scheduled = now - timedelta(minutes=index + 1)
+        scheduled = hour_start + timedelta(seconds=index)
         pg.record_task_result(
             f"lag-{index}", "w1", 0, "completed", None, None,
             (scheduled + timedelta(seconds=lag_seconds)).isoformat(),
@@ -684,4 +685,39 @@ def test_observed_start_lag_summaries_global_uses_nearest_rank_percentiles(pg):
         DSN, (now - timedelta(days=7)).isoformat(), now.isoformat(),
     )
 
-    assert result[POOL_ID] == {"sample_count": 5, "p50_seconds": 30.0, "p95_seconds": 50.0}
+    assert result[POOL_ID] == {
+        "sample_count": 5, "p50_seconds": 30.0, "p95_seconds": 50.0,
+        "peak_hour_start_at": hour_start.isoformat(), "peak_hour_sample_count": 5,
+        "peak_hour_p95_seconds": 50.0,
+    }
+
+
+def test_observed_start_lag_summaries_global_peak_hour_can_exceed_seven_day_p95(pg):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    low_hour = (now - timedelta(hours=20)).replace(minute=0, second=0)
+    high_hour = low_hour + timedelta(hours=1)
+    for index in range(100):
+        scheduled = low_hour + timedelta(seconds=index)
+        pg.record_task_result(
+            f"low-lag-{index}", "w1", 0, "completed", None, None,
+            (scheduled + timedelta(seconds=60)).isoformat(), now.isoformat(), now.isoformat(),
+            run_scheduled=scheduled.isoformat(),
+        )
+    for index in range(5):
+        scheduled = high_hour + timedelta(seconds=index)
+        pg.record_task_result(
+            f"high-lag-{index}", "w1", 0, "completed", None, None,
+            (scheduled + timedelta(hours=12)).isoformat(), now.isoformat(), now.isoformat(),
+            run_scheduled=scheduled.isoformat(),
+        )
+    pg.commit()
+
+    result = observed_start_lag_summaries_global(
+        DSN, (now - timedelta(days=7)).isoformat(), now.isoformat(),
+    )[POOL_ID]
+
+    assert result["sample_count"] == 105
+    assert result["p95_seconds"] == 60.0
+    assert result["peak_hour_start_at"] == high_hour.isoformat()
+    assert result["peak_hour_sample_count"] == 5
+    assert result["peak_hour_p95_seconds"] == 12 * 3600.0

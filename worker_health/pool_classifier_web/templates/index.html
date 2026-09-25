@@ -17,6 +17,8 @@
   .bad { color: #f44; }
   .warn { color: #f90; }
   .lag-yellow { color: #dd4; }
+  .lag-cell .lag-line-item { display: block; white-space: nowrap; opacity: .7; }
+  .lag-cell[data-sort-mode='7d'] .lag-seven-day, .lag-cell[data-sort-mode='peak'] .lag-peak { opacity: 1; font-weight: bold; }
   table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
   th { background: #222; color: #aaa; text-align: left; padding: .4rem .8rem; border-bottom: 1px solid #444; cursor: pointer; user-select: none; }
   th:hover { color: #fff; }
@@ -72,8 +74,7 @@
       <th>OS</th>
       <th title="Currently available hosts from the latest worker-availability scan. See Coverage for scan freshness.">Live hosts</th>
       <th id="utilization-header">Utilization <span class="metric-window" data-metric="utilization"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
-      <th title="Observed scheduled-to-start lag: p95 over the previous 7 days. Only terminal runs that started are included.">Lag p95</th>
-      <th>Alerting</th>
+      <th id="lag-header" title="Observed scheduled-to-start lag over the previous 7 days. Worst 1h is the highest hourly p95 with at least five observed starts.">Start lag p95 <span class="metric-window" data-metric="lag"><button type="button" data-lag-sort="7d">[7d]</button><button type="button" data-lag-sort="peak">[worst 1h]</button></span></th>
       <th id="errors-header">Err/Host <span class="metric-window" data-metric="errors"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
       <th id="success-header">Success % <span class="metric-window" data-metric="success"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
       <th>Coverage</th>
@@ -97,14 +98,9 @@
       <td class="utilization-cell" data-provisioner="{{ row.pool.provisioner }}" data-worker-type="{{ row.pool.worker_type }}" data-utilization-stale="{{ 'true' if row.utilization_stale else 'false' }}">
         <span class="utilization-value no-data">—</span><span class="util-stale-icon" title="stale data" aria-label="stale data"{% if not row.utilization_stale %} hidden{% endif %}>&#9888;</span>{% if row.pool.availability_mode == 'listed' %}<span class="mode-listed" title="Uses Taskcluster-listed capacity, which does not confirm a live device">[L]</span>{% endif %}
       </td>
-      <td{% if row.start_lag and row.start_lag.sample_count >= 5 %} data-sort-value="{{ row.start_lag.p95_seconds }}" title="Observed start lag, last 7d&#10;p50: {{ row.start_lag.p50_seconds | format_lag }}&#10;p95: {{ row.start_lag.p95_seconds | format_lag }}&#10;{{ row.start_lag.sample_count }} observed starts"{% elif row.start_lag %} title="P95 unavailable: {{ row.start_lag.sample_count }} observed starts (minimum 5)."{% endif %}>
-        {% if row.start_lag and row.start_lag.sample_count >= 5 %}<span class="{{ row.start_lag.p95_seconds | lag_color_class }}">{{ row.start_lag.p95_seconds | format_lag }}</span>
-        {% else %}<span class="no-data">—</span>{% endif %}
-      </td>
-      <td>
-        {% if row.alerting is none %}<span class="no-data">—</span>
-        {% elif row.alerting > 0 %}<span class="bad">{{ row.alerting }}</span>
-        {% else %}<span class="ok">0</span>{% endif %}
+      <td class="lag-cell" data-sort-mode="7d" data-lag-7d="{% if row.start_lag and row.start_lag.sample_count >= 5 %}{{ row.start_lag.p95_seconds }}{% endif %}" data-lag-peak="{% if row.start_lag and row.start_lag.peak_hour_p95_seconds is defined and row.start_lag.peak_hour_p95_seconds is not none %}{{ row.start_lag.peak_hour_p95_seconds }}{% endif %}" data-sort-value="{% if row.start_lag and row.start_lag.sample_count >= 5 %}{{ row.start_lag.p95_seconds }}{% endif %}"{% if row.start_lag %} title="Observed start lag, last 7d&#10;p50: {{ row.start_lag.p50_seconds | format_lag }}&#10;p95: {{ row.start_lag.p95_seconds | format_lag }} ({{ row.start_lag.sample_count }} starts){% if row.start_lag.peak_hour_start_at %}&#10;peak hour: {{ row.start_lag.peak_hour_p95_seconds | format_lag }} at {{ row.start_lag.peak_hour_start_at }} ({{ row.start_lag.peak_hour_sample_count }} starts){% endif %}"{% endif %}>
+        <span class="lag-line-item lag-seven-day">7d {% if row.start_lag and row.start_lag.sample_count >= 5 %}<span class="{{ row.start_lag.p95_seconds | lag_color_class }}">{{ row.start_lag.p95_seconds | format_lag }}</span>{% else %}<span class="no-data">—</span>{% endif %}</span>
+        <span class="lag-line-item lag-peak">peak {% if row.start_lag and row.start_lag.peak_hour_p95_seconds is defined and row.start_lag.peak_hour_p95_seconds is not none %}<span class="{{ row.start_lag.peak_hour_p95_seconds | lag_color_class }}">{{ row.start_lag.peak_hour_p95_seconds | format_lag }}</span>{% else %}<span class="no-data">—</span>{% endif %}</span>
       </td>
       <td class="outcome-cell" data-metric="errors" data-errors-1h="{% if row.errors_per_host_1h is not none %}{{ row.errors_per_host_1h }}{% endif %}" data-errors-24h="{% if row.errors_per_host_24h is not none %}{{ row.errors_per_host_24h }}{% endif %}">
         {% if row.errors_per_host_1h is none %}<span class="no-data">—</span>
@@ -129,7 +125,8 @@
   const SORT_KEY = 'pc-index-sort';
   const UTILIZATION_WINDOW_KEY = 'pc-index-utilization-window';
   function cellVal(tr, idx) {
-    return tr.children[idx].dataset.sortValue || tr.children[idx].textContent.trim();
+    const cell = tr.children[idx];
+    return cell.hasAttribute('data-sort-value') ? cell.dataset.sortValue : cell.textContent.trim();
   }
   function applySort(idx, asc) {
     const table = document.getElementById('pools-table');
@@ -145,7 +142,14 @@
       // In numeric columns, push "—" / blank rows to the end regardless of direction.
       if (aNum !== bNum) return aNum ? -1 : 1;
       const cmp = aNum ? an - bn : av.localeCompare(bv);
-      return asc ? cmp : -cmp;
+      if (cmp || ths[idx].id !== 'lag-header') return asc ? cmp : -cmp;
+      const otherMetric = a.children[idx].dataset.sortMode === '7d' ? 'peak' : '7d';
+      const otherAValue = a.children[idx].getAttribute(`data-lag-${otherMetric}`);
+      const otherBValue = b.children[idx].getAttribute(`data-lag-${otherMetric}`);
+      if (!otherAValue || !otherBValue) return otherAValue ? -1 : otherBValue ? 1 : 0;
+      const otherA = Number(otherAValue);
+      const otherB = Number(otherBValue);
+      return asc ? otherA - otherB : otherB - otherA;
     });
     rows.forEach(r => tbody.appendChild(r));
   }
@@ -153,12 +157,18 @@
     const idx = [...th.parentElement.children].indexOf(th);
     const asc = th.dataset.sort === 'desc';
     applySort(idx, asc);
-    try { localStorage.setItem(SORT_KEY, JSON.stringify({idx, asc})); } catch(_) {}
+    try { localStorage.setItem(SORT_KEY, JSON.stringify({idx, asc, version: 2})); } catch(_) {}
   }
   document.querySelectorAll('#pools-table th').forEach(th => th.addEventListener('click', () => sortTable(th)));
   try {
     const saved = JSON.parse(localStorage.getItem(SORT_KEY));
-    if (saved) applySort(saved.idx, saved.asc);
+    if (saved && Number.isInteger(saved.idx)) {
+      const idx = saved.version === 2 ? saved.idx : saved.idx > 5 ? saved.idx - 1 : saved.idx;
+      if ((saved.version === 2 || saved.idx !== 5) && idx >= 0 && idx < document.querySelectorAll('#pools-table th').length) {
+        applySort(idx, saved.asc);
+        if (saved.version !== 2) localStorage.setItem(SORT_KEY, JSON.stringify({idx, asc: saved.asc, version: 2}));
+      }
+    }
   } catch(_) {}
 
   let utilizationWindow = '1h';
@@ -220,6 +230,27 @@
   void loadOverviewUtilizationSummaries();
   setUtilizationWindow(utilizationWindow);
 
+  const LAG_SORT_KEY = 'pc-index-lag-sort';
+  let lagSortMode = '7d';
+  try {
+    const savedMode = localStorage.getItem(LAG_SORT_KEY);
+    if (savedMode === '7d' || savedMode === 'peak') lagSortMode = savedMode;
+  } catch(_) {}
+  function setLagSortMode(mode) {
+    lagSortMode = mode;
+    document.querySelectorAll('.metric-window[data-metric="lag"] button').forEach(button => {
+      button.classList.toggle('active', button.dataset.lagSort === mode);
+    });
+    document.querySelectorAll('.lag-cell').forEach(cell => {
+      cell.dataset.sortMode = mode;
+      cell.dataset.sortValue = cell.getAttribute(`data-lag-${mode}`) || '';
+    });
+    const header = document.getElementById('lag-header');
+    if (header.dataset.sort) applySort([...header.parentElement.children].indexOf(header), header.dataset.sort === 'asc');
+    try { localStorage.setItem(LAG_SORT_KEY, mode); } catch(_) {}
+  }
+  setLagSortMode(lagSortMode);
+
   const outcomeWindows = {errors: '1h', success: '1h'};
   const outcomeWindowKeys = {errors: 'pc-index-errors-window', success: 'pc-index-success-window'};
   for (const metric of Object.keys(outcomeWindows)) {
@@ -255,6 +286,7 @@
       event.stopPropagation();
       const metric = button.parentElement.dataset.metric;
       if (metric === 'utilization') setUtilizationWindow(button.dataset.window);
+      else if (metric === 'lag') setLagSortMode(button.dataset.lagSort);
       else setOutcomeWindow(metric, button.dataset.window);
     });
   });
