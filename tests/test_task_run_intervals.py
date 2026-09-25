@@ -825,7 +825,9 @@ def test_activity_heatmap_renders_unclassified_with_distinct_color(tmp_path):
     )
     assert '<h2 id="s-recent-failures"><a href="#s-recent-failures">Recent Failures</a></h2>' in offenders_html
     assert '<table class="recent-failures-table not-sortable">' in offenders_html
-    assert '<colgroup><col class="failure-category-col"><col class="failure-count-col"><col></colgroup>' in offenders_html
+    assert '<colgroup><col class="failure-severity-col"><col class="failure-category-col"><col class="failure-count-col"><col></colgroup>' in offenders_html
+    assert '<th>Severity</th><th>Category</th>' in offenders_html
+    assert '<span class="severity-badge severity-unclassified">unclassified</span>' in offenders_html
     assert 'data-recent-failures-window="24h"' in offenders_html
     assert 'data-recent-failures-window="7d"' in offenders_html
     assert 'data-failure-count24h="1" data-failure-count7d="6"' in offenders_html
@@ -838,9 +840,31 @@ def test_activity_heatmap_renders_unclassified_with_distinct_color(tmp_path):
     assert ".unclassified-category { color:#c86ccd; font-weight:bold; }" in offenders_html
     assert "const RECENT_FAILURES_STORAGE_KEY = 'pool-classifier:detail:recent-failures-window';" in offenders_html
     assert "localStorage.setItem(RECENT_FAILURES_STORAGE_KEY, window)" in offenders_html
+    assert "linkedFailuresWindow" in offenders_html
     assert "localStorage.getItem(RECENT_FAILURES_STORAGE_KEY)" in offenders_html
     assert "setRecentFailuresWindow(initialRecentFailuresWindow);" in offenders_html
     assert "data-failure-count-window" in offenders_html
+
+
+def test_recent_failures_show_operational_severity_before_volume(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+
+    html = classifier._write_html({}, recent_failures={
+        "24h": {
+            "wpt-unexpected-results": {"total": 20, "offenders": []},
+            "raptor-mitmproxy-download-failed": {"total": 3, "offenders": []},
+            "device_unavailable": {"total": 1, "offenders": []},
+        },
+        "7d": {},
+    })
+
+    assert html.index('data-category="device_unavailable"') < html.index('data-category="raptor-mitmproxy-download-failed"')
+    assert html.index('data-category="raptor-mitmproxy-download-failed"') < html.index('data-category="wpt-unexpected-results"')
+    assert '<span class="severity-badge severity-critical">critical</span>' in html
+    assert '<span class="severity-badge severity-high">high</span>' in html
+    assert '<span class="severity-badge severity-low">low</span>' in html
 
 
 def test_postgres_heatmap_does_not_mark_completed_rows_as_unclassified():
@@ -1013,6 +1037,30 @@ def test_pool_detail_renders_scan_time_busy_device_turnaround(tmp_path, monkeypa
     assert "p95: 5m 40s" in html
     assert "Observed handoffs: 45" in html
     assert "all between-task overhead" in html
+
+
+def test_pool_detail_shows_recent_task_outcomes_with_live_host_denominator(tmp_path):
+    storage = SqliteStorage("provisioner/worker-type", tmp_path)
+    classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+
+    html = classifier._write_html({}, recent_failures={"24h": {}, "7d": {}}, recent_outcomes={
+        "ok_1h": 9, "err_1h": 1, "ok_24h": 80, "err_24h": 20, "live_hosts": 4,
+    })
+
+    assert '<h2 id="s-task-outcomes"><a href="#s-task-outcomes">Recent Task Outcomes</a></h2>' in html
+    assert 'href="#s-task-outcomes">Task Outcomes</a>' in html
+    assert html.index('id="s-recent-failures"') < html.index('id="s-task-outcomes"') < html.index('id="s-all"')
+    assert '<div class="task-outcome-cards">' in html
+    assert '<p class="task-outcome-window">Last hour</p>' in html
+    assert '<p class="task-outcome-window">Last 24 hours</p>' in html
+    assert '<span class="task-outcome-rate">90.0%</span>' in html
+    assert '<span class="task-outcome-rate">80.0%</span>' in html
+    assert '<div><dt>Completed</dt><dd>9</dd></div>' in html
+    assert '<div><dt>Failed/exception</dt><dd>20</dd></div>' in html
+    assert '<div><dt>Err/live host</dt><dd>0.25</dd></div>' in html
+    assert '<div><dt>Err/live host</dt><dd>5.00</dd></div>' in html
+    assert "Err/live host uses the current 4 live hosts" in html
 
 
 def test_terminal_collection_reports_incomplete_worker_poll(tmp_path, monkeypatch):

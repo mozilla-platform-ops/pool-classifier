@@ -711,6 +711,21 @@ class SqliteStorage:
             (since,),
         ).fetchone()[0]
 
+    def get_recent_task_outcomes(self, since_1h: str, since_24h: str) -> dict:
+        row = self.db.execute(
+            "SELECT"
+            " COUNT(*) FILTER (WHERE run_state IN ('failed', 'exception') AND run_resolved >= ?) AS err_1h,"
+            " COUNT(*) FILTER (WHERE run_state = 'completed' AND run_resolved >= ?) AS ok_1h,"
+            " COUNT(*) FILTER (WHERE run_state IN ('failed', 'exception')) AS err_24h,"
+            " COUNT(*) FILTER (WHERE run_state = 'completed') AS ok_24h"
+            " FROM task_results WHERE run_resolved >= ?",
+            (since_1h, since_1h, since_24h),
+        ).fetchone()
+        live_hosts = self.db.execute(
+            "SELECT COUNT(*) FROM worker_availability_state WHERE available = 1",
+        ).fetchone()[0]
+        return {**dict(row), "live_hosts": live_hosts}
+
     def count_workers_without_group(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM workers WHERE worker_group IS NULL").fetchone()[0]
 
@@ -1514,7 +1529,9 @@ SELECT requested_pools.pool_id,
        recent.err_1h,
        recent.ok_1h,
        recent.err_24h,
-       recent.ok_24h
+       recent.ok_24h,
+       priority.critical_24h,
+       priority.high_24h
 FROM requested_pools
 LEFT JOIN LATERAL (
     SELECT MIN(task_results.classified_at) AS oldest,
@@ -1542,6 +1559,14 @@ LEFT JOIN LATERAL (
     WHERE task_results.pool_id = requested_pools.pool_id
       AND task_results.run_resolved >= %(s24h)s
 ) AS recent ON true
+LEFT JOIN LATERAL (
+    SELECT COUNT(*) FILTER (WHERE task_results.category = ANY(%(critical_categories)s::text[])) AS critical_24h,
+           COUNT(*) FILTER (WHERE task_results.category = ANY(%(high_categories)s::text[])) AS high_24h
+    FROM task_results
+    WHERE task_results.pool_id = requested_pools.pool_id
+      AND task_results.run_started >= %(s24h)s
+      AND task_results.run_state != 'completed'
+) AS priority ON true
 ORDER BY requested_pools.pool_id
 """
 
@@ -1581,6 +1606,8 @@ def pool_summaries_global(
     alert_threshold: int,
     since_1h: str,
     since_24h: str,
+    critical_categories: Tuple[str, ...] = (),
+    high_categories: Tuple[str, ...] = (),
 ) -> Dict[str, dict]:
     """Return current dashboard summaries for the requested pools only.
 
@@ -1616,6 +1643,8 @@ def pool_summaries_global(
                 "ok_1h": 0,
                 "err_24h": 0,
                 "ok_24h": 0,
+                "critical_24h": 0,
+                "high_24h": 0,
             },
         )
 
@@ -1650,17 +1679,22 @@ def pool_summaries_global(
         # The request must remain scoped to both a known pool and the dashboard
         # horizon.  Do not fold this back into an all-history GROUP BY query.
         with conn.cursor() as cur:
-            cur.execute(CURRENT_POOL_SUMMARY_SQL, {"pool_ids": list(pool_ids), "s1h": since_1h, "s24h": since_24h})
+            cur.execute(CURRENT_POOL_SUMMARY_SQL, {
+                "pool_ids": list(pool_ids), "s1h": since_1h, "s24h": since_24h,
+                "critical_categories": list(critical_categories), "high_categories": list(high_categories),
+            })
             for row in cur.fetchall():
                 (
                     pool_id, oldest, latest,
                     task_runs, successes, errors, err_1h, ok_1h, err_24h, ok_24h,
+                    critical_24h, high_24h,
                 ) = row
                 e = _entry(pool_id)
                 e["oldest"] = _to_iso(oldest)
                 e["latest"] = _to_iso(latest)
                 e["task_runs"], e["successes"], e["errors"] = task_runs, successes, errors
                 e["err_1h"], e["ok_1h"], e["err_24h"], e["ok_24h"] = err_1h, ok_1h, err_24h, ok_24h
+                e["critical_24h"], e["high_24h"] = critical_24h, high_24h
     return summaries
 
 
@@ -2860,6 +2894,26 @@ class PostgresStorage:
                 (self.pool_id, since),
             )
             return cur.fetchone()["cnt"]
+
+    def get_recent_task_outcomes(self, since_1h: str, since_24h: str) -> dict:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT"
+                " COUNT(*) FILTER (WHERE run_state IN ('failed', 'exception') AND run_resolved >= %s) AS err_1h,"
+                " COUNT(*) FILTER (WHERE run_state = 'completed' AND run_resolved >= %s) AS ok_1h,"
+                " COUNT(*) FILTER (WHERE run_state IN ('failed', 'exception')) AS err_24h,"
+                " COUNT(*) FILTER (WHERE run_state = 'completed') AS ok_24h"
+                " FROM task_results WHERE pool_id = %s AND run_resolved >= %s",
+                (since_1h, since_1h, self.pool_id, since_24h),
+            )
+            outcomes = dict(cur.fetchone())
+            cur.execute(
+                "SELECT COUNT(*) AS live_hosts FROM worker_availability_state"
+                " WHERE pool_id = %s AND available = TRUE",
+                (self.pool_id,),
+            )
+            outcomes["live_hosts"] = cur.fetchone()["live_hosts"]
+        return outcomes
 
     @contextmanager
     def classify_lock(self):

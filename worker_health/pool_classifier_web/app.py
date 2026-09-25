@@ -601,6 +601,8 @@ def _global_pool_summaries(dsn: str, pool_ids: tuple[str, ...]) -> dict:
         CONSECUTIVE_FAILURE_ALERT,
         (now - timedelta(hours=1)).isoformat(),
         (now - timedelta(hours=24)).isoformat(),
+        tuple(patterns_registry.categories_by_severity("critical")),
+        tuple(patterns_registry.categories_by_severity("high")),
     )
 
 
@@ -1201,9 +1203,6 @@ def create_app() -> Flask:
                 except Exception as e:
                     logger.warning("index: observed_start_lag_summaries_global failed: %s", e)
 
-        def _eph(errors, workers):
-            return round(errors / workers, 2) if workers else None
-
         def _sr(errors, successes):
             total = errors + successes
             return round(successes / total * 100, 1) if total > 0 else None
@@ -1219,10 +1218,10 @@ def create_app() -> Flask:
                         "coverage": None,
                         "coverage_seconds": None,
                         "workers": None,
-                        "errors_per_host_1h": None,
                         "success_rate_1h": None,
-                        "errors_per_host_24h": None,
                         "success_rate_24h": None,
+                        "priority_critical_24h": None,
+                        "priority_high_24h": None,
                         "start_lag": None,
                     },
                 )
@@ -1231,15 +1230,18 @@ def create_app() -> Flask:
             if s is None:
                 # No rows yet for this pool (never classified).
                 workers = alerting = oldest = latest = None
-                errors_per_host_1h = success_rate_1h = errors_per_host_24h = success_rate_24h = None
+                success_rate_1h = success_rate_24h = None
+                priority_critical_24h = priority_high_24h = None
                 collection_latest = None
             else:
                 workers, alerting = s["workers"], s["alerting"]
+                priority_critical_24h = s.get("critical_24h")
+                priority_high_24h = s.get("high_24h")
                 oldest = s["task_collection_started"] or s["oldest"]
                 latest = s["collection_latest"] or s["latest"]
                 collection_latest = s["collection_latest"]
-                errors_per_host_1h, success_rate_1h = _eph(s["err_1h"], workers), _sr(s["err_1h"], s["ok_1h"])
-                errors_per_host_24h, success_rate_24h = _eph(s["err_24h"], workers), _sr(s["err_24h"], s["ok_24h"])
+                success_rate_1h = _sr(s["err_1h"], s["ok_1h"])
+                success_rate_24h = _sr(s["err_24h"], s["ok_24h"])
             coverage, coverage_seconds = _coverage_label(oldest, latest, now_dt, collection_latest)
             lag = lag_summaries.get(f"{pool.provisioner}/{pool.worker_type}")
             rows.append(
@@ -1253,10 +1255,10 @@ def create_app() -> Flask:
                     "coverage": coverage,
                     "coverage_seconds": coverage_seconds,
                     "workers": workers,
-                    "errors_per_host_1h": errors_per_host_1h,
                     "success_rate_1h": success_rate_1h,
-                    "errors_per_host_24h": errors_per_host_24h,
                     "success_rate_24h": success_rate_24h,
+                    "priority_critical_24h": priority_critical_24h,
+                    "priority_high_24h": priority_high_24h,
                     "start_lag": lag,
                 },
             )

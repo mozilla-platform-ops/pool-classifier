@@ -634,6 +634,20 @@ def test_query_windowed_sr(sqlite, pg):
 
 def test_pool_summaries_global_parity(pg):
     _seed(pg)
+    for index, category in enumerate(("device_unavailable", "raptor-mitmproxy-download-failed",
+                                      "raptor-mitmproxy-download-failed", "wpt-unexpected-results")):
+        pg.record_task_result(
+            f"priority-{index}", "w1", 0, "failed", category, None,
+            _now_iso(-1), _now_iso(), _now_iso(),
+        )
+    pg.record_task_result(
+        "priority-completed", "w1", 0, "completed", "device_unavailable", None,
+        _now_iso(-1), _now_iso(), _now_iso(),
+    )
+    pg.record_task_result(
+        "priority-outside-window", "w1", 0, "failed", "device_unavailable", None,
+        _now_iso(-25), _now_iso(), _now_iso(),
+    )
     observed = _now_iso()
     pg.upsert_worker_availability_state("w1", "grp-a", True, False, observed, None, "online", observed, observed)
     pg.upsert_worker_availability_state("w2", None, False, False, None, None, "contact_timeout", observed, observed)
@@ -642,7 +656,10 @@ def test_pool_summaries_global_parity(pg):
     since_24h = _now_iso(-24)
     threshold = 1
 
-    s = pool_summaries_global(DSN, (POOL_ID,), threshold, since_1h, since_24h).get(POOL_ID)
+    s = pool_summaries_global(
+        DSN, (POOL_ID,), threshold, since_1h, since_24h,
+        ("device_unavailable",), ("raptor-mitmproxy-download-failed",),
+    ).get(POOL_ID)
     assert s is not None, "seeded pool should appear in the grouped result"
 
     # Each batched field must equal the per-pool method it replaces.
@@ -654,6 +671,23 @@ def test_pool_summaries_global_parity(pg):
     assert s["ok_1h"] == pg.count_recent_successes(since_1h)
     assert s["err_24h"] == pg.count_recent_errors(since_24h)
     assert s["ok_24h"] == pg.count_recent_successes(since_24h)
+    assert s["critical_24h"] == 1
+    assert s["high_24h"] == 2
+
+
+def test_recent_task_outcomes_match_between_sqlite_and_postgres(sqlite, pg):
+    for storage in (sqlite, pg):
+        _seed(storage)
+        observed = _now_iso()
+        storage.upsert_worker_availability_state(
+            "w1", "grp-a", True, False, observed, None, "online", observed, observed,
+        )
+        storage.commit()
+
+    since_1h, since_24h = _now_iso(-1), _now_iso(-24)
+    expected = {"err_1h": 2, "ok_1h": 1, "err_24h": 2, "ok_24h": 1, "live_hosts": 1}
+    assert sqlite.get_recent_task_outcomes(since_1h, since_24h) == expected
+    assert pg.get_recent_task_outcomes(since_1h, since_24h) == expected
 
 
 def test_pool_summaries_global_returns_zero_summary_for_requested_empty_pool(pg):

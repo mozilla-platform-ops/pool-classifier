@@ -509,7 +509,8 @@ def test_index_uses_overview_snapshot_without_global_aggregates(monkeypatch):
             "source_at": datetime.now(timezone.utc).isoformat(),
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "payload": {
-                "pool_summaries": {"proj/worker": {"workers": 7, "alerting": 0, "task_collection_started": None,
+                "pool_summaries": {"proj/worker": {"workers": 7, "alerting": 0,
+                                                    "critical_24h": 2, "high_24h": 3, "task_collection_started": None,
                                                     "oldest": None, "latest": None, "collection_latest": None,
                                                     "err_1h": 0, "ok_1h": 0, "err_24h": 0, "ok_24h": 0}},
                 "lag_summaries": {},
@@ -526,6 +527,12 @@ def test_index_uses_overview_snapshot_without_global_aggregates(monkeypatch):
 
     assert response.status_code == 200
     assert b"data from" in response.data
+    assert b"Priority (24h)" in response.data
+    assert b"Task success %" in response.data
+    assert b"Err/Host" not in response.data
+    assert b"2 critical" in response.data
+    assert b"3 high" in response.data
+    assert b"?failures_window=24h#s-recent-failures" in response.data
 
 
 def test_index_marks_only_failed_pool_utilization_stale(monkeypatch):

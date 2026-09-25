@@ -75,8 +75,8 @@
       <th title="Currently available hosts from the latest worker-availability scan. See Coverage for scan freshness.">Live hosts</th>
       <th id="utilization-header">Utilization <span class="metric-window" data-metric="utilization"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
       <th id="lag-header" title="Both values use runs scheduled in the last 7 days and later observed terminal. Overall is p95 across all observed starts; worst 1h is the highest hourly p95 among hours with at least 5 starts.">Start lag (7d p95) <span class="metric-window" data-metric="lag"><button type="button" data-lag-sort="7d">[overall]</button><button type="button" data-lag-sort="peak">[worst 1h]</button></span></th>
-      <th id="errors-header">Err/Host <span class="metric-window" data-metric="errors"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
-      <th id="success-header">Success % <span class="metric-window" data-metric="success"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
+      <th id="priority-header" title="Failed task runs started in the last 24 hours with critical or high operational-priority classifications. Sorts by critical count, then high count.">Priority (24h)</th>
+      <th id="success-header" title="Share of recorded completed versus failed or exception task runs. Includes product and test failures, so this is not a pool-health verdict.">Task success % <span class="metric-window" data-metric="success"><button type="button" data-window="1h">[1h]</button><button type="button" data-window="24h">[24h]</button></span></th>
       <th>Coverage</th>
     </tr>
   </thead>
@@ -102,9 +102,9 @@
         <span class="lag-line-item lag-seven-day">overall {% if row.start_lag and row.start_lag.sample_count >= 5 %}<span class="{{ row.start_lag.p95_seconds | lag_color_class }}">{{ row.start_lag.p95_seconds | format_lag }}</span>{% else %}<span class="no-data">—</span>{% endif %}</span>
         <span class="lag-line-item lag-peak">worst 1h {% if row.start_lag and row.start_lag.peak_hour_p95_seconds is defined and row.start_lag.peak_hour_p95_seconds is not none %}<span class="{{ row.start_lag.peak_hour_p95_seconds | lag_color_class }}">{{ row.start_lag.peak_hour_p95_seconds | format_lag }}</span>{% else %}<span class="no-data">—</span>{% endif %}</span>
       </td>
-      <td class="outcome-cell" data-metric="errors" data-errors-1h="{% if row.errors_per_host_1h is not none %}{{ row.errors_per_host_1h }}{% endif %}" data-errors-24h="{% if row.errors_per_host_24h is not none %}{{ row.errors_per_host_24h }}{% endif %}">
-        {% if row.errors_per_host_1h is none %}<span class="no-data">—</span>
-        {% elif row.errors_per_host_1h > 0 %}<span class="warn">{{ row.errors_per_host_1h }}</span>
+      <td{% if row.priority_critical_24h is not none and row.priority_high_24h is not none %} data-sort-value="{{ row.priority_critical_24h }}" data-priority-high="{{ row.priority_high_24h }}" title="Last 24h: {{ row.priority_critical_24h }} critical, {{ row.priority_high_24h }} high classification(s)"{% else %} data-sort-value=""{% endif %}>
+        {% if row.priority_critical_24h is none or row.priority_high_24h is none %}<span class="no-data">—</span>
+        {% elif row.priority_critical_24h or row.priority_high_24h %}<a href="/pools/{{ row.pool.provisioner }}/{{ row.pool.worker_type }}?failures_window=24h#s-recent-failures">{% if row.priority_critical_24h %}<span class="bad">{{ row.priority_critical_24h }} critical</span>{% endif %}{% if row.priority_critical_24h and row.priority_high_24h %} · {% endif %}{% if row.priority_high_24h %}<span class="warn">{{ row.priority_high_24h }} high</span>{% endif %}</a>
         {% else %}<span class="ok">0</span>{% endif %}
       </td>
       <td class="outcome-cell" data-metric="success" data-success-1h="{% if row.success_rate_1h is not none %}{{ row.success_rate_1h }}{% endif %}" data-success-24h="{% if row.success_rate_24h is not none %}{{ row.success_rate_24h }}{% endif %}">
@@ -142,6 +142,11 @@
       // In numeric columns, push "—" / blank rows to the end regardless of direction.
       if (aNum !== bNum) return aNum ? -1 : 1;
       const cmp = aNum ? an - bn : av.localeCompare(bv);
+      if (!cmp && ths[idx].id === 'priority-header') {
+        const highA = Number(a.children[idx].dataset.priorityHigh || 0);
+        const highB = Number(b.children[idx].dataset.priorityHigh || 0);
+        return asc ? highA - highB : highB - highA;
+      }
       if (cmp || ths[idx].id !== 'lag-header') return asc ? cmp : -cmp;
       const otherMetric = a.children[idx].dataset.sortMode === '7d' ? 'peak' : '7d';
       const otherAValue = a.children[idx].getAttribute(`data-lag-${otherMetric}`);
@@ -157,16 +162,17 @@
     const idx = [...th.parentElement.children].indexOf(th);
     const asc = th.dataset.sort === 'desc';
     applySort(idx, asc);
-    try { localStorage.setItem(SORT_KEY, JSON.stringify({idx, asc, version: 2})); } catch(_) {}
+    try { localStorage.setItem(SORT_KEY, JSON.stringify({idx, asc, version: 3})); } catch(_) {}
   }
   document.querySelectorAll('#pools-table th').forEach(th => th.addEventListener('click', () => sortTable(th)));
   try {
     const saved = JSON.parse(localStorage.getItem(SORT_KEY));
     if (saved && Number.isInteger(saved.idx)) {
-      const idx = saved.version === 2 ? saved.idx : saved.idx > 5 ? saved.idx - 1 : saved.idx;
-      if ((saved.version === 2 || saved.idx !== 5) && idx >= 0 && idx < document.querySelectorAll('#pools-table th').length) {
+      const idx = saved.version === 3 || saved.version === 2 ? saved.idx : saved.idx > 5 ? saved.idx - 1 : saved.idx;
+      const removedSort = saved.version === 2 ? saved.idx === 5 : saved.version !== 3 && (saved.idx === 5 || saved.idx === 6);
+      if (!removedSort && idx >= 0 && idx < document.querySelectorAll('#pools-table th').length) {
         applySort(idx, saved.asc);
-        if (saved.version !== 2) localStorage.setItem(SORT_KEY, JSON.stringify({idx, asc: saved.asc, version: 2}));
+        if (saved.version !== 3) localStorage.setItem(SORT_KEY, JSON.stringify({idx, asc: saved.asc, version: 3}));
       }
     }
   } catch(_) {}
@@ -251,8 +257,8 @@
   }
   setLagSortMode(lagSortMode);
 
-  const outcomeWindows = {errors: '1h', success: '1h'};
-  const outcomeWindowKeys = {errors: 'pc-index-errors-window', success: 'pc-index-success-window'};
+  const outcomeWindows = {success: '1h'};
+  const outcomeWindowKeys = {success: 'pc-index-success-window'};
   for (const metric of Object.keys(outcomeWindows)) {
     try {
       const savedWindow = localStorage.getItem(outcomeWindowKeys[metric]);
@@ -264,8 +270,6 @@
     cell.dataset.sortValue = value || '';
     if (!value) {
       cell.innerHTML = '<span class="no-data">—</span>';
-    } else if (metric === 'errors') {
-      cell.innerHTML = `<span class="${Number(value) > 0 ? 'warn' : 'ok'}">${value}</span>`;
     } else {
       const style = Number(value) >= 95 ? 'ok' : Number(value) >= 80 ? 'warn' : 'bad';
       cell.innerHTML = `<span class="${style}">${value}%</span>`;
@@ -277,7 +281,7 @@
       button.classList.toggle('active', button.dataset.window === window);
     });
     document.querySelectorAll(`.outcome-cell[data-metric="${metric}"]`).forEach(cell => renderOutcome(cell, metric));
-    const header = document.getElementById(`${metric === 'errors' ? 'errors' : 'success'}-header`);
+    const header = document.getElementById('success-header');
     if (header.dataset.sort) applySort([...header.parentElement.children].indexOf(header), header.dataset.sort === 'asc');
     try { localStorage.setItem(outcomeWindowKeys[metric], window); } catch(_) {}
   }

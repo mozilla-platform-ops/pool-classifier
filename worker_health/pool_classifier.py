@@ -23,7 +23,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import requests
 import taskcluster
 
-from worker_health.pool_classifier_web.patterns_registry import all_patterns, categories_by_severity, classify_patterns
+from worker_health.pool_classifier_web.patterns_registry import all_patterns, categories_by_severity, classify_patterns, severity_of
 from worker_health.pool_classifier_web.job_sources import SourceMethod, classify_job_source
 from worker_health.pool_classifier_web.registry import AVAILABILITY_MODES
 from worker_health.pool_classifier_web.storage import SqliteStorage
@@ -1735,6 +1735,9 @@ class PoolClassifier:
             "24h": self._recent_failure_summary(since_1d),
             "7d": self._recent_failure_summary(since_7d),
         }
+        recent_outcomes = self.storage.get_recent_task_outcomes(
+            (now - timedelta(hours=1)).isoformat(), since_1d,
+        )
         turnaround_start = now - timedelta(days=7)
         busy_turnaround = self.storage.get_busy_turnaround(turnaround_start.isoformat(), now.isoformat())
         return self._write_html(
@@ -1745,6 +1748,7 @@ class PoolClassifier:
             heatmap,
             quarantine_details,
             recent_failures=recent_failures,
+            recent_outcomes=recent_outcomes,
             busy_turnaround=busy_turnaround,
             os_label=os_label,
             navigation_html=navigation_html,
@@ -1788,6 +1792,12 @@ class PoolClassifier:
             "query_recent_failures",
             lambda: {"24h": self._recent_failure_summary(since_1d), "7d": self._recent_failure_summary(since_7d)},
         )
+        recent_outcomes = _timed(
+            "query_recent_outcomes",
+            lambda: self.storage.get_recent_task_outcomes(
+                (now - timedelta(hours=1)).isoformat(), since_1d,
+            ),
+        )
         turnaround_start = now - timedelta(days=7)
         busy_turnaround = _timed(
             "query_busy_turnaround",
@@ -1799,6 +1809,7 @@ class PoolClassifier:
             lambda: self._write_html(
                 workers, quarantined, windowed_sr, since_1d, heatmap, quarantine_details,
                 recent_failures=recent_failures,
+                recent_outcomes=recent_outcomes,
                 busy_turnaround=busy_turnaround,
             ),
         )
@@ -1928,6 +1939,7 @@ class PoolClassifier:
         heatmap: Dict[str, Dict[int, dict]] = None,
         quarantine_details: Dict[str, dict] = None,
         recent_failures: Optional[Dict[str, Dict[str, dict]]] = None,
+        recent_outcomes: Optional[Dict[str, int]] = None,
         busy_turnaround: Dict[str, object] = None,
         os_label: str = "",
         navigation_html: Optional[str] = None,
@@ -2061,6 +2073,7 @@ class PoolClassifier:
             "  h2 { color: #f90; margin-top: 2rem; }",
             "  p.gen { color: #666; font-size: .85em; margin-bottom: .5rem; }",
             "  .pool-summary-metrics { display:flex; flex-wrap:wrap; gap:.4rem 1.5rem; margin:.75rem 0 0; color:#aaa; font-size:.85em; } .pool-summary-metrics dt, .pool-summary-metrics dd { display:inline; margin:0; } .pool-summary-metrics dt { color:#666; } .pool-summary-metrics dd { color:#ccc; font-weight:bold; }",
+            "  .task-outcome-cards { display:grid; grid-template-columns:repeat(2,minmax(0,20rem)); gap:.8rem; margin:.7rem 0 1rem; } .task-outcome-card { border:1px solid #383838; border-radius:5px; background:#1a1a1a; padding:.8rem 1rem; } .task-outcome-window { color:#999; font-size:.85em; margin:0 0 .35rem; } .task-outcome-rate { color:#eee; font-size:1.7rem; font-weight:bold; line-height:1.2; } .task-outcome-rate-label { color:#888; font-size:.8em; margin-left:.35rem; } .task-outcome-bar { display:flex; height:.4rem; margin:.65rem 0; overflow:hidden; border-radius:3px; background:#333; } .task-outcome-bar-success { background:#4b8b78; } .task-outcome-bar-failure { background:#b8874d; } .task-outcome-stats { display:flex; flex-wrap:wrap; gap:.25rem 1rem; margin:0; font-size:.82em; } .task-outcome-stats div { display:flex; gap:.35rem; } .task-outcome-stats dt { color:#888; } .task-outcome-stats dd { margin:0; color:#ccc; } @media (max-width:44rem) { .task-outcome-cards { grid-template-columns:1fr; } }",
             "  .footer { margin: 2rem 0 1rem; color: #555; font-size: .8em; text-align: center; }",
             "  .dashboard-toolbar { display:flex; align-items:center; gap:.75rem 1.5rem; flex-wrap:wrap; margin:1rem 0; }",
             "  .tz-toggle { display:flex; align-items:center; gap:.25rem; flex-wrap:wrap; margin:0 0 0 auto; font-size:.9em; }",
@@ -2110,7 +2123,8 @@ class PoolClassifier:
             "  li.bad { color: #f44; margin-bottom: .3rem; }",
             "  .quarantine { color: #f90; font-size: .85em; margin-left: .4em; }",
             "  .reason-trunc { display: inline-block; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; cursor: default; }",
-            "  .recent-failures-table { width:100%; table-layout:auto; font-size:.85em; } .recent-failures-table .failure-category-col, .recent-failures-table .failure-count-col { width:1%; } .recent-failures-table th { cursor:default; padding-left:1.25rem; padding-right:1.25rem; } .recent-failures-table td { padding:.35rem 1.25rem; vertical-align:top; } .recent-failures-table .failure-category, .recent-failures-table .failure-counts { white-space:nowrap; } .recent-failures-table .failure-counts { color:#777; } .recent-failures-table .failure-count.active { color:#ccc; font-weight:bold; } .recent-failures-table .failure-workers { color:#aaa; overflow:hidden; } .recent-failures-table [data-recent-failure-workers]:not([hidden]) { display:block; overflow:hidden; white-space:nowrap; } .recent-failure-worker, .recent-failure-more { white-space:nowrap; } .recent-failures-table .unclassified-category { color:#c86ccd; font-weight:bold; } .recent-failures-table [title] { cursor:help; }",
+            "  .recent-failures-table { width:100%; table-layout:auto; font-size:.85em; } .recent-failures-table .failure-severity-col, .recent-failures-table .failure-category-col, .recent-failures-table .failure-count-col { width:1%; } .recent-failures-table th { cursor:default; padding-left:1.25rem; padding-right:1.25rem; } .recent-failures-table td { padding:.35rem 1.25rem; vertical-align:top; } .recent-failures-table .failure-severity, .recent-failures-table .failure-category, .recent-failures-table .failure-counts { white-space:nowrap; } .recent-failures-table .failure-counts { color:#777; } .recent-failures-table .failure-count.active { color:#ccc; font-weight:bold; } .recent-failures-table .failure-workers { color:#aaa; overflow:hidden; } .recent-failures-table [data-recent-failure-workers]:not([hidden]) { display:block; overflow:hidden; white-space:nowrap; } .recent-failure-worker, .recent-failure-more { white-space:nowrap; } .recent-failures-table .unclassified-category { color:#c86ccd; font-weight:bold; } .recent-failures-table [title] { cursor:help; }",
+            "  .severity-badge { display:inline-block; padding:.1rem .35rem; border:1px solid; border-radius:3px; font-size:.85em; font-weight:bold; text-transform:uppercase; } .severity-critical { color:#f77; background:#2b1717; border-color:#7a3333; } .severity-high { color:#fb9; background:#2a2116; border-color:#805a2a; } .severity-low { color:#aab; background:#20202a; border-color:#45455a; } .severity-unclassified { color:#d9a0e0; background:#2a1c2b; border-color:#714078; } .severity-other { color:#aaa; background:#222; border-color:#555; }",
             "  a { color: inherit; text-decoration: none; }",
             "  a:visited { color: inherit; }",
             "  a:hover { text-decoration: underline; }",
@@ -2199,6 +2213,7 @@ class PoolClassifier:
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
             '  <a href="#s-heatmap">Worker Activity</a><span class="sep">|</span>',
             '  <a href="#s-recent-failures">Recent Failures</a><span class="sep">|</span>',
+            *(['  <a href="#s-task-outcomes">Task Outcomes</a><span class="sep">|</span>'] if recent_outcomes is not None else []),
             '  <a href="#s-all">All Workers</a>',
             "</nav>",
             '<div class="tz-toggle" aria-label="Display controls">',
@@ -2444,25 +2459,32 @@ class PoolClassifier:
             parts += [
                 '<section aria-labelledby="s-recent-failures">',
                 '<h2 id="s-recent-failures"><a href="#s-recent-failures">Recent Failures</a></h2>',
-                '<p class="gen">Failure categories and the most affected workers in the selected reporting window.</p>',
+                '<p class="gen">Failure categories sorted by operational severity, then count, with the most affected workers in the selected reporting window.</p>',
                 '<div class="recent-failures-controls" aria-label="Recent failures reporting window">',
                 '<button type="button" class="active" data-recent-failures-window="24h" aria-pressed="true">[24h]</button>',
                 '<button type="button" data-recent-failures-window="7d" aria-pressed="false">[7d]</button>',
                 '</div>',
                 '<table class="recent-failures-table not-sortable">',
-                '<colgroup><col class="failure-category-col"><col class="failure-count-col"><col></colgroup>',
-                '<thead><tr><th>Category</th><th>Failures</th><th>Top affected workers</th></tr></thead>',
+                '<colgroup><col class="failure-severity-col"><col class="failure-category-col"><col class="failure-count-col"><col></colgroup>',
+                '<thead><tr><th>Severity</th><th>Category</th><th>Failures</th><th>Top affected workers</th></tr></thead>',
                 '<tbody id="recent-failures-list">',
             ]
-            for cat in sorted(categories, key=lambda c: (-recent_24h.get(c, {}).get("total", 0), c)):
+            severity_rank = {"critical": 0, "high": 1, "low": 2, "unclassified": 3, "other": 4}
+
+            def recent_failure_severity(category: str) -> str:
+                return severity_of(category) or ("unclassified" if category == "unclassified" else "other")
+
+            for cat in sorted(categories, key=lambda c: (severity_rank[recent_failure_severity(c)], -recent_24h.get(c, {}).get("total", 0), c)):
                 count_24h = recent_24h.get(cat, {}).get("total", 0)
                 count_7d = recent_7d.get(cat, {}).get("total", 0)
+                severity = recent_failure_severity(cat)
                 category_label = cat
                 if cat == "unclassified":
                     category_label = f'<a class="unclassified-category" href="/pools/{self.provisioner}/{self.worker_type}/unclassified">{cat}</a>'
                 parts.append(
-                    f'<tr class="recent-failure" data-category="{cat}" data-failure-count24h="{count_24h}" '
+                    f'<tr class="recent-failure" data-category="{cat}" data-severity-rank="{severity_rank[severity]}" data-failure-count24h="{count_24h}" '
                     f'data-failure-count7d="{count_7d}">'
+                    f'<td class="failure-severity"><span class="severity-badge severity-{severity}">{severity}</span></td>'
                     f'<td class="failure-category">{category_label}</td>'
                     f'<td class="failure-counts"><span class="failure-count" data-failure-count-window="24h">{count_24h} in 24h</span> &middot; '
                     f'<span class="failure-count" data-failure-count-window="7d">{count_7d} in 7d</span></td><td class="failure-workers">',
@@ -2487,6 +2509,42 @@ class PoolClassifier:
             parts += [
                 '</tbody></table>',
                 '<p id="recent-failures-empty" class="recent-failures-empty" hidden>No failures in the selected reporting window.</p>',
+                '</section>',
+            ]
+
+        if recent_outcomes is not None:
+            live_hosts = recent_outcomes["live_hosts"]
+            parts += [
+                '<section aria-labelledby="s-task-outcomes">',
+                '<h2 id="s-task-outcomes"><a href="#s-task-outcomes">Recent Task Outcomes</a></h2>',
+                '<div class="task-outcome-cards">',
+            ]
+            for window, label in (("1h", "Last hour"), ("24h", "Last 24 hours")):
+                successes = recent_outcomes[f"ok_{window}"]
+                errors = recent_outcomes[f"err_{window}"]
+                total = successes + errors
+                success_share = 100 * successes / total if total else 0
+                success_pct = f"{success_share:.1f}%" if total else "—"
+                errors_per_host = f"{errors / live_hosts:.2f}" if live_hosts else "—"
+                parts += [
+                    '<article class="task-outcome-card">',
+                    f'<p class="task-outcome-window">{label}</p>',
+                    f'<div><span class="task-outcome-rate">{success_pct}</span>'
+                    '<span class="task-outcome-rate-label">task success</span></div>',
+                    '<div class="task-outcome-bar" aria-hidden="true">'
+                    f'<span class="task-outcome-bar-success" style="width:{success_share:.1f}%"></span>'
+                    f'<span class="task-outcome-bar-failure" style="width:{100 - success_share if total else 0:.1f}%"></span>'
+                    '</div>',
+                    '<dl class="task-outcome-stats">',
+                    f'<div><dt>Completed</dt><dd>{successes:,}</dd></div>',
+                    f'<div><dt>Failed/exception</dt><dd>{errors:,}</dd></div>',
+                    f'<div><dt>Err/live host</dt><dd>{errors_per_host}</dd></div>',
+                    '</dl></article>',
+                ]
+            parts += [
+                '</div>',
+                '<p class="gen">Failures can include product and test outcomes. '
+                f'Err/live host uses the current {live_hosts} live hosts, not historical capacity.</p>',
                 '</section>',
             ]
 
@@ -2636,7 +2694,7 @@ class PoolClassifier:
             "    document.querySelectorAll('[data-failure-count-window]').forEach(count => count.classList.toggle('active', count.dataset.failureCountWindow === window));",
             "    if (!recentFailureList) return;",
             "    const cards = [...recentFailureList.querySelectorAll('.recent-failure')];",
-            "    cards.sort((a, b) => Number(b.dataset[`failureCount${window}`]) - Number(a.dataset[`failureCount${window}`]) || a.textContent.localeCompare(b.textContent));",
+            "    cards.sort((a, b) => Number(a.dataset.severityRank) - Number(b.dataset.severityRank) || Number(b.dataset[`failureCount${window}`]) - Number(a.dataset[`failureCount${window}`]) || a.dataset.category.localeCompare(b.dataset.category));",
             "    let visible = 0;",
             "    cards.forEach(card => { const active = Number(card.dataset[`failureCount${window}`]) > 0; card.hidden = !active; card.querySelectorAll('[data-recent-failure-workers]').forEach(list => { list.hidden = list.dataset.recentFailureWorkers !== window; }); if (active) { recentFailureList.appendChild(card); visible += 1; } });",
             "    recentFailureEmpty.hidden = visible !== 0;",
@@ -2646,6 +2704,7 @@ class PoolClassifier:
             "  window.addEventListener('resize', layoutRecentFailureWorkers);",
             "  recentFailureButtons.forEach(button => button.addEventListener('click', () => { const window = button.dataset.recentFailuresWindow; try { localStorage.setItem(RECENT_FAILURES_STORAGE_KEY, window); } catch (_) {} setRecentFailuresWindow(window); }));",
             "  let initialRecentFailuresWindow = '24h'; try { const saved = localStorage.getItem(RECENT_FAILURES_STORAGE_KEY); if (saved === '24h' || saved === '7d') initialRecentFailuresWindow = saved; } catch (_) {}",
+            "  const linkedFailuresWindow = new URLSearchParams(window.location.search).get('failures_window'); if (linkedFailuresWindow === '24h' || linkedFailuresWindow === '7d') initialRecentFailuresWindow = linkedFailuresWindow;",
             "  setRecentFailuresWindow(initialRecentFailuresWindow);",
             "  // Auto-refresh via localStorage so preference survives reloads.",
             "  const arButtons = [...document.querySelectorAll('[data-autorefresh]')];",
