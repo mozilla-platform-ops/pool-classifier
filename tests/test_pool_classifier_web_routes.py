@@ -488,9 +488,9 @@ def test_index_shows_sortable_observed_start_lag_with_hover_details(monkeypatch)
     assert 'data-lag-peak="720.0"' in html
     assert 'p50: 38s' in html
     assert 'p95: 4m 12s (5 starts)' in html
-    assert 'peak hour: 12m at 2026-09-24T12:00:00+00:00 (5 starts)' in html
+    assert 'worst 1h p95: 12m at 2026-09-24T12:00:00+00:00 (5 starts)' in html
     assert '7d <span class="ok">4m 12s</span>' in html
-    assert 'peak <span class="ok">12m</span>' in html
+    assert 'worst 1h <span class="ok">12m</span>' in html
     assert '<span class="ok">4m 12s</span>' in html
     assert "/api/v1/overview/utilization?windows=1h,24h" in html
     assert "async function loadOverviewUtilizationSummaries()" in html
@@ -575,7 +575,7 @@ def test_index_hides_lag_p95_below_minimum_sample_count(monkeypatch):
         response = client.get("/")
 
     assert '7d <span class="no-data">—</span>' in response.text
-    assert 'peak <span class="no-data">—</span>' in response.text
+    assert 'worst 1h <span class="no-data">—</span>' in response.text
     assert 'data-sort-value="252.0"' not in response.text
 
 
