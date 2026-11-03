@@ -17,13 +17,20 @@ Reuse this identity across replacement sessions. If the user indicates another
 session is working concurrently, create a separate identity for your task
 rather than sharing this one.
 
-Discover other projects and agents when coordination is needed. Use a consistent
-thread ID for each topic, reply to questions, and acknowledge messages that
-request it. Check your inbox between substantial work steps and before finishing.
+Send Agent Mail only when coordinating a task with another agent, or when the
+user explicitly requests a message. Do not send self-addressed messages, routine
+status updates, or end-of-session handoffs for independent work. A replacement
+session alone is not a reason to send mail.
 
-Before finishing, leave useful handoff context in Agent Mail, including current
-status, outstanding requests, and next steps for the replacement session.
-If Agent Mail is unavailable, report it and continue independent work.
+When coordinating with another agent, discover the relevant project and agent,
+use a consistent thread ID for each topic, reply to questions, and acknowledge
+messages that request it. Check your inbox between substantial work steps and
+before finishing while that coordination is active. Send a handoff to the
+collaborating agent only when they need the status, outstanding requests, or
+next steps to continue the shared task.
+
+If Agent Mail is unavailable, continue independent work and report it only when
+it prevents needed coordination.
 
 ## Release Workflow
 
