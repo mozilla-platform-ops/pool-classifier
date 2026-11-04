@@ -42,6 +42,8 @@ pools:
   - provisioner: releng-hardware
     worker_type: gecko-t-linux-talos-2404
   - provisioner: releng-hardware
+    worker_type: gecko-t-linux-talos-2404-wayland
+  - provisioner: releng-hardware
     worker_type: gecko-t-linux-talos-1804
   - provisioner: releng-hardware
     worker_type: gecko-t-osx-1015-r8
