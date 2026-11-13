@@ -1,7 +1,7 @@
 # Pool classifier web service — Cloud Run image.
 # Build context is the repository root.
 FROM ghcr.io/astral-sh/uv:0.12.5 AS uv
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 ARG POOL_CLASSIFIER_COMMIT=unknown
 
