@@ -1,0 +1,95 @@
+.job-suite-explorer:not([hidden]) {
+    display: grid;
+    grid-template-columns: minmax(12rem, 2fr) minmax(0, 3fr);
+    gap: 1.25rem;
+    max-width: 80rem;
+}
+
+.job-suite-list-heading,
+.job-suite-list button {
+    display: flex;
+    justify-content: space-between;
+    gap: .75rem;
+    padding: .5rem .65rem;
+}
+
+.job-suite-list-heading {
+    color: #aaa;
+    border-bottom: 1px solid #444;
+}
+
+.job-suite-list-heading span:last-child,
+.job-suite-list button span:last-child {
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+}
+
+.job-suite-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.job-suite-list button {
+    width: 100%;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid #2a2a2a;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+}
+
+.job-suite-list button:hover,
+.job-suite-list button[aria-pressed="true"] {
+    background: #24201a;
+}
+
+.job-suite-list button[aria-pressed="true"] {
+    color: #ffc269;
+    box-shadow: inset 3px 0 #f90;
+}
+
+.job-suite-detail {
+    min-width: 0;
+    border-left: 1px solid #333;
+    padding-left: 1.25rem;
+}
+
+.job-suite-detail h3 {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.job-suite-explorer .job-suite-detail th {
+    cursor: default;
+}
+
+.job-suite-detail :is(th, td) {
+    padding: .4rem .55rem;
+    vertical-align: top;
+}
+
+.job-suite-detail td:first-child {
+    width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.job-suite-detail :is(th, td):not(:first-child) {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 650px) {
+    .job-suite-explorer:not([hidden]) {
+        grid-template-columns: minmax(0, 1fr);
+        gap: .85rem;
+    }
+
+    .job-suite-detail {
+        border-left: 0;
+        padding-left: 0;
+    }
+}

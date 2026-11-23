@@ -2112,7 +2112,6 @@ class PoolClassifier:
             "  th[data-sort='desc']::after { content: ' ▼'; color: #f90; }",
             "  td { padding: .35rem .8rem; border-bottom: 1px solid #2a2a2a; }",
             "  table:not(.hm-grid) tr:hover td { background: #1a1a1a; }",
-            "  #job-families th { cursor:default; } #job-families td { vertical-align:top; } #job-families td:first-child { width:100%; overflow-wrap:anywhere; } #job-families summary { cursor:pointer; }",
             "  tr.alert td { background: #2a1a00; }",
             "  .hm-cell:hover { outline: 2px solid #fff; outline-offset: -2px; z-index: 1; position: relative; }",
             "  #hm-tip { position: fixed; background: #222; border: 1px solid #555; border-radius: 5px; padding: .5rem .8rem; font-size: .8em; color: #ccc; pointer-events: none; display: none; z-index: 200; line-height: 1.6; }",
@@ -2278,10 +2277,8 @@ class PoolClassifier:
             '<button type="button" aria-pressed="false" data-days="3">[3d]</button>'
             '<button type="button" aria-pressed="false" data-days="7">[7d]</button></div>',
             '<p class="gen" role="status">Loading jobs by suite…</p>',
-            '<table hidden class="not-sortable" aria-labelledby="s-job-families"><thead><tr><th scope="col">Suite</th>'
-            '<th scope="col">Runs</th><th scope="col">Share</th><th scope="col">Worker-hours</th>'
-            '</tr></thead><tbody></tbody></table></section>',
-            '<script defer src="/static/job-families.js"></script>',
+            '<div data-suite-explorer hidden></div></section>',
+            '<script defer src="/static/job-families.js?v=2"></script>',
             '<h2 id="s-start-lag"><a href="#s-start-lag">Start Lag</a></h2>',
             '<p class="gen">Observed scheduled-to-start time for terminal task runs. This excludes jobs that never started, so it is not a queue total, drop rate, or pool-health verdict.</p>',
             '<p id="lag-freshness" class="gen">Loading observed start lag…</p>',

@@ -103,7 +103,8 @@ def test_job_family_report_clips_runs_and_reuses_task_metadata(tmp_path, monkeyp
     assert calls == ["known"]
     html = classifier.render_html()
     assert 'data-endpoint="/api/v1/pools/proj/worker/job-families"' in html
-    assert 'src="/static/job-families.js"' in html
+    assert '<div data-suite-explorer hidden></div>' in html
+    assert 'src="/static/job-families.js?v=2"' in html
 
 
 def test_task_source_chart_uses_accessible_colors_order_and_custom_tooltip(tmp_path):
