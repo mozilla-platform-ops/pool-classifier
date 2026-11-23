@@ -95,7 +95,12 @@ DEBUG_INSTANCE_COLORS = (
     "#f85149",
     "#39c5cf",
 )
-DEBUG_INSTANCE_PORT_COLORS = {"8080": "#58a6ff", "18080": "#58a6ff"}
+DEBUG_INSTANCE_PORT_COLORS = {
+    "8080": "#58a6ff",
+    "8081": "#39c5cf",
+    "18080": "#58a6ff",
+    "18081": "#39c5cf",
+}
 DEBUG_INSTANCE_BADGE_COLOR = "#39c5cf"
 
 # Dashboard aggregates are intentionally process-local: metric definitions are
@@ -204,9 +209,10 @@ def _add_debug_instance_identity(html: str, port: str, debug_enabled: bool) -> s
         "letter-spacing: .04em; box-shadow: 0 .15rem .6rem #0008; }"
         "</style>"
     )
+    instance_type = "Local debug instance" if debug_enabled else "Local instance"
     marker = (
         f'<div class="debug-instance-indicator" style="--debug-instance-color: {DEBUG_INSTANCE_BADGE_COLOR}" '
-        f'aria-label="Local debug instance: {escape(label)}">{escape(label)}</div>'
+        f'aria-label="{instance_type}: {escape(label)}">{escape(label)}</div>'
     )
     if "debug-instance-identity" in html:
         return html

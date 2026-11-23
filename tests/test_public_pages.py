@@ -121,9 +121,19 @@ def test_local_instance_identity_uses_a_port_only_badge_without_debug(monkeypatc
     monkeypatch.setenv("PC_INSTANCE_IDENTITY", "1")
     app = create_app()
 
-    response = app.test_client().get("/api", environ_overrides={"SERVER_PORT": "8080"})
+    response = app.test_client().get("/api", environ_overrides={"SERVER_PORT": "18080"})
 
     assert b"debug-instance-identity" in response.data
-    assert b">8080</div>" in response.data
-    assert b"DEBUG 8080" not in response.data
+    assert b'aria-label="Local instance: 18080">18080</div>' in response.data
+    assert b"linear-gradient(#58a6ff20, #58a6ff20)" in response.data
     assert b"--debug-instance-color: #39c5cf" in response.data
+
+
+def test_local_debug_port_has_a_debug_badge_and_teal_tint():
+    app = create_app()
+    app.debug = True
+
+    response = app.test_client().get("/api", environ_overrides={"SERVER_PORT": "18081"})
+
+    assert b'aria-label="Local debug instance: DEBUG 18081">DEBUG 18081</div>' in response.data
+    assert b"linear-gradient(#39c5cf20, #39c5cf20)" in response.data
