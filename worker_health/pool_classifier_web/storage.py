@@ -110,7 +110,9 @@ CREATE TABLE IF NOT EXISTS task_sources (
     task_id       TEXT PRIMARY KEY,
     source        TEXT NOT NULL,
     source_method INTEGER NOT NULL,
-    fetched_at    TEXT NOT NULL
+    fetched_at    TEXT NOT NULL,
+    task_name     TEXT,
+    job_family    TEXT
 );
 
 
@@ -222,6 +224,10 @@ class SqliteStorage:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(DB_SCHEMA)
         self._migrate_task_results_schema()
+        source_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(task_sources)")}
+        for column in ("task_name", "job_family"):
+            if column not in source_columns:
+                self.db.execute(f"ALTER TABLE task_sources ADD COLUMN {column} TEXT")
         try:
             self._db.execute("ALTER TABLE workers ADD COLUMN worker_group TEXT")
         except sqlite3.OperationalError:
@@ -304,11 +310,16 @@ class SqliteStorage:
         row = self.db.execute("SELECT source, source_method FROM task_sources WHERE task_id = ?", (task_id,)).fetchone()
         return dict(row) if row else None
 
-    def record_task_source(self, task_id: str, source: str, source_method: int, fetched_at: str) -> None:
+    def record_task_source(
+        self, task_id: str, source: str, source_method: int, fetched_at: str,
+        *, task_name: str | None = None, job_family: str | None = None,
+    ) -> None:
         self.db.execute(
-            "INSERT INTO task_sources (task_id, source, source_method, fetched_at) VALUES (?,?,?,?)"
-            " ON CONFLICT(task_id) DO UPDATE SET source=excluded.source, source_method=excluded.source_method, fetched_at=excluded.fetched_at",
-            (task_id, source, source_method, fetched_at),
+            "INSERT INTO task_sources (task_id, source, source_method, fetched_at, task_name, job_family) VALUES (?,?,?,?,?,?)"
+            " ON CONFLICT(task_id) DO UPDATE SET source=excluded.source, source_method=excluded.source_method,"
+            " fetched_at=excluded.fetched_at, task_name=COALESCE(excluded.task_name, task_sources.task_name),"
+            " job_family=COALESCE(excluded.job_family, task_sources.job_family)",
+            (task_id, source, source_method, fetched_at, task_name, job_family),
         )
 
     def list_task_ids_missing_source(self, limit: int, not_before: Optional[str] = None) -> List[str]:
@@ -956,6 +967,19 @@ class SqliteStorage:
             " FROM task_results r LEFT JOIN task_sources s ON s.task_id = r.task_id"
             " WHERE r.run_started >= ? AND r.run_started < ? GROUP BY day, source ORDER BY day, source",
             (range_start, range_end),
+        )]
+
+    def get_job_family_volume(self, range_start: str, range_end: str) -> list[dict]:
+        return [dict(row) for row in self.db.execute(
+            "SELECT COALESCE(s.job_family, 'Unknown') AS job_family, s.task_name, COUNT(*) AS runs,"
+            " SUM(ROUND((MIN(julianday(r.run_resolved), julianday(:end))"
+            " - MAX(julianday(r.run_started), julianday(:start))) * 86400, 3)) AS worker_seconds"
+            " FROM task_results r LEFT JOIN task_sources s ON s.task_id = r.task_id"
+            " WHERE r.run_state IN ('completed', 'failed', 'exception')"
+            " AND julianday(r.run_started) < julianday(:end) AND julianday(r.run_resolved) > julianday(:start)"
+            " AND julianday(r.run_resolved) > julianday(r.run_started)"
+            " GROUP BY 1, 2 ORDER BY 1, runs DESC, 2",
+            {"start": range_start, "end": range_end},
         )]
 
     def get_observed_start_lag_visualization(
@@ -1770,12 +1794,18 @@ class PostgresStorage:
             row = cur.fetchone()
             return dict(row) if row else None
 
-    def record_task_source(self, task_id: str, source: str, source_method: int, fetched_at: str) -> None:
+    def record_task_source(
+        self, task_id: str, source: str, source_method: int, fetched_at: str,
+        *, task_name: str | None = None, job_family: str | None = None,
+    ) -> None:
         with self._write_cursor() as cur:
             cur.execute(
-                "INSERT INTO task_sources (task_id, source, source_method, fetched_at) VALUES (%s,%s,%s,%s::timestamptz)"
-                " ON CONFLICT(task_id) DO UPDATE SET source=EXCLUDED.source, source_method=EXCLUDED.source_method, fetched_at=EXCLUDED.fetched_at",
-                (task_id, source, source_method, fetched_at),
+                "INSERT INTO task_sources (task_id, source, source_method, fetched_at, task_name, job_family)"
+                " VALUES (%s,%s,%s,%s::timestamptz,%s,%s)"
+                " ON CONFLICT(task_id) DO UPDATE SET source=EXCLUDED.source, source_method=EXCLUDED.source_method,"
+                " fetched_at=EXCLUDED.fetched_at, task_name=COALESCE(EXCLUDED.task_name, task_sources.task_name),"
+                " job_family=COALESCE(EXCLUDED.job_family, task_sources.job_family)",
+                (task_id, source, source_method, fetched_at, task_name, job_family),
             )
 
     def list_task_ids_missing_source(self, limit: int, not_before: Optional[str] = None) -> List[str]:
@@ -2377,6 +2407,21 @@ class PostgresStorage:
                 " WHERE r.pool_id = %s AND r.run_started >= %s::timestamptz AND r.run_started < %s::timestamptz"
                 " GROUP BY day, source ORDER BY day, source",
                 (self.pool_id, range_start, range_end),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    def get_job_family_volume(self, range_start: str, range_end: str) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(s.job_family, 'Unknown') AS job_family, s.task_name, COUNT(*) AS runs,"
+                " SUM(EXTRACT(EPOCH FROM (LEAST(r.run_resolved, %(end)s::timestamptz)"
+                " - GREATEST(r.run_started, %(start)s::timestamptz))))::double precision AS worker_seconds"
+                " FROM task_results r LEFT JOIN task_sources s ON s.task_id = r.task_id"
+                " WHERE r.pool_id = %(pool)s AND r.run_state IN ('completed', 'failed', 'exception')"
+                " AND r.run_started < %(end)s::timestamptz AND r.run_resolved > %(start)s::timestamptz"
+                " AND r.run_resolved > r.run_started"
+                " GROUP BY 1, 2 ORDER BY 1, runs DESC, 2",
+                {"pool": self.pool_id, "start": range_start, "end": range_end},
             )
             return [dict(row) for row in cur.fetchall()]
 

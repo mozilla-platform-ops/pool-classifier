@@ -1,6 +1,11 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
 import taskcluster
 
 from worker_health.pool_classifier import PoolClassifier
+from worker_health.pool_classifier_web import app as app_module
+from worker_health.pool_classifier_web.job_families import task_job_metadata
 from worker_health.pool_classifier_web.job_sources import AUDIT_WORKER_SOURCE, SourceMethod, classify_job_source
 from worker_health.pool_classifier_web.storage import SqliteStorage
 
@@ -37,6 +42,68 @@ def test_source_volume_uses_cached_source_and_unknown(tmp_path):
         {"day": "2026-08-05", "source": "try", "tasks": 1},
         {"day": "2026-08-05", "source": "unknown", "tasks": 1},
     ]
+
+
+def test_job_family_uses_test_suite_and_build_kind():
+    assert task_job_metadata({"metadata": {"name": "test-android-browsertime-tp6m-1"}}) == (
+        "test-android-browsertime-tp6m-1", "Page load",
+    )
+    assert task_job_metadata({"metadata": {"name": "test-linux-mochitest-media-2"}}) == (
+        "test-linux-mochitest-media-2", "Mochitest media",
+    )
+    assert task_job_metadata({"extra": {"treeherder": {"jobKind": "build"}}}) == (None, "Builds")
+    assert task_job_metadata({"metadata": {"name": "unmapped-job"}}) == ("unmapped-job", "Unknown")
+
+
+def test_job_family_report_clips_runs_and_reuses_task_metadata(tmp_path, monkeypatch):
+    storage = SqliteStorage("proj/worker", tmp_path)
+    storage.init_schema()
+    classifier = PoolClassifier("proj", "worker", results_dir=tmp_path, storage=storage, use_color=False)
+    midnight = datetime(2026, 8, 6, tzinfo=timezone.utc)
+    name = "test-android-browsertime-speedometer3"
+    calls = []
+
+    def fetch(task_id):
+        calls.append(task_id)
+        return {"metadata": {"name": name}, "tags": {"project": "try"}}
+
+    monkeypatch.setattr(classifier, "_ensure_tc", lambda: None)
+    classifier.tc_queue = SimpleNamespace(task=fetch)
+    classifier._record_job_source("known", midnight.isoformat())
+    classifier._record_job_source("known", midnight.isoformat())
+    assert calls == ["known"]
+
+    def run(task, run_id, start, end, state="completed"):
+        storage.record_task_result(task, "worker", run_id, state, None, None, start, end, midnight.isoformat())
+
+    run("known", 0, "2026-08-04T23:00:00+00:00", "2026-08-05T01:00:00+00:00")
+    run("known", 1, "2026-08-05T23:30:00+00:00", "2026-08-06T00:30:00+00:00", "failed")
+    run("legacy", 0, "2026-08-05T01:00:00+00:00", "2026-08-05T02:00:00+00:00")
+    run("before", 0, "2026-08-04T23:00:00+00:00", "2026-08-05T00:00:00+00:00")
+    run("after", 0, "2026-08-06T00:00:00+00:00", "2026-08-06T01:00:00+00:00")
+    run("open", 0, "2026-08-05T01:00:00+00:00", None, "running")
+    storage.commit()
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return midnight.astimezone(tz)
+
+    monkeypatch.setattr(app_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(app_module, "_get_classifier", lambda *_args: classifier)
+    client = app_module.create_app().test_client()
+    url = "/api/v1/pools/proj/worker/job-families"
+    assert client.get(url).get_json()["jobs"] == [
+        {"job_family": "Benchmarks", "task_name": name, "runs": 2, "worker_seconds": 5400.0},
+        {"job_family": "Unknown", "task_name": None, "runs": 1, "worker_seconds": 3600.0},
+    ]
+    assert client.get(f"{url}?days=3").get_json()["days"] == 3
+    assert client.get(f"{url}?days=7").get_json()["days"] == 7
+    assert client.get(f"{url}?days=14").status_code == 400
+    assert calls == ["known"]
+    html = classifier.render_html()
+    assert 'data-endpoint="/api/v1/pools/proj/worker/job-families"' in html
+    assert 'src="/static/job-families.js"' in html
 
 
 def test_task_source_chart_uses_accessible_colors_order_and_custom_tooltip(tmp_path):

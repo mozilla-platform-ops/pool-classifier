@@ -67,6 +67,25 @@ then worker ID. They use opaque cursor pagination: `limit` defaults to 50 and
 is at most 200; pass `pagination.next_cursor` as `cursor` to obtain the next
 page. Empty pages return HTTP 200 with an empty `workers` list.
 
+## Jobs by suite
+
+`GET /api/v1/pools/{provisioner}/{worker_type}/job-families` accepts
+`days=1` (default), `days=3`, or `days=7`. It returns the UTC bounds
+`start_at` and `end_at` for the trailing period and a `jobs` array grouped
+by `job_family` and exact Taskcluster `task_name`. Each group includes the
+number of `runs` and `worker_seconds` inside the window.
+
+Observed completed, failed, and exception runs with valid start and finish
+timestamps count when their execution overlaps the window. Worker time is
+clipped to the window, so a run that started earlier contributes only time
+from the start of the window. Each retry counts as a separate run. An empty
+array means no observed finished runs with execution time in the period.
+
+Names and families come from metadata saved during collection. Builds have
+their own family, common perf and functional suites are matched by name, and
+other Treeherder test jobs use `Other tests`. Unmapped jobs or legacy runs use
+`Unknown`, with a null `task_name` when the exact name is unavailable.
+
 ## Patterns
 
 `GET /api/v1/patterns` returns configured classification-pattern metadata in

@@ -1,0 +1,1 @@
+ALTER TABLE task_sources ADD COLUMN IF NOT EXISTS task_name TEXT, ADD COLUMN IF NOT EXISTS job_family TEXT;

@@ -82,6 +82,34 @@ def _now_iso(delta_hours=0):
     return (datetime.now(timezone.utc) + timedelta(hours=delta_hours)).isoformat()
 
 
+def test_job_family_volume_matches_sqlite_and_is_pool_scoped(sqlite, pg):
+    start, end = "2026-08-05T10:00:00+00:00", "2026-08-05T11:00:00+00:00"
+    task_id = "test-job-family-volume"
+    for storage in (sqlite, pg):
+        storage.record_task_source(task_id, "try", 0, end, task_name="build-linux", job_family="Builds")
+        storage.record_task_source(task_id, "try", 0, end)
+        storage.record_task_result(
+            task_id, "worker", 0, "completed", None, None, "2026-08-05T09:30:00+00:00",
+            "2026-08-05T10:30:00+00:00", end,
+        )
+        storage.commit()
+    other_pool = PostgresStorage(pool_id="test-pool/other", dsn=DSN)
+    other_pool.init_schema()
+    try:
+        other_pool.record_task_result(
+            task_id, "worker", 1, "completed", None, None, start, end, end,
+        )
+        other_pool.commit()
+        assert pg.get_job_family_volume(start, end) == sqlite.get_job_family_volume(start, end) == [
+            {"job_family": "Builds", "task_name": "build-linux", "runs": 1, "worker_seconds": 1800.0},
+        ]
+    finally:
+        other_pool.close()
+        with psycopg.connect(DSN) as conn:
+            conn.execute("DELETE FROM task_results WHERE pool_id = %s AND task_id = %s", ("test-pool/other", task_id))
+            conn.execute("DELETE FROM task_sources WHERE task_id = %s", (task_id,))
+
+
 def _seed(storage):
     """Insert a worker + a few task results so query methods have data."""
     storage.upsert_worker("w1", "grp-a")

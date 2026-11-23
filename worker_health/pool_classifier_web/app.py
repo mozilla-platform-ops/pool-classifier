@@ -1356,6 +1356,7 @@ def create_app() -> Flask:
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/failures", "description": "Failure category counts."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/unclassified", "description": "Unclassified task runs."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/workers", "description": "Filterable, paginated worker health."},
+                    {"path": "/api/v1/pools/{provisioner}/{worker_type}/job-families", "description": "Observed finished jobs grouped by suite and name."},
                     {"path": "/api/v1/patterns", "description": "Classification-pattern registry."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/utilization", "description": "Duration-weighted utilization."},
                     {"path": "/api/v1/pools/{provisioner}/{worker_type}/utilization/summary", "description": "Standard utilization windows."},
@@ -1749,6 +1750,26 @@ def create_app() -> Flask:
         start = end - timedelta(days=days)
         return jsonify({"api_version": 1, "start_at": start.isoformat(), "end_at": end.isoformat(), "days": days,
                         "buckets": pc.storage.get_job_source_volume(start.isoformat(), end.isoformat())})
+
+    @app.get("/api/v1/pools/<provisioner>/<worker_type>/job-families")
+    def pool_job_families(provisioner: str, worker_type: str):
+        period = request.args.get("days", "1")
+        if period not in {"1", "3", "7"}:
+            return jsonify({"error": {"code": "invalid_parameter", "message": "days must be 1, 3, or 7"}}), 400
+        pc = _get_classifier(provisioner, worker_type)
+        if pc is None:
+            return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
+        days = int(period)
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=days)
+        jobs = pc.storage.get_job_family_volume(start.isoformat(), end.isoformat())
+        return jsonify({
+            "api_version": 1,
+            "start_at": start.isoformat(),
+            "end_at": end.isoformat(),
+            "days": days,
+            "jobs": jobs,
+        })
 
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/observed-start-lag/visualization")
     def pool_observed_start_lag_visualization(provisioner: str, worker_type: str):

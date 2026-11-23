@@ -24,6 +24,7 @@ import requests
 import taskcluster
 
 from worker_health.pool_classifier_web.patterns_registry import all_patterns, categories_by_severity, classify_patterns, severity_of
+from worker_health.pool_classifier_web.job_families import task_job_metadata
 from worker_health.pool_classifier_web.job_sources import SourceMethod, classify_job_source
 from worker_health.pool_classifier_web.registry import AVAILABILITY_MODES
 from worker_health.pool_classifier_web.storage import SqliteStorage
@@ -425,7 +426,7 @@ class PoolClassifier:
             raise
 
     def _record_job_source(self, task_id: str, classified_at: str) -> None:
-        """Fetch and cache only the compact source classification for a task."""
+        """Fetch a task definition once for source and job-family reporting."""
         cached = self.storage.get_task_source(task_id)
         if cached and cached["source_method"] != int(SourceMethod.TASK_FETCH_FAILED):
             return
@@ -436,7 +437,10 @@ class PoolClassifier:
             logger.warning("%s: task-definition fetch failed: %s", task_id, exc)
             task = None
         source = classify_job_source(task)
-        self.storage.record_task_source(task_id, source.source, int(source.method), classified_at)
+        task_name, job_family = task_job_metadata(task)
+        self.storage.record_task_source(
+            task_id, source.source, int(source.method), classified_at, task_name=task_name, job_family=job_family,
+        )
 
     def _get_task_definition_with_retry(
         self, task_id: str, retries: int, rate_limiter: _RequestRateLimiter,
@@ -501,7 +505,10 @@ class PoolClassifier:
         classified_at = datetime.now(timezone.utc).isoformat()
         for task_id, task in fetched.items():
             source = classify_job_source(task)
-            self.storage.record_task_source(task_id, source.source, int(source.method), classified_at)
+            task_name, job_family = task_job_metadata(task)
+            self.storage.record_task_source(
+                task_id, source.source, int(source.method), classified_at, task_name=task_name, job_family=job_family,
+            )
             stats["classified"] += 1
             if source.source == "unknown":
                 stats["unknown"] += 1
@@ -2105,6 +2112,7 @@ class PoolClassifier:
             "  th[data-sort='desc']::after { content: ' ▼'; color: #f90; }",
             "  td { padding: .35rem .8rem; border-bottom: 1px solid #2a2a2a; }",
             "  table:not(.hm-grid) tr:hover td { background: #1a1a1a; }",
+            "  #job-families th { cursor:default; } #job-families td { vertical-align:top; } #job-families td:first-child { width:100%; overflow-wrap:anywhere; } #job-families summary { cursor:pointer; }",
             "  tr.alert td { background: #2a1a00; }",
             "  .hm-cell:hover { outline: 2px solid #fff; outline-offset: -2px; z-index: 1; position: relative; }",
             "  #hm-tip { position: fixed; background: #222; border: 1px solid #555; border-radius: 5px; padding: .5rem .8rem; font-size: .8em; color: #ccc; pointer-events: none; display: none; z-index: 200; line-height: 1.6; }",
@@ -2180,6 +2188,7 @@ class PoolClassifier:
         coverage_breaks_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/coverage-breaks"
         start_lag_visualization_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/observed-start-lag/visualization"
         job_sources_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/job-sources"
+        job_families_url = f"/api/v1/pools/{self.provisioner}/{self.worker_type}/job-families"
         guide_url = f"/pools/{self.provisioner}/{self.worker_type}/utilization-api-guide"
 
         pool_summary = []
@@ -2206,6 +2215,7 @@ class PoolClassifier:
             '<nav class="page-nav">',
             '  <a href="#summary-heading">Summary</a><span class="sep">|</span>',
             '  <a href="#s-job-sources">Task Source</a><span class="sep">|</span>',
+            '  <a href="#s-job-families">Jobs by Suite</a><span class="sep">|</span>',
             '  <a href="#s-start-lag">Start Lag</a><span class="sep">|</span>',
             '  <a href="#s-utilization">Utilization</a><span class="sep">|</span>',
             '  <a href="#s-device-turnaround">Device Turnaround</a><span class="sep">|</span>',
@@ -2261,6 +2271,17 @@ class PoolClassifier:
             '<h2 id="s-job-sources"><a href="#s-job-sources">Task Source</a></h2>',
             '<p class="gen">Terminal task runs grouped by the Taskcluster project tag or an explicit reviewed source mapping.</p>',
             '<p class="source-summary gen"><span id="source-freshness">Loading job sources…</span><span aria-hidden="true">·</span><span class="source-controls" role="group" aria-label="Task Source range"><button type="button" class="active" data-source-days="7">[7d]</button><button type="button" data-source-days="14">[14d]</button></span></p><div id="source-chart" class="source-chart" role="group" aria-label="Daily job volume by source"></div><div id="source-tooltip" class="source-tooltip" role="tooltip" aria-hidden="true"></div>',
+            f'<section id="job-families" aria-labelledby="s-job-families" data-endpoint="{escape(job_families_url, quote=True)}">',
+            '<h2 id="s-job-families"><a href="#s-job-families">Jobs by Suite</a></h2>',
+            '<div class="source-controls" role="group" aria-label="Jobs by Suite period">'
+            '<button type="button" class="active" aria-pressed="true" data-days="1">[24h]</button>'
+            '<button type="button" aria-pressed="false" data-days="3">[3d]</button>'
+            '<button type="button" aria-pressed="false" data-days="7">[7d]</button></div>',
+            '<p class="gen" role="status">Loading jobs by suite…</p>',
+            '<table hidden class="not-sortable" aria-labelledby="s-job-families"><thead><tr><th scope="col">Suite</th>'
+            '<th scope="col">Runs</th><th scope="col">Share</th><th scope="col">Worker-hours</th>'
+            '</tr></thead><tbody></tbody></table></section>',
+            '<script defer src="/static/job-families.js"></script>',
             '<h2 id="s-start-lag"><a href="#s-start-lag">Start Lag</a></h2>',
             '<p class="gen">Observed scheduled-to-start time for terminal task runs. This excludes jobs that never started, so it is not a queue total, drop rate, or pool-health verdict.</p>',
             '<p id="lag-freshness" class="gen">Loading observed start lag…</p>',
