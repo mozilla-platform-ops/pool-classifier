@@ -37,7 +37,7 @@ down -v` does not remove that bind mount.
 Start the app:
 
 ```sh
-./pc_start.sh                  # serves on :8080
+./pc_start.sh                  # serves on :18080
 PC_PORT=8090 ./pc_start.sh     # override port
 ```
 
@@ -55,17 +55,17 @@ uv run pool-classifier --host 127.0.0.1 --port 8090 --workers 1
 
 Useful local URLs:
 
-- Dashboard: <http://localhost:8080/>
-- Admin dashboard: <http://localhost:8080/admin>
-- Example pool: <http://localhost:8080/pools/proj-autophone/gecko-t-lambda-perf-a55>
-- Liveness check: <http://localhost:8080/healthz>
+- Dashboard: <http://localhost:18080/>
+- Admin dashboard: <http://localhost:18080/admin>
+- Example pool: <http://localhost:18080/pools/proj-autophone/gecko-t-lambda-perf-a55>
+- Liveness check: <http://localhost:18080/healthz>
 - [Public API](../reference/public-api.md)
 
 ## Classify pools
 
 ```sh
 # One pool
-curl -s -X POST localhost:8080/classify/proj-autophone/gecko-t-lambda-perf-a55 | jq .
+curl -s -X POST localhost:18080/classify/proj-autophone/gecko-t-lambda-perf-a55 | jq .
 
 # Every enabled non-VM pool, through the aggregate production path
 bash pc_fetch_data.sh

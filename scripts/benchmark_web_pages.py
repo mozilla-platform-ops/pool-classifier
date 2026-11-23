@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 import requests
 
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8080"
+DEFAULT_BASE_URL = "http://127.0.0.1:18080"
 DEFAULT_POOL = "releng-hardware/gecko-t-osx-1500-m4"
 
 

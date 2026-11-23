@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-BASE_URL="${PC_BASE_URL:-http://localhost:8080}"
+BASE_URL="${PC_BASE_URL:-http://localhost:18080}"
 
 echo "==> classifying all enabled pools"
 body=$(curl --silent --show-error -X POST --write-out "\n%{http_code}" "$BASE_URL/classify-all")

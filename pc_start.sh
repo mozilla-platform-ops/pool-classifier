@@ -4,7 +4,7 @@
 # Set POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS=1 to render current page
 # code instead of stored dashboard snapshots (useful for local UI work).
 # HTML pages show a port-derived color and badge in this local launcher. Port
-# 8081 is the local UI-debug instance; 8080 is the stable scanner target.
+# 18081 is the local UI-debug instance; 18080 is the stable scanner target.
 # Debug instances say "DEBUG PORT"; stable instances show only the port.
 # Override the badge with PC_INSTANCE_LABEL and PC_INSTANCE_COLOR (#RRGGBB).
 #
@@ -18,9 +18,10 @@ export PC_INSTANCE_IDENTITY="${PC_INSTANCE_IDENTITY:-1}"
 # Set ADMIN_IAP_BYPASS=0 to exercise the production authorization path.
 export ADMIN_IAP_BYPASS="${ADMIN_IAP_BYPASS:-1}"
 
-PORT="${PC_PORT:-8080}"
+PORT="${PC_PORT:-18080}"
 FLASK_DEBUG_ARGS=()
-if [ "$PORT" = "8081" ]; then
+# Keep debug mode for callers that explicitly select the previous debug port.
+if [ "$PORT" = "18081" ] || [ "$PORT" = "8081" ]; then
   FLASK_DEBUG_ARGS=(--debug)
 fi
 

@@ -95,7 +95,7 @@ DEBUG_INSTANCE_COLORS = (
     "#f85149",
     "#39c5cf",
 )
-DEBUG_INSTANCE_PORT_COLORS = {"8080": "#58a6ff"}
+DEBUG_INSTANCE_PORT_COLORS = {"8080": "#58a6ff", "18080": "#58a6ff"}
 DEBUG_INSTANCE_BADGE_COLOR = "#39c5cf"
 
 # Dashboard aggregates are intentionally process-local: metric definitions are
