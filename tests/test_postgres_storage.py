@@ -497,63 +497,126 @@ def test_run_evidence_retains_running_and_terminal_facts_across_lookup_failures(
     assert "Conflicting Queue outcomes" in caplog.text
 
 
-def test_evidence_migration_maps_legacy_rows_and_rejects_old_writes():
-    from worker_health.pool_classifier_web.scripts.migrate import MIGRATIONS_DIR, TASK_EVIDENCE_MIGRATION
+def test_task_evidence_cutover_is_resumable_and_reversible(monkeypatch, tmp_path):
+    from psycopg.conninfo import make_conninfo
 
-    with psycopg.connect(DSN) as conn:
-        conn.execute("""
-            CREATE TEMP TABLE task_results (pool_id TEXT, task_id TEXT, worker_id TEXT, run_id INTEGER,
-                run_state TEXT NOT NULL, category TEXT, reason_resolved TEXT, reason_created TEXT,
-                run_scheduled TIMESTAMPTZ, run_started TIMESTAMPTZ, run_resolved TIMESTAMPTZ,
-                classified_at TIMESTAMPTZ NOT NULL, observed_at TIMESTAMPTZ, last_checked_at TIMESTAMPTZ);
-            CREATE TEMP TABLE task_sources (task_id TEXT);
-            INSERT INTO task_results (pool_id, task_id, worker_id, run_id, run_state, category,
-                classified_at, observed_at, last_checked_at)
-            SELECT 'p/w', state, 'w', 0, state, category,
-                '2026-08-05 10:30Z'::timestamptz, '2026-08-05 10:00Z'::timestamptz, '2026-08-05 10:15Z'::timestamptz
-            FROM (VALUES ('observed', NULL), ('expired', NULL), ('completed', NULL),
-                         ('failed', 'infra'), ('exception', NULL)) AS legacy(state, category);
-        """)
-        migration = (MIGRATIONS_DIR / f"{TASK_EVIDENCE_MIGRATION}.sql").read_text()
-        with pytest.raises(psycopg.errors.RaiseException, match="ambiguous legacy expired"):
-            with conn.transaction():
-                conn.execute("UPDATE task_results SET reason_resolved = 'ambiguous' WHERE run_state = 'expired'")
-                conn.execute(migration)
-        conn.execute(migration)
-        rows = conn.execute("""
-            SELECT task_id, run_state, status_fetch_state, classification_state, status_retry_enabled,
-                status_fetched_at IS NULL, classified_at IS NOT NULL
-            FROM task_results ORDER BY task_id
-        """).fetchall()
-        assert rows == [
-            ("completed", "completed", "available", "not_applicable", False, True, False),
-            ("exception", "exception", "available", "pending", False, True, False),
-            ("expired", None, "not_found", "unknown", False, True, False),
-            ("failed", "failed", "available", "classified", False, True, True),
-            ("observed", None, "unknown", "unknown", True, True, False),
-        ]
-        for legacy_state in ("observed", "expired", "completed", "failed"):
-            with pytest.raises(psycopg.errors.CheckViolation):
-                with conn.transaction():
-                    conn.execute(
-                        "INSERT INTO task_results (pool_id, task_id, worker_id, run_id, run_state, classified_at)"
-                        " VALUES ('p/w', 'old', 'w', 0, %s, now())",
-                        (legacy_state,),
-                    )
+    from worker_health.pool_classifier_web.scripts import migrate, task_evidence_cutover
 
+    dsn = make_conninfo(DSN, options="-c search_path=task_evidence_cutover_test")
+    original_migrations = migrate.MIGRATIONS_DIR
+    with psycopg.connect(DSN, autocommit=True) as admin:
+        admin.execute("CREATE SCHEMA task_evidence_cutover_test")
+        try:
+            for path in sorted(original_migrations.glob("*.sql")):
+                if path.stem < task_evidence_cutover.PREPARE_VERSION:
+                    (tmp_path / path.name).write_text(path.read_text())
+            monkeypatch.setattr(migrate, "MIGRATIONS_DIR", tmp_path)
+            migrate.apply_migrations(dsn)
+            monkeypatch.setattr(migrate, "MIGRATIONS_DIR", original_migrations)
 
-def test_task_evidence_cutover_requires_opt_in_above_limit(monkeypatch):
-    from worker_health.pool_classifier_web.scripts import migrate
+            with psycopg.connect(dsn, autocommit=True) as legacy:
+                legacy.execute("""
+                    INSERT INTO task_results (pool_id, task_id, worker_id, run_id, run_state, category,
+                        classified_at, observed_at, last_checked_at)
+                    SELECT 'p/w', state, 'w', 0, state, category,
+                        '2026-08-05 10:30Z'::timestamptz,
+                        '2026-08-05 10:00Z'::timestamptz, '2026-08-05 10:15Z'::timestamptz
+                    FROM (VALUES ('observed', NULL), ('expired', NULL), ('completed', NULL),
+                                 ('failed', 'infra'), ('exception', NULL)) AS legacy(state, category)
+                """)
+                with pytest.raises(RuntimeError, match="staged rollout"):
+                    migrate.apply_migrations(dsn)
+                assert legacy.execute("SELECT max(version) FROM schema_migrations").fetchone() == (
+                    "013_task_job_metadata",
+                )
 
-    monkeypatch.delenv("POOL_CLASSIFIER_TASK_EVIDENCE_CUTOVER", raising=False)
-    monkeypatch.setattr(migrate, "TASK_EVIDENCE_ONLINE_ROW_LIMIT", 2)
-    with psycopg.connect(DSN) as conn, conn.cursor() as cur:
-        cur.execute("CREATE TEMP TABLE task_results AS SELECT generate_series(1, 3) AS task_id")
-        with pytest.raises(RuntimeError, match="planned cutover"):
-            migrate._prepare_task_evidence_cutover(cur)
-        monkeypatch.setenv("POOL_CLASSIFIER_TASK_EVIDENCE_CUTOVER", "1")
-        assert migrate._prepare_task_evidence_cutover(cur) is True
-        assert cur.execute("SHOW statement_timeout").fetchone() == ("5min",)
+                migrate.apply_migrations(dsn, prepare_task_evidence=True)
+                with pytest.raises(RuntimeError, match="backfill and validation"):
+                    migrate.apply_migrations(dsn, activate_task_evidence=True)
+
+                # A legacy write during preparation stays visible to the old
+                # app and synchronizes the staged evidence without backfill.
+                legacy.execute("UPDATE task_results SET category = 'network' WHERE task_id = 'failed'")
+                assert legacy.execute("""
+                    SELECT category, evidence_category, classification_state
+                    FROM task_results WHERE task_id = 'failed'
+                """).fetchone() == ("network", "network", "classified")
+
+                legacy.execute("UPDATE task_results SET reason_resolved = 'ambiguous' WHERE task_id = 'expired'")
+                with pytest.raises(RuntimeError, match="Ambiguous legacy task evidence"):
+                    task_evidence_cutover.run(dsn, ["--phase", "backfill", "--pause-seconds", "0"])
+                assert legacy.execute("""
+                    SELECT count(*) FROM task_results WHERE status_fetch_state IS NULL
+                """).fetchone() == (4,)
+                legacy.execute("UPDATE task_results SET reason_resolved = NULL WHERE task_id = 'expired'")
+
+                with legacy.transaction():
+                    legacy.execute("SELECT 1 FROM task_results WHERE task_id = 'completed' FOR UPDATE")
+                    task_evidence_cutover.run(dsn, [
+                        "--phase", "backfill", "--batch-size", "1", "--max-batches", "1", "--pause-seconds", "0",
+                    ])
+                    with pytest.raises(RuntimeError, match="pending rows"):
+                        task_evidence_cutover.run(dsn, ["--phase", "validate"])
+                task_evidence_cutover.run(dsn, ["--phase", "backfill", "--pause-seconds", "0"])
+                task_evidence_cutover.run(dsn, ["--phase", "validate"])
+
+                with legacy.transaction():
+                    legacy.execute("SELECT 1 FROM task_results")
+                    with pytest.raises(psycopg.errors.LockNotAvailable):
+                        migrate.apply_migrations(dsn, activate_task_evidence=True)
+                migrate.apply_migrations(dsn, activate_task_evidence=True)
+
+                rows = legacy.execute("""
+                    SELECT task_id, run_state, status_fetch_state, classification_state, status_retry_enabled,
+                        status_fetched_at IS NULL, classified_at IS NOT NULL
+                    FROM task_results ORDER BY task_id
+                """).fetchall()
+                assert rows == [
+                    ("completed", "completed", "available", "not_applicable", False, True, False),
+                    ("exception", "exception", "available", "pending", False, True, False),
+                    ("expired", None, "not_found", "unknown", False, True, False),
+                    ("failed", "failed", "available", "classified", False, True, True),
+                    ("observed", None, "unknown", "unknown", True, True, False),
+                ]
+                for state in ("observed", "expired", "completed", "failed"):
+                    with pytest.raises(psycopg.errors.CheckViolation):
+                        legacy.execute("""
+                            INSERT INTO task_results (pool_id, task_id, worker_id, run_id, run_state, classified_at)
+                            VALUES ('p/w', 'old', 'w', 0, %s, now())
+                        """, (state,))
+
+                legacy.execute("""
+                    INSERT INTO task_results (pool_id, task_id, worker_id, run_id, run_state, observed_at)
+                    VALUES ('p/w', 'new-running', 'w', 0, 'running', now())
+                """)
+                legacy.execute("""
+                    INSERT INTO task_results (pool_id, task_id, worker_id, run_id, observed_at)
+                    VALUES ('p/w', 'new-retry', 'w', 0, now())
+                """)
+                legacy.execute("""
+                    UPDATE task_results SET status_fetch_state = 'not_found', status_retry_enabled = false,
+                        last_checked_at = now() WHERE task_id = 'new-retry'
+                """)
+                legacy.execute("UPDATE task_results SET status_retry_enabled = true WHERE task_id = 'new-retry'")
+                task_evidence_cutover.run(dsn, ["--phase", "rollback"])
+                assert legacy.execute("""
+                    SELECT task_id, run_state, classified_at IS NOT NULL FROM task_results
+                    WHERE task_id IN ('expired', 'new-retry', 'new-running') ORDER BY task_id
+                """).fetchall() == [("expired", "expired", True), ("new-retry", "observed", True),
+                                   ("new-running", "running", True)]
+
+                legacy.execute("UPDATE task_results SET last_checked_at = now() WHERE task_id = 'new-retry'")
+                legacy.execute("UPDATE task_results SET run_state = 'completed' WHERE task_id = 'new-running'")
+                migrate.apply_migrations(dsn, activate_task_evidence=True)
+                assert legacy.execute("""
+                    SELECT run_state, classification_state, classified_at
+                    FROM task_results WHERE task_id = 'new-running'
+                """).fetchone() == ("completed", "not_applicable", None)
+                assert legacy.execute("""
+                    SELECT status_fetch_state, status_retry_enabled FROM task_results WHERE task_id = 'new-retry'
+                """).fetchone() == ("not_found", True)
+        finally:
+            admin.execute("DROP SCHEMA task_evidence_cutover_test CASCADE")
 
 
 def test_utilization_storage_parity(sqlite, pg):

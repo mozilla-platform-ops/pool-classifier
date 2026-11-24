@@ -1,56 +1,130 @@
 # Task-run evidence cutover
 
-Migration 014 separates the last Queue lookup result, the most recent matching
-Queue evidence, and the last completed log classification. It preserves the
-original observation and attempt timestamps. It leaves historical successful
-fetch timestamps null.
+Task-run evidence separates the last Queue lookup result, the most recent
+matching Queue evidence, and the last completed log classification. Production
+had 4,372,467 task-result rows at the November 24, 2026 inventory. Prepare and
+backfill while the legacy revision is serving traffic. Activation is a separate
+metadata-only transaction.
 
-## Check the existing data
+## Prepare
 
-Inventory the states and whether a category, Queue time or Queue reason is
-present. On the local PostgreSQL copy examined for this change there were
-1,506,034 completed runs, 107,127 classified failures or exceptions, 447
-observed references, and 653 legacy expiry markers. None of the expiry
-markers carried a Queue outcome field.
+Use a reviewed image containing both migrations and the maintenance command.
+Point the migration and maintenance jobs at that image before executing them.
+Take a recoverable backup and check Cloud SQL disk headroom. Allow room for new
+row versions, indexes, and WAL. Check free disk and application latency
+throughout the backfill. Stop between executions if they approach operating
+limits. Autovacuum can make freed space reusable inside PostgreSQL.
 
-The old scanner only wrote an expiry marker on a Queue 404. Migration 014
-maps that shape to a stopped `not_found` lookup when it has a coherent
-observation and attempt timestamp and no category, Queue reason or run time.
-It aborts and reports the count if expiry rows have other evidence. Inspect
-those rows and their provenance before attempting the migration again.
-The migration also rejects unrecognized legacy state strings.
+Use the following execution arguments for the migration job.
 
-The SQLite launcher rebuilds the per-pool task table within one transaction.
-Stop old SQLite processes before opening that database with the new code.
-Keep a backup of the database before the first open.
+```text
+-m,worker_health.pool_classifier_web.scripts.migrate,--prepare-task-evidence
+```
 
-## PostgreSQL rollout
+Migration 014 adds columns and a trigger. It leaves legacy columns and their
+constraints in place. The new columns use null to mark existing rows awaiting
+backfill. Inserts and updates from the legacy scanner populate the evidence
+columns in the same transaction. Leave the legacy app and scheduler running
+during preparation, backfill, and validation.
 
-1. Pause the scan scheduler and drain classifiers, web readers, and database
-   maintenance processes using the old revision. Take a recoverable backup.
-2. Run the migration job from the candidate image. For databases over 100,000
-   run rows the runner requires `POOL_CLASSIFIER_TASK_EVIDENCE_CUTOVER=1` on
-   the **migration job**. This is a controlled cutover. The migration takes an
-   exclusive table lock and rewrites existing rows. The lock wait remains five
-   seconds and this migration gets up to five minutes to complete.
-3. Verify the successful migration before starting only the new reader and
-   classifier. The new schema rejects old sentinel and terminal-row writes.
-   Keep prior revisions drained because they still interpret task states and
-   classification timestamps using the old rules.
-4. Check the first scan, verify that pending classifications recover, and then
-   resume the scheduler. Remove the cutover setting from the migration job.
+## Backfill and validate
 
-A failed migration rolls back as a unit, including its migration record. If
-validation fails after the migration commits, keep the scanner paused. Repair
-with schema-compatible code or restore the pre-cutover database before using
-the old application. Restoring that backup after new writes loses those writes.
+Use the following execution arguments for the maintenance job.
 
-The retry and running indexes support the collector. The existing pool/start
-and pool/worker indexes are the starting point for the later history endpoints.
-On the local A55 data, a seven-day worker lookup with a left join on
-`(pool_id, worker_id)` and a 50-run cap took about 5 ms. Worker discovery
-over the same period took about 1.5 ms. Both used the pool/start index.
-Benchmark the final cursor queries before adding larger history-specific indexes.
+```text
+-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,task-evidence-cutover,--phase,backfill
+```
+
+The backfill uses one transaction per batch. The defaults are 1,000 rows per
+batch, at most 1,000 batches per execution, and a 50 ms pause between batches.
+Use `--batch-size`, `--max-batches`, or `--pause-seconds` to tune the load.
+Each invocation reports committed updates and whether pending rows remain.
+Rerun until `has_pending_rows` is false. Rows locked by an active scan are
+skipped and retried later. An interrupted execution keeps its committed
+batches. The command takes an advisory lock to serialize migration jobs.
+
+Legacy completed and failed/exception rows retain their Queue outcomes.
+Legacy classified failures keep their category and classification timestamp.
+Observed references and synthetic expiry markers keep their observation and
+attempt timestamps. Historical successful fetch times remain null. Ambiguous
+legacy expiry markers and unrecognized states stop the batch for review.
+Inspect the reported pool, task, and run, and correct or resolve the legacy
+data before retrying.
+
+Then run the validation phase in the maintenance job.
+
+```text
+-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,task-evidence-cutover,--phase,validate
+```
+
+This checks for pending rows, builds indexes concurrently, and validates the
+evidence constraint with a lock that allows normal reads and writes. The
+constraint is installed in a separate short transaction, without scanning
+under the exclusive lock. Validation fails if there is a pending or invalid
+row. If a concurrent index build is interrupted, rerunning the phase rebuilds
+the invalid index.
+
+## Activate and verify
+
+1. Pause the scan scheduler and prevent direct classifier invocations. Drain
+   in-flight readers and writers on the old revision before switching schema.
+   Review the backup and the rollback plan before taking this step.
+2. Run the migration job with
+   `-m,worker_health.pool_classifier_web.scripts.migrate,--activate-task-evidence`.
+   The runner checks the validated constraint and required indexes before
+   asking for an exclusive table lock with `NOWAIT`. If the table is in use,
+   the transaction rolls back immediately. Wait for the blocker to drain
+   before retrying. Migration 015 only switches columns, defaults, and
+   triggers under the lock. It performs no backfill, index build, or table
+   scan in that transaction.
+3. Verify migration 015 in `schema_migrations`. Start and verify only the new
+   revision. Check the first scan, including pending classification recovery,
+   then resume scheduling.
+
+Use the normal migration command for a new empty local database. It builds
+the indexes and activates automatically. For an existing local database,
+start PostgreSQL with `./pc_db.sh up`. Run the same phases directly against
+its local DSN using the Python modules listed above. Stop both local web
+instances and any active scanner before activation.
+
+## Roll back during the compatibility window
+
+Activation retains the original columns and corresponding indexes. A trigger
+keeps a legacy representation of new writes. Pause and drain the new app
+before running the rollback phase in the maintenance job.
+
+```text
+-m,worker_health.pool_classifier_web.scripts.db_maintenance,--operation,task-evidence-cutover,--phase,rollback
+```
+
+Rollback switches the columns and trigger back under a short `NOWAIT` lock
+and removes the migration 015 record. Restore the legacy revision after it
+succeeds. Detailed evidence stays in the staged columns, although the legacy
+app uses its prior outcome and classification semantics. The old scanner
+resynchronizes evidence for rows whose legacy values change. A later activation
+can reuse the validated constraint and indexes.
+
+Databases that already ran the original single-transaction 014 can record
+015 as already active. They have no original columns to switch back to.
+Remove the legacy columns and their indexes from staged databases in a
+separate reviewed change after the rollback window closes.
+
+## Local rehearsal
+
+A November 24, 2026 rehearsal used an isolated PostgreSQL copy scaled from
+1,617,827 local rows to the 4,372,467 production row count. With batches of
+2,000 and a 20 ms pause, backfill took 12 minutes 47 seconds across two
+executions. Preparation took 27 ms, validation and concurrent index builds
+took 9.3 seconds, activation took 31 ms, and rollback took 11 ms. These are
+wall-clock timings for each operation. Reactivation kept the same row count.
+A sample legacy read completed 2,962 times during the online phases and hit
+its 500 ms timeout once.
+
+Sampled PostgreSQL database size rose from 2.23 GiB to a peak of 3.05 GiB and
+finished at 2.65 GiB. Those database sizes exclude WAL. The rehearsal matched
+production's row count with a smaller starting table and index footprint and
+sampled reads. Use the result to budget the online work and check production
+disk, WAL and request latency before selecting batch settings.
 
 ## Retry one unavailable run
 
@@ -61,5 +135,5 @@ DATABASE_URL=... uv run --frozen python -m worker_health.pool_classifier_web.scr
 
 Use `--run-id legacy` for a retained reference with a null run ID. For a local
 SQLite database, pass its pool's `--results-dir` instead of `DATABASE_URL`.
-The command re-enables the next scanner lookup and preserves the previous
-lookup result and all stored Queue evidence. Finished outcomes stay closed.
+The command re-enables the next scanner lookup and preserves existing Queue
+evidence. Finished outcomes stay closed.

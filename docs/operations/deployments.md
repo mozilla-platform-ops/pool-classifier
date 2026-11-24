@@ -55,6 +55,9 @@ After Terraform has created the jobs, run migrations before creating a web
 candidate. Replace `vVERSION` with either the release tag or commit-derived
 tag. Inspect the candidate's own readiness and image digest before promotion.
 
+For the first release containing task-run evidence, follow the [staged cutover
+runbook](task-run-evidence-cutover.md) before deploying a web candidate.
+
 ```sh
 IMAGE=us-west1-docker.pkg.dev/relops-pool-classifier/pool-classifier/app:vVERSION
 
