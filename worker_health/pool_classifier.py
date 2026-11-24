@@ -9,6 +9,7 @@ import logging
 import os
 import resource
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from itertools import batched, groupby
 from threading import Event, Lock, Thread
 import re
 import signal
@@ -25,12 +26,13 @@ import taskcluster
 
 from worker_health.pool_classifier_web.patterns_registry import all_patterns, categories_by_severity, classify_patterns, severity_of
 from worker_health.pool_classifier_web.job_families import task_job_metadata
-from worker_health.pool_classifier_web.job_sources import SourceMethod, classify_job_source
+from worker_health.pool_classifier_web.job_sources import JobSource, SourceMethod, classify_job_source
 from worker_health.pool_classifier_web.registry import AVAILABILITY_MODES
 from worker_health.pool_classifier_web.storage import SqliteStorage
 from worker_health.utils import human_delta
 
 TC_REQUEST_TIMEOUT = 30  # seconds; SDK has no built-in timeout
+type TaskJobMetadata = tuple[JobSource, str | None, str | None]
 
 
 def current_rss_bytes() -> int | None:
@@ -192,6 +194,8 @@ DEFAULT_POLL_INTERVAL = 900  # seconds (15 minutes)
 WORKER_REFRESH_INTERVAL = 300  # seconds between re-listing workers
 WORKER_THREAD_COUNT = 8
 TASK_STATUS_THREAD_COUNT = 8
+TASK_DEFINITION_THREAD_COUNT = 4
+TASK_DEFINITION_BATCH_SIZE = 32
 UNRESOLVED_TASK_RUN_BATCH_SIZE = 1000
 CONSECUTIVE_FAILURE_ALERT = 2
 DEFAULT_WORKER_CONTACT_THRESHOLD_SECONDS = 60 * 60
@@ -427,17 +431,27 @@ class PoolClassifier:
 
     def _record_job_source(self, task_id: str, classified_at: str) -> None:
         """Fetch a task definition once for source and job-family reporting."""
-        cached = self.storage.get_task_source(task_id)
-        if cached and cached["source_method"] != int(SourceMethod.TASK_FETCH_FAILED):
+        if self._has_job_source(task_id):
             return
+        self._write_job_source(task_id, self._fetch_job_source(task_id), classified_at)
+
+    def _has_job_source(self, task_id: str) -> bool:
+        cached = self.storage.get_task_source(task_id)
+        return cached is not None and cached["source_method"] != int(SourceMethod.TASK_FETCH_FAILED)
+
+    def _fetch_job_source(self, task_id: str) -> TaskJobMetadata:
+        """Fetch and classify compact metadata without accessing storage."""
+        task = None
         try:
-            self._ensure_tc()
-            task = self.tc_queue.task(task_id)
+            if not self._interrupted:
+                self._ensure_tc()
+                task = self.tc_queue.task(task_id)
         except Exception as exc:
             logger.warning("%s: task-definition fetch failed: %s", task_id, exc)
-            task = None
-        source = classify_job_source(task)
-        task_name, job_family = task_job_metadata(task)
+        return classify_job_source(task), *task_job_metadata(task)
+
+    def _write_job_source(self, task_id: str, metadata: TaskJobMetadata, classified_at: str) -> None:
+        source, task_name, job_family = metadata
         self.storage.record_task_source(
             task_id, source.source, int(source.method), classified_at, task_name=task_name, job_family=job_family,
         )
@@ -505,10 +519,7 @@ class PoolClassifier:
         classified_at = datetime.now(timezone.utc).isoformat()
         for task_id, task in fetched.items():
             source = classify_job_source(task)
-            task_name, job_family = task_job_metadata(task)
-            self.storage.record_task_source(
-                task_id, source.source, int(source.method), classified_at, task_name=task_name, job_family=job_family,
-            )
+            self._write_job_source(task_id, (source, *task_job_metadata(task)), classified_at)
             stats["classified"] += 1
             if source.source == "unknown":
                 stats["unknown"] += 1
@@ -1175,7 +1186,10 @@ class PoolClassifier:
         self.storage.commit()
         return transition_count
 
-    def _process_results(self, worker_id: str, terminal_tasks: List[Tuple], bar=None, worker_group: str = None) -> collections.Counter:
+    def _process_results(
+        self, worker_id: str, terminal_tasks: List[Tuple], bar=None, worker_group: str | None = None,
+        *, prefetched: dict[str, TaskJobMetadata] | None = None,
+    ) -> collections.Counter:
         """Persist terminal tasks and return counts grouped by failure category."""
         category_counts: collections.Counter = collections.Counter()
 
@@ -1206,7 +1220,10 @@ class PoolClassifier:
             if bar:
                 bar()
             classified_at = datetime.now(timezone.utc).isoformat()
-            self._record_job_source(task_id, classified_at)
+            if prefetched is None:
+                self._record_job_source(task_id, classified_at)
+            elif task_id in prefetched:
+                self._write_job_source(task_id, prefetched.pop(task_id), classified_at)
             if run_state == "completed":
                 logger.info(f"  {worker_id}: {self._color('1;32', 'completed')} task={task_id} run={run_id}")
                 persist(task, None, "", classified_at)
@@ -1217,6 +1234,41 @@ class PoolClassifier:
             category = "artifact_too_large" if fetch_status == "too_large" else self._classify(log_text, run_state, reason_resolved)
             persist(task, category, log_text, classified_at)
 
+        return category_counts
+
+    def _process_terminal_batches(self, poll_results, bar) -> collections.Counter:
+        """Overlap definition requests in bounded batches, then persist in scan order."""
+        category_counts: collections.Counter = collections.Counter()
+        tasks = (
+            ((worker_id, worker_group), task)
+            for worker_id, worker_group, terminal_tasks in poll_results
+            for task in terminal_tasks
+        )
+        attempted: set[str] = set()
+        fetch_seconds = 0.0
+        with ThreadPoolExecutor(max_workers=TASK_DEFINITION_THREAD_COUNT, thread_name_prefix="queue-definition") as executor:
+            for batch in batched(tasks, TASK_DEFINITION_BATCH_SIZE):
+                if self._interrupted:
+                    break
+                task_ids = [
+                    task_id for task_id in dict.fromkeys(task[0] for _, task in batch)
+                    if task_id not in attempted and not self._has_job_source(task_id)
+                ]
+                started = time.monotonic()
+                prefetched = dict(zip(task_ids, executor.map(self._fetch_job_source, task_ids), strict=True))
+                fetch_seconds += time.monotonic() - started
+                attempted.update(task_ids)
+                for (worker_id, worker_group), worker_tasks in groupby(batch, key=lambda row: row[0]):
+                    if self._interrupted:
+                        break
+                    category_counts.update(self._process_results(
+                        worker_id, [task for _, task in worker_tasks], bar, worker_group, prefetched=prefetched,
+                    ))
+        if attempted:
+            logger.info(
+                "task definition fetches: pool=%s/%s tasks=%d wait_seconds=%.2f",
+                self.provisioner, self.worker_type, len(attempted), fetch_seconds,
+            )
         return category_counts
 
     # --- main loop ---
@@ -1372,17 +1424,7 @@ class PoolClassifier:
                         if self.show_progress else nullcontext(lambda: None)
                     )
                     with progress_bar as bar:
-                        for worker_id, worker_group, terminal_tasks in poll_results:
-                            if self._interrupted:
-                                break
-                            if terminal_tasks:
-                                category_counts.update(self._process_results(worker_id, terminal_tasks, bar, worker_group))
-                else:
-                    for worker_id, worker_group, terminal_tasks in poll_results:
-                        if self._interrupted:
-                            break
-                        if terminal_tasks:
-                            category_counts.update(self._process_results(worker_id, terminal_tasks, worker_group=worker_group))
+                        category_counts = self._process_terminal_batches(poll_results, bar)
 
             phase_metrics["terminal_task_processing"] = {
                 "duration_seconds": time.monotonic() - terminal_started,

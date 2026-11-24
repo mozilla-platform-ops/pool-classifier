@@ -1,8 +1,11 @@
+from collections import Counter
 from datetime import datetime, timezone
+from threading import Barrier, Lock, get_ident
 from types import SimpleNamespace
 
 import taskcluster
 
+from worker_health import pool_classifier as classifier_module
 from worker_health.pool_classifier import PoolClassifier
 from worker_health.pool_classifier_web import app as app_module
 from worker_health.pool_classifier_web.job_families import task_job_metadata
@@ -53,6 +56,48 @@ def test_job_family_uses_test_suite_and_build_kind():
     )
     assert task_job_metadata({"extra": {"treeherder": {"jobKind": "build"}}}) == (None, "Builds")
     assert task_job_metadata({"metadata": {"name": "unmapped-job"}}) == ("unmapped-job", "Unknown")
+
+
+def test_terminal_batches_fetch_definitions_concurrently_and_deduplicate(tmp_path, monkeypatch):
+    storage = SqliteStorage("proj/worker", tmp_path)
+    classifier = PoolClassifier("proj", "worker", results_dir=tmp_path, storage=storage, use_color=False)
+    classifier._init_db()
+    monkeypatch.setattr(classifier_module, "TASK_DEFINITION_BATCH_SIZE", 5)
+    start, end = "2026-08-05T12:00:00+00:00", "2026-08-05T12:01:00+00:00"
+    storage.record_task_source("cached", "try", int(SourceMethod.PROJECT_TAG), end)
+    storage.commit()
+    barrier = Barrier(4, timeout=3)
+    lock = Lock()
+    calls = Counter()
+    fetch_threads = set()
+    classifier_thread = get_ident()
+
+    def fetch(task_id):
+        with lock:
+            calls[task_id] += 1
+            fetch_threads.add(get_ident())
+        if task_id in {"a", "b", "c", "unavailable"}:
+            barrier.wait()
+        if task_id == "unavailable":
+            raise RuntimeError("temporary API failure")
+        return {"tags": {"project": "try"}, "metadata": {"name": f"browsertime-speedometer3-{task_id}"}}
+
+    classifier.tc_queue = SimpleNamespace(task=fetch)
+
+    def terminal(task_id, run_id=0):
+        return (task_id, run_id, "completed", start, end, None)
+
+    classified = classifier._process_terminal_batches([
+        ("worker-1", "group", [terminal(task) for task in ("cached", "a", "b", "c", "unavailable")]),
+        ("worker-2", "group", [terminal("a", 1), terminal("unavailable", 1), terminal("d")]),
+    ], None)
+
+    assert len(fetch_threads) == 4 and classifier_thread not in fetch_threads
+    assert calls == Counter({task: 1 for task in ("a", "b", "c", "unavailable", "d")})
+    assert classified == {}
+    assert storage.get_task_source("a") == {"source": "try", "source_method": int(SourceMethod.PROJECT_TAG)}
+    assert storage.get_task_source("unavailable")["source_method"] == int(SourceMethod.TASK_FETCH_FAILED)
+    assert storage.db.execute("SELECT COUNT(*) FROM task_results WHERE run_state = 'completed'").fetchone()[0] == 8
 
 
 def test_job_family_report_clips_runs_and_reuses_task_metadata(tmp_path, monkeypatch):
