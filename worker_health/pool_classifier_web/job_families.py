@@ -1,6 +1,50 @@
 """Identify job families from exact Taskcluster names and job kind."""
 
 import re
+from collections import defaultdict
+from datetime import datetime, timedelta
+
+from worker_health.pool_classifier_web.utilization import _is_complete, _merge, _parse
+
+
+WORKLOAD_RANGES = {
+    "3h": (timedelta(hours=3), 900),
+    "12h": (timedelta(hours=12), 1800),
+    "24h": (timedelta(days=1), 3600),
+    "3d": (timedelta(days=3), 10800),
+    "7d": (timedelta(days=7), 25200),
+}
+WORKLOAD_BASE_SECONDS = 900
+
+
+def build_job_family_trend(storage, start: datetime, end: datetime, bucket_seconds: int) -> dict:
+    """Roll up the selected window and keep a common scale based on 15-minute peaks."""
+    scale_start = end - WORKLOAD_RANGES["7d"][0]
+    base_rows = storage.get_job_family_buckets(scale_start.isoformat(), end.isoformat(), WORKLOAD_BASE_SECONDS)
+    raw_coverage = storage.get_collection_coverage("task_runs", start.isoformat(), end.isoformat())
+    coverage = _merge((_parse(interval["start_at"]), _parse(interval["end_at"])) for interval in raw_coverage["intervals"])
+    first_bin = (start - scale_start) // timedelta(seconds=WORKLOAD_BASE_SECONDS)
+    bins_per_bucket = bucket_seconds // WORKLOAD_BASE_SECONDS
+    totals = defaultdict(lambda: defaultdict(float))
+    for row in base_rows:
+        if row["bucket"] >= first_bin:
+            bucket = (row["bucket"] - first_bin) // bins_per_bucket
+            totals[bucket][row["job_family"]] += row["worker_seconds"]
+
+    step = timedelta(seconds=bucket_seconds)
+    buckets = []
+    for index in range((end - start) // step):
+        bucket_start = start + index * step
+        buckets.append({
+            "start_at": bucket_start.isoformat(),
+            "covered": _is_complete(coverage, bucket_start, bucket_start + step),
+            "worker_seconds": dict(totals[index]),
+        })
+    return {
+        "bucket_seconds": bucket_seconds,
+        "scale_peak_workers": max((row["worker_seconds"] / WORKLOAD_BASE_SECONDS for row in base_rows), default=0),
+        "buckets": buckets,
+    }
 
 
 _FAMILIES = tuple(

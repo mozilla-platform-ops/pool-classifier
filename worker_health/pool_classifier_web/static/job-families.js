@@ -23,13 +23,30 @@
             </table>
         </section>`;
     mount.replaceWith(explorer);
+    const trendMount = document.createElement("div");
+    trendMount.hidden = true;
+    explorer.before(trendMount);
     const stylesheet = document.createElement("link");
     stylesheet.rel = "stylesheet";
-    stylesheet.href = "/static/job-families.css";
+    stylesheet.href = "/static/job-families.css?v=3";
     document.head.append(stylesheet);
 
     const status = section.querySelector('[role="status"]');
-    const periodButtons = [...section.querySelectorAll("button[data-days]")];
+    const oldButtons = [...section.querySelectorAll("button[data-days]")];
+    if (oldButtons.length) {
+        for (const button of oldButtons) {
+            button.dataset.range = { 1: "24h", 3: "3d", 7: "7d" }[button.dataset.days];
+        }
+        const shortButtons = ["3h", "12h"].map(range => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.dataset.range = range;
+            button.textContent = `[${range}]`;
+            return button;
+        });
+        oldButtons[0].before(...shortButtons);
+    }
+    const periodButtons = [...section.querySelectorAll("button[data-range]")];
     const suiteList = explorer.querySelector(".job-suite-list");
     const detailHeading = explorer.querySelector("#job-suite-name");
     const detailSummary = explorer.querySelector(".job-suite-detail p");
@@ -42,12 +59,16 @@
     let selectedName;
     let activeButton;
     let request;
+    const trendReady = import("/static/job-family-trend.js")
+        .then(module => module.createJobFamilyTrend(trendMount))
+        .catch(() => null);
 
-    function select(family, button) {
+    function select(family, button, chart) {
         activeButton?.setAttribute("aria-pressed", "false");
         button.setAttribute("aria-pressed", "true");
         activeButton = button;
         selectedName = family.name;
+        chart?.select(family.name);
         detailHeading.textContent = family.name;
         detailSummary.textContent = `${runsLabel(family.runs)} · ${hours(family.seconds)} worker-hours`;
         jobRows.replaceChildren();
@@ -59,11 +80,11 @@
         }
     }
 
-    function render(jobs) {
+    function render(data, chart) {
         const families = new Map();
         let runs = 0;
         let seconds = 0;
-        for (const job of jobs) {
+        for (const job of data.jobs) {
             if (!families.has(job.job_family)) {
                 families.set(job.job_family, { name: job.job_family, runs: 0, seconds: 0, jobs: [] });
             }
@@ -82,6 +103,10 @@
 
         const ordered = [...families.values()].sort((a, b) => b.seconds - a.seconds || a.name.localeCompare(b.name));
         const initial = families.get(selectedName) ?? ordered[0];
+        if (chart && data.trend) {
+            trendMount.hidden = false;
+            chart.render(data.trend, ordered.map(family => family.name), initial.name);
+        }
         suiteList.replaceChildren();
         activeButton = undefined;
         for (const family of ordered) {
@@ -95,10 +120,10 @@
             name.textContent = family.name;
             share.textContent = seconds > 0 ? percent.format(family.seconds / seconds) : "—";
             button.append(name, share);
-            button.addEventListener("click", () => select(family, button));
+            button.addEventListener("click", () => select(family, button, chart));
             item.append(button);
             suiteList.append(item);
-            if (initial === family) select(family, button);
+            if (initial === family) select(family, button, null);
         }
         status.textContent = `Observed finished runs · ${runsLabel(runs)} · ${hours(seconds)} worker-hours in this period`;
         explorer.hidden = false;
@@ -114,16 +139,18 @@
         }
         status.textContent = "Loading jobs by suite…";
         explorer.hidden = true;
+        trendMount.hidden = true;
         try {
-            const response = await fetch(`${section.dataset.endpoint}?days=${selected.dataset.days}`, { signal });
+            const response = await fetch(`${section.dataset.endpoint}?range=${selected.dataset.range}`, { signal });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
-            if (!signal.aborted) render(data.jobs);
+            const chart = await trendReady;
+            if (!signal.aborted) render(data, chart);
         } catch (error) {
             if (!signal.aborted) status.textContent = `Jobs by suite unavailable (${error.message}).`;
         }
     }
 
     for (const button of periodButtons) button.addEventListener("click", () => load(button));
-    load(periodButtons[0]);
+    load(periodButtons.find(button => button.dataset.range === "24h"));
 })();

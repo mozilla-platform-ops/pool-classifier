@@ -2315,12 +2315,14 @@ class PoolClassifier:
             f'<section id="job-families" aria-labelledby="s-job-families" data-endpoint="{escape(job_families_url, quote=True)}">',
             '<h2 id="s-job-families"><a href="#s-job-families">Jobs by Suite</a></h2>',
             '<div class="source-controls" role="group" aria-label="Jobs by Suite period">'
-            '<button type="button" class="active" aria-pressed="true" data-days="1">[24h]</button>'
-            '<button type="button" aria-pressed="false" data-days="3">[3d]</button>'
-            '<button type="button" aria-pressed="false" data-days="7">[7d]</button></div>',
+            '<button type="button" aria-pressed="false" data-range="3h">[3h]</button>'
+            '<button type="button" aria-pressed="false" data-range="12h">[12h]</button>'
+            '<button type="button" class="active" aria-pressed="true" data-range="24h">[24h]</button>'
+            '<button type="button" aria-pressed="false" data-range="3d">[3d]</button>'
+            '<button type="button" aria-pressed="false" data-range="7d">[7d]</button></div>',
             '<p class="gen" role="status">Loading jobs by suite…</p>',
             '<div data-suite-explorer hidden></div></section>',
-            '<script defer src="/static/job-families.js?v=2"></script>',
+            '<script defer src="/static/job-families.js?v=3"></script>',
             '<h2 id="s-start-lag"><a href="#s-start-lag">Start Lag</a></h2>',
             '<p class="gen">Observed scheduled-to-start time for terminal task runs. This excludes jobs that never started, so it is not a queue total, drop rate, or pool-health verdict.</p>',
             '<p id="lag-freshness" class="gen">Loading observed start lag…</p>',

@@ -1,5 +1,5 @@
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from threading import Barrier, Lock, get_ident
 from types import SimpleNamespace
 
@@ -127,6 +127,8 @@ def test_job_family_report_clips_runs_and_reuses_task_metadata(tmp_path, monkeyp
     run("before", 0, "2026-08-04T23:00:00+00:00", "2026-08-05T00:00:00+00:00")
     run("after", 0, "2026-08-06T00:00:00+00:00", "2026-08-06T01:00:00+00:00")
     run("open", 0, "2026-08-05T01:00:00+00:00", None, "running")
+    for observed in ("2026-08-05T23:30:00+00:00", "2026-08-05T23:45:00+00:00"):
+        storage.record_collection_coverage("task_runs", observed, True, 900)
     storage.commit()
 
     class FixedDateTime(datetime):
@@ -145,11 +147,32 @@ def test_job_family_report_clips_runs_and_reuses_task_metadata(tmp_path, monkeyp
     assert client.get(f"{url}?days=3").get_json()["days"] == 3
     assert client.get(f"{url}?days=7").get_json()["days"] == 7
     assert client.get(f"{url}?days=14").status_code == 400
+    assert client.get(f"{url}?range=1h").status_code == 400
+    assert client.get(f"{url}?range=3h&days=1").status_code == 400
+    for period, bucket_seconds, points in (
+        ("3h", 900, 12), ("12h", 1800, 24), ("24h", 3600, 24), ("3d", 10800, 24), ("7d", 25200, 24),
+    ):
+        response = client.get(f"{url}?range={period}").get_json()
+        assert response["range"] == period
+        assert response["end_at"] == midnight.isoformat()
+        assert response["start_at"] == (midnight - timedelta(seconds=bucket_seconds * points)).isoformat()
+        assert response["trend"]["bucket_seconds"] == bucket_seconds
+        assert response["trend"]["scale_peak_workers"] == 1
+        assert len(response["trend"]["buckets"]) == points
+        total_trend_time = sum(sum(bucket["worker_seconds"].values()) for bucket in response["trend"]["buckets"])
+        assert total_trend_time == sum(job["worker_seconds"] for job in response["jobs"])
+    short = client.get(f"{url}?range=3h").get_json()["trend"]["buckets"]
+    assert short[0]["worker_seconds"] == {}
+    assert short[-2:] == [
+        {"start_at": "2026-08-05T23:30:00+00:00", "covered": True, "worker_seconds": {"Benchmarks": 900.0}},
+        {"start_at": "2026-08-05T23:45:00+00:00", "covered": False, "worker_seconds": {"Benchmarks": 900.0}},
+    ]
     assert calls == ["known"]
     html = classifier.render_html()
     assert 'data-endpoint="/api/v1/pools/proj/worker/job-families"' in html
     assert '<div data-suite-explorer hidden></div>' in html
-    assert 'src="/static/job-families.js?v=2"' in html
+    assert 'src="/static/job-families.js?v=3"' in html
+    assert 'data-range="3h"' in html and 'data-range="12h"' in html
 
 
 def test_task_source_chart_uses_accessible_colors_order_and_custom_tooltip(tmp_path):

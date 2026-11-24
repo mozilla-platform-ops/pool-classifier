@@ -982,6 +982,29 @@ class SqliteStorage:
             {"start": range_start, "end": range_end},
         )]
 
+    def get_job_family_buckets(self, range_start: str, range_end: str, bucket_seconds: int) -> list[dict]:
+        return [dict(row) for row in self.db.execute(
+            """
+            WITH RECURSIVE runs AS (
+                SELECT COALESCE(s.job_family, 'Unknown') AS job_family,
+                    ROUND((MAX(julianday(r.run_started), julianday(:start)) - julianday(:start)) * 86400, 3) AS lo,
+                    ROUND((MIN(julianday(r.run_resolved), julianday(:end)) - julianday(:start)) * 86400, 3) AS hi
+                FROM task_results r LEFT JOIN task_sources s ON s.task_id = r.task_id
+                WHERE r.run_state IN ('completed', 'failed', 'exception')
+                    AND julianday(r.run_started) < julianday(:end) AND julianday(r.run_resolved) > julianday(:start)
+                    AND julianday(r.run_resolved) > julianday(r.run_started)
+            ), slices(job_family, lo, hi, bucket) AS (
+                SELECT job_family, lo, hi, CAST(lo / :step AS INTEGER) FROM runs WHERE hi > lo
+                UNION ALL
+                SELECT job_family, lo, hi, bucket + 1 FROM slices WHERE (bucket + 1) * :step < hi
+            )
+            SELECT bucket, job_family,
+                SUM(MIN(hi, (bucket + 1) * :step) - MAX(lo, bucket * :step)) AS worker_seconds
+            FROM slices GROUP BY bucket, job_family ORDER BY bucket, job_family
+            """,
+            {"start": range_start, "end": range_end, "step": bucket_seconds},
+        )]
+
     def get_observed_start_lag_visualization(
         self, range_start: str, range_end: str, slo_seconds: int, min_samples: int,
     ) -> dict:
@@ -2422,6 +2445,33 @@ class PostgresStorage:
                 " AND r.run_resolved > r.run_started"
                 " GROUP BY 1, 2 ORDER BY 1, runs DESC, 2",
                 {"pool": self.pool_id, "start": range_start, "end": range_end},
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    def get_job_family_buckets(self, range_start: str, range_end: str, bucket_seconds: int) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                """
+                WITH runs AS (
+                    SELECT COALESCE(s.job_family, 'Unknown') AS job_family,
+                        EXTRACT(EPOCH FROM (GREATEST(r.run_started, %(start)s::timestamptz)
+                            - %(start)s::timestamptz)) AS lo,
+                        EXTRACT(EPOCH FROM (LEAST(r.run_resolved, %(end)s::timestamptz)
+                            - %(start)s::timestamptz)) AS hi
+                    FROM task_results r LEFT JOIN task_sources s ON s.task_id = r.task_id
+                    WHERE r.pool_id = %(pool)s AND r.run_state IN ('completed', 'failed', 'exception')
+                        AND r.run_started < %(end)s::timestamptz AND r.run_resolved > %(start)s::timestamptz
+                        AND r.run_resolved > r.run_started
+                )
+                SELECT bucket, job_family,
+                    SUM(LEAST(hi, (bucket + 1) * %(step)s) - GREATEST(lo, bucket * %(step)s))::double precision
+                    AS worker_seconds
+                FROM runs CROSS JOIN LATERAL generate_series(
+                    FLOOR(lo / %(step)s)::integer, CEIL(hi / %(step)s)::integer - 1
+                ) AS slices(bucket)
+                GROUP BY bucket, job_family ORDER BY bucket, job_family
+                """,
+                {"pool": self.pool_id, "start": range_start, "end": range_end, "step": bucket_seconds},
             )
             return [dict(row) for row in cur.fetchall()]
 

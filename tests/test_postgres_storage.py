@@ -103,6 +103,10 @@ def test_job_family_volume_matches_sqlite_and_is_pool_scoped(sqlite, pg):
         assert pg.get_job_family_volume(start, end) == sqlite.get_job_family_volume(start, end) == [
             {"job_family": "Builds", "task_name": "build-linux", "runs": 1, "worker_seconds": 1800.0},
         ]
+        assert pg.get_job_family_buckets(start, end, 900) == sqlite.get_job_family_buckets(start, end, 900) == [
+            {"job_family": "Builds", "bucket": 0, "worker_seconds": 900.0},
+            {"job_family": "Builds", "bucket": 1, "worker_seconds": 900.0},
+        ]
     finally:
         other_pool.close()
         with psycopg.connect(DSN) as conn:

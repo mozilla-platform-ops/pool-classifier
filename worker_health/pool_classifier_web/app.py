@@ -36,6 +36,7 @@ from worker_health.pool_classifier_web.auth import (
     require_admin_iap,
     require_scheduler_oidc,
 )
+from worker_health.pool_classifier_web.job_families import WORKLOAD_BASE_SECONDS, WORKLOAD_RANGES, build_job_family_trend
 from worker_health.pool_classifier_web.postgres import connect as postgres_connect
 from worker_health.pool_classifier_web.registry import detect_os
 from worker_health.pool_classifier_web.scripts.migrate import MIGRATIONS_DIR
@@ -1759,22 +1760,35 @@ def create_app() -> Flask:
 
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/job-families")
     def pool_job_families(provisioner: str, worker_type: str):
+        selected_range = request.args.get("range")
         period = request.args.get("days", "1")
-        if period not in {"1", "3", "7"}:
+        if selected_range is not None:
+            if selected_range not in WORKLOAD_RANGES or "days" in request.args:
+                return jsonify({"error": {"code": "invalid_parameter", "message": "use range=3h, 12h, 24h, 3d, or 7d on its own"}}), 400
+        elif period not in {"1", "3", "7"}:
             return jsonify({"error": {"code": "invalid_parameter", "message": "days must be 1, 3, or 7"}}), 400
         pc = _get_classifier(provisioner, worker_type)
         if pc is None:
             return jsonify({"error": {"code": "not_found", "message": "pool not found"}}), 404
-        days = int(period)
         end = datetime.now(timezone.utc)
-        start = end - timedelta(days=days)
-        jobs = pc.storage.get_job_family_volume(start.isoformat(), end.isoformat())
+        if selected_range is not None:
+            duration, bucket_seconds = WORKLOAD_RANGES[selected_range]
+            end = end.replace(second=0, microsecond=0) - timedelta(minutes=end.minute % (WORKLOAD_BASE_SECONDS // 60))
+            start = end - duration
+            metadata = {
+                "range": selected_range,
+                "trend": build_job_family_trend(pc.storage, start, end, bucket_seconds),
+            }
+        else:
+            days = int(period)
+            start = end - timedelta(days=days)
+            metadata = {"days": days}
         return jsonify({
             "api_version": 1,
             "start_at": start.isoformat(),
             "end_at": end.isoformat(),
-            "days": days,
-            "jobs": jobs,
+            "jobs": pc.storage.get_job_family_volume(start.isoformat(), end.isoformat()),
+            **metadata,
         })
 
     @app.get("/api/v1/pools/<provisioner>/<worker_type>/observed-start-lag/visualization")

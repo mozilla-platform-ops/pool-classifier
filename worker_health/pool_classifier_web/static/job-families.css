@@ -1,3 +1,59 @@
+.job-family-trend {
+    max-width: 80rem;
+    margin-bottom: 1.25rem;
+}
+
+.job-family-trend-heading,
+.job-family-trend-legend,
+.job-family-trend-legend li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .35rem .85rem;
+}
+
+.job-family-trend-heading h3 {
+    margin: 0;
+}
+
+.job-family-trend-heading .gen,
+#job-family-trend-coverage {
+    color: #aaa;
+}
+
+.job-family-trend canvas {
+    display: block;
+    width: 100%;
+    height: clamp(12rem, 25vw, 17rem);
+    margin-top: .4rem;
+}
+
+.job-family-trend-legend {
+    list-style: none;
+    margin: .25rem 0;
+    padding: 0;
+    color: #bbb;
+}
+
+.job-family-trend-legend li {
+    gap: .35rem;
+}
+
+.job-family-trend-legend .selected {
+    color: #eee;
+    font-weight: bold;
+}
+
+.job-family-trend-legend span {
+    width: .8rem;
+    height: .18rem;
+}
+
+.job-family-trend-inspection {
+    min-height: 1.25em;
+    color: #ccc;
+}
+
 .job-suite-explorer:not([hidden]) {
     display: grid;
     grid-template-columns: minmax(12rem, 2fr) minmax(0, 3fr);

@@ -75,6 +75,17 @@ page. Empty pages return HTTP 200 with an empty `workers` list.
 by `job_family` and exact Taskcluster `task_name`. Each group includes the
 number of `runs` and `worker_seconds` inside the window.
 
+Pass `range=3h`, `12h`, `24h`, `3d`, or `7d` in place of `days` to get
+the same job summary and a `trend` for the selected window. Both end at the
+latest 15-minute UTC boundary. The buckets are 15 minutes, 30 minutes, 1 hour,
+3 hours, and 7 hours respectively. Each bucket has a UTC `start_at`, a
+`covered` flag for continuous task-run collection, and a `worker_seconds`
+map keyed by suite. Divide worker seconds by `bucket_seconds` for average
+workers occupied. An absent suite has zero observed worker time. When
+`covered` is false, that value is partial evidence. The common
+`scale_peak_workers` is based on the busiest 15-minute bucket for any suite
+over the trailing seven days.
+
 Observed completed, failed, and exception runs with valid start and finish
 timestamps count when their execution overlaps the window. Worker time is
 clipped to the window, so a run that started earlier contributes only time
