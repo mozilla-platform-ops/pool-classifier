@@ -14,6 +14,9 @@ from typing import Dict, Iterator, List, Optional, Tuple
 from worker_health.pool_classifier_web.postgres import application_name, connect as postgres_connect
 
 
+from worker_health.pool_classifier_web.task_run_evidence import TaskRunEvidence
+
+
 COLLECTION_SOURCES = {"task_runs", "worker_availability"}
 AVAILABILITY_MODES = {"recent_contact", "listed"}
 TASK_RUN_LOOKUP_BATCH_SIZE = 200
@@ -73,6 +76,41 @@ class ClassifyLockBusy(Exception):
     """Raised when a classify cycle is already running for this pool."""
 
 
+SQLITE_TASK_RESULTS = """
+CREATE TABLE IF NOT EXISTS task_results (
+    task_id TEXT NOT NULL, worker_id TEXT NOT NULL, run_id INTEGER,
+    run_state TEXT, category TEXT, reason_resolved TEXT, reason_created TEXT,
+    run_scheduled TEXT, run_started TEXT, run_resolved TEXT, classified_at TEXT,
+    observed_at TEXT, last_checked_at TEXT,
+    status_fetch_state TEXT NOT NULL DEFAULT 'pending',
+    status_fetched_at TEXT,
+    classification_state TEXT NOT NULL DEFAULT 'unknown',
+    classification_last_attempt_at TEXT,
+    status_retry_enabled INTEGER NOT NULL DEFAULT 1,
+    CHECK (status_fetch_state IN ('pending', 'available', 'not_found', 'run_missing', 'worker_mismatch', 'error', 'unknown')),
+    CHECK (run_state IS NULL OR run_state IN ('pending', 'running', 'unscheduled', 'completed', 'failed', 'exception')),
+    CHECK (CASE
+        WHEN run_state = 'completed' THEN classification_state = 'not_applicable' AND NOT status_retry_enabled
+            AND category IS NULL AND classified_at IS NULL
+        WHEN run_state IN ('failed', 'exception') THEN NOT status_retry_enabled AND (
+            (classification_state = 'pending' AND category IS NULL AND classified_at IS NULL)
+            OR (classification_state = 'classified' AND category IS NOT NULL AND classified_at IS NOT NULL))
+        ELSE classification_state = 'unknown' AND category IS NULL AND classified_at IS NULL END)
+);
+"""
+
+SQLITE_TASK_RESULT_INDEXES = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_results_task_run ON task_results (task_id, COALESCE(run_id, -1))",
+    "CREATE INDEX IF NOT EXISTS idx_task_results_worker ON task_results (worker_id)",
+    "CREATE INDEX IF NOT EXISTS idx_task_results_started ON task_results (run_started)",
+    "CREATE INDEX IF NOT EXISTS idx_task_results_cat ON task_results (category)",
+    "CREATE INDEX IF NOT EXISTS idx_task_results_status_retry ON task_results (last_checked_at, observed_at, task_id, run_id)"
+    " WHERE status_retry_enabled",
+    "CREATE INDEX IF NOT EXISTS idx_task_results_classification_pending"
+    " ON task_results (classification_last_attempt_at, task_id, run_id) WHERE classification_state = 'pending'",
+    "CREATE INDEX IF NOT EXISTS idx_task_results_running ON task_results (task_id) WHERE run_state = 'running'",
+)
+
 DB_SCHEMA = """
 CREATE TABLE IF NOT EXISTS workers (
     worker_id              TEXT PRIMARY KEY,
@@ -86,21 +124,7 @@ CREATE TABLE IF NOT EXISTS workers (
     last_failure_category  TEXT
 );
 
-CREATE TABLE IF NOT EXISTS task_results (
-    task_id          TEXT NOT NULL,
-    worker_id        TEXT NOT NULL,
-    run_id           INTEGER,
-    run_state        TEXT NOT NULL,
-    category         TEXT,
-    reason_resolved  TEXT,
-    reason_created   TEXT,
-    run_scheduled    TEXT,
-    run_started      TEXT,
-    run_resolved     TEXT,
-    classified_at    TEXT NOT NULL,
-    observed_at      TEXT,
-    last_checked_at  TEXT
-);
+""" + SQLITE_TASK_RESULTS + """
 
 CREATE INDEX IF NOT EXISTS idx_task_results_worker ON task_results (worker_id);
 CREATE INDEX IF NOT EXISTS idx_task_results_started ON task_results (run_started);
@@ -112,7 +136,8 @@ CREATE TABLE IF NOT EXISTS task_sources (
     source_method INTEGER NOT NULL,
     fetched_at    TEXT NOT NULL,
     task_name     TEXT,
-    job_family    TEXT
+    job_family    TEXT,
+    name_retry_enabled INTEGER NOT NULL DEFAULT 0
 );
 
 
@@ -203,7 +228,7 @@ CREATE INDEX IF NOT EXISTS idx_task_run_coverage_events_time
 """
 
 
-class SqliteStorage:
+class SqliteStorage(TaskRunEvidence):
     """SQLite-backed storage for a single pool. Uses files in results_dir."""
 
     def __init__(self, pool_id: str, results_dir: Path):
@@ -225,80 +250,70 @@ class SqliteStorage:
         self._db.executescript(DB_SCHEMA)
         self._migrate_task_results_schema()
         source_columns = {row["name"] for row in self.db.execute("PRAGMA table_info(task_sources)")}
-        for column in ("task_name", "job_family"):
+        for column, sql_type in (("task_name", "TEXT"), ("job_family", "TEXT"),
+                                 ("name_retry_enabled", "INTEGER NOT NULL DEFAULT 0")):
             if column not in source_columns:
-                self.db.execute(f"ALTER TABLE task_sources ADD COLUMN {column} TEXT")
+                self.db.execute(f"ALTER TABLE task_sources ADD COLUMN {column} {sql_type}")
         try:
             self._db.execute("ALTER TABLE workers ADD COLUMN worker_group TEXT")
         except sqlite3.OperationalError:
             pass  # column already exists
 
     def _migrate_task_results_schema(self) -> None:
-        """Upgrade legacy SQLite task rows to one row per Taskcluster run."""
-        table_info = list(self.db.execute("PRAGMA table_info(task_results)"))
-        columns = {row["name"] for row in table_info}
-        if "run_resolved" not in columns:
-            self.db.execute("ALTER TABLE task_results ADD COLUMN run_resolved TEXT")
-        if "reason_created" not in columns:
-            self.db.execute("ALTER TABLE task_results ADD COLUMN reason_created TEXT")
-        if "run_scheduled" not in columns:
-            self.db.execute("ALTER TABLE task_results ADD COLUMN run_scheduled TEXT")
-        if "observed_at" not in columns:
-            self.db.execute("ALTER TABLE task_results ADD COLUMN observed_at TEXT")
-        if "last_checked_at" not in columns:
-            self.db.execute("ALTER TABLE task_results ADD COLUMN last_checked_at TEXT")
-        # Terminal rows predate observed-run persistence.  Their classification
-        # time is the best available first-observation and check timestamp.
-        self.db.execute(
-            "UPDATE task_results SET observed_at = COALESCE(observed_at, classified_at),"
-            " last_checked_at = COALESCE(last_checked_at, classified_at)",
-        )
+        """Rebuild SQLite's legacy table atomically and retain observation evidence."""
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(task_results)")}
+        if "status_fetch_state" not in columns:
+            self.db.execute("BEGIN IMMEDIATE")
+            try:
+                for column in ("run_resolved", "reason_created", "run_scheduled", "observed_at", "last_checked_at"):
+                    if column not in columns:
+                        self.db.execute(f"ALTER TABLE task_results ADD COLUMN {column} TEXT")
+                ambiguous = self.db.execute(
+                    "SELECT COUNT(*) FROM task_results WHERE run_state = 'expired' AND ("
+                    " category IS NOT NULL OR run_started IS NOT NULL OR run_resolved IS NOT NULL"
+                    " OR run_scheduled IS NOT NULL OR reason_created IS NOT NULL OR reason_resolved IS NOT NULL"
+                    " OR observed_at IS NULL OR last_checked_at IS NULL OR last_checked_at < observed_at)"
+                ).fetchone()[0]
+                if ambiguous:
+                    raise ValueError(f"{ambiguous} ambiguous legacy expired rows require review before migration")
+                self.db.execute("ALTER TABLE task_results RENAME TO task_results_legacy")
+                self.db.execute(SQLITE_TASK_RESULTS)
+                self.db.execute("""
+                    INSERT INTO task_results (
+                        task_id, worker_id, run_id, run_state, category, reason_resolved, reason_created,
+                        run_scheduled, run_started, run_resolved, classified_at, observed_at, last_checked_at,
+                        status_fetch_state, classification_state, status_retry_enabled
+                    )
+                    SELECT task_id, worker_id, run_id,
+                        CASE WHEN run_state NOT IN ('observed', 'expired') THEN run_state END,
+                        CASE WHEN run_state IN ('failed', 'exception') THEN category END,
+                        reason_resolved, reason_created, run_scheduled, run_started, run_resolved,
+                        CASE WHEN run_state IN ('failed', 'exception') AND category IS NOT NULL THEN classified_at END,
+                        observed_at, last_checked_at,
+                        CASE WHEN run_state = 'expired' THEN 'not_found'
+                             WHEN run_state IN ('completed', 'failed', 'exception') THEN 'available'
+                             ELSE 'unknown' END,
+                        CASE WHEN run_state = 'completed' THEN 'not_applicable'
+                             WHEN run_state IN ('failed', 'exception') AND category IS NOT NULL THEN 'classified'
+                             WHEN run_state IN ('failed', 'exception') THEN 'pending'
+                             ELSE 'unknown' END,
+                        run_state NOT IN ('expired', 'completed', 'failed', 'exception')
+                    FROM task_results_legacy
+                """)
+                self.db.execute("DROP TABLE task_results_legacy")
+                for index in SQLITE_TASK_RESULT_INDEXES:
+                    self.db.execute(index)
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
+        else:
+            for index in SQLITE_TASK_RESULT_INDEXES:
+                self.db.execute(index)
 
-        legacy_primary_key = any(row["pk"] for row in table_info)
-        indexes = {row["name"] for row in self.db.execute("PRAGMA index_list(task_results)")}
-        if not legacy_primary_key:
-            if "idx_task_results_task_run" not in indexes:
-                self.db.execute(
-                    "CREATE UNIQUE INDEX idx_task_results_task_run"
-                    " ON task_results (task_id, COALESCE(run_id, -1))",
-                )
-            return
-
-        self.db.executescript(
-            """
-            DROP INDEX IF EXISTS idx_task_results_worker;
-            DROP INDEX IF EXISTS idx_task_results_started;
-            DROP INDEX IF EXISTS idx_task_results_cat;
-            ALTER TABLE task_results RENAME TO task_results_legacy;
-            CREATE TABLE task_results (
-                task_id          TEXT NOT NULL,
-                worker_id        TEXT NOT NULL,
-                run_id           INTEGER,
-                run_state        TEXT NOT NULL,
-                category         TEXT,
-                reason_resolved  TEXT,
-                reason_created   TEXT,
-                run_scheduled    TEXT,
-                run_started      TEXT,
-                run_resolved     TEXT,
-                classified_at    TEXT NOT NULL,
-                observed_at      TEXT,
-                last_checked_at  TEXT
-            );
-            INSERT OR IGNORE INTO task_results
-                (task_id, worker_id, run_id, run_state, category, reason_resolved, reason_created,
-                 run_scheduled, run_started, run_resolved, classified_at, observed_at, last_checked_at)
-            SELECT task_id, worker_id, run_id, run_state, category, reason_resolved, reason_created,
-                   run_scheduled, run_started, run_resolved, classified_at, classified_at, classified_at
-            FROM task_results_legacy;
-            DROP TABLE task_results_legacy;
-            CREATE UNIQUE INDEX idx_task_results_task_run
-                ON task_results (task_id, COALESCE(run_id, -1));
-            CREATE INDEX idx_task_results_worker ON task_results (worker_id);
-            CREATE INDEX idx_task_results_started ON task_results (run_started);
-            CREATE INDEX idx_task_results_cat ON task_results (category);
-            """
-        )
+    def _evidence_sql(self, sql, parameters, *, read=False):
+        cursor = self.db.execute(sql.format(scope="", insert_column="", insert_value="", row_lock=""), parameters)
+        return [dict(row) for row in cursor] if read else cursor.rowcount
 
     def get_seen_tasks(self) -> Dict[str, set]:
         seen: Dict[str, set] = {}
@@ -312,14 +327,16 @@ class SqliteStorage:
 
     def record_task_source(
         self, task_id: str, source: str, source_method: int, fetched_at: str,
-        *, task_name: str | None = None, job_family: str | None = None,
+        *, task_name: str | None = None, job_family: str | None = None, name_retry_enabled: bool = False,
     ) -> None:
         self.db.execute(
-            "INSERT INTO task_sources (task_id, source, source_method, fetched_at, task_name, job_family) VALUES (?,?,?,?,?,?)"
+            "INSERT INTO task_sources (task_id, source, source_method, fetched_at, task_name, job_family, name_retry_enabled) VALUES (?,?,?,?,?,?,?)"
             " ON CONFLICT(task_id) DO UPDATE SET source=excluded.source, source_method=excluded.source_method,"
             " fetched_at=excluded.fetched_at, task_name=COALESCE(excluded.task_name, task_sources.task_name),"
-            " job_family=COALESCE(excluded.job_family, task_sources.job_family)",
-            (task_id, source, source_method, fetched_at, task_name, job_family),
+            " job_family=COALESCE(excluded.job_family, task_sources.job_family),"
+            " name_retry_enabled=excluded.name_retry_enabled AND COALESCE(excluded.task_name, task_sources.task_name) IS NULL"
+            " WHERE task_sources.name_retry_enabled OR NOT excluded.name_retry_enabled",
+            (task_id, source, source_method, fetched_at, task_name, job_family, name_retry_enabled),
         )
 
     def list_task_ids_missing_source(self, limit: int, not_before: Optional[str] = None) -> List[str]:
@@ -332,7 +349,7 @@ class SqliteStorage:
         if not_before is not None:
             query += " AND r.run_started >= ?"
             parameters.append(not_before)
-        query += " GROUP BY r.task_id ORDER BY MAX(COALESCE(r.run_resolved, r.classified_at)) DESC, r.task_id LIMIT ?"
+        query += " GROUP BY r.task_id ORDER BY MAX(COALESCE(r.run_resolved, r.classified_at, r.observed_at)) DESC, r.task_id LIMIT ?"
         parameters.append(limit)
         return [row[0] for row in self.db.execute(query, parameters).fetchall()]
 
@@ -340,7 +357,7 @@ class SqliteStorage:
         seen: Dict[str, set] = {}
         for row in self.db.execute(
             "SELECT worker_id, task_id, run_id FROM task_results"
-            " WHERE run_state IN ('completed','failed','exception','expired')",
+            " WHERE NOT status_retry_enabled",
         ):
             seen.setdefault(row["worker_id"], set()).add((row["task_id"], row["run_id"]))
         return seen
@@ -357,7 +374,7 @@ class SqliteStorage:
                 f"WITH refs(task_id, run_key) AS (VALUES {placeholders})"
                 " SELECT t.task_id, t.run_id FROM refs JOIN task_results AS t"
                 " ON t.task_id = refs.task_id AND COALESCE(t.run_id, -1) = refs.run_key"
-                " WHERE t.run_state IN ('completed','failed','exception','expired')",
+                " WHERE NOT t.status_retry_enabled",
                 parameters,
             )
             found.update((row["task_id"], row["run_id"]) for row in rows)
@@ -374,7 +391,7 @@ class SqliteStorage:
         if not_before is not None:
             query += " AND run_started >= ?"
             parameters.append(not_before)
-        query += " ORDER BY COALESCE(run_resolved, classified_at) DESC, task_id, run_id LIMIT ? OFFSET ?"
+        query += " ORDER BY COALESCE(run_resolved, classified_at, observed_at) DESC, task_id, run_id LIMIT ? OFFSET ?"
         parameters.extend((limit, offset))
         return [
             dict(row)
@@ -404,94 +421,6 @@ class SqliteStorage:
             (scheduled, reason_created, task_id, run_id),
         )
         return cursor.rowcount > 0
-
-    def record_task_result(
-        self,
-        task_id: str,
-        worker_id: str,
-        run_id: Optional[int],
-        run_state: str,
-        category: Optional[str],
-        reason_resolved: Optional[str],
-        run_started: Optional[str],
-        run_resolved: Optional[str],
-        classified_at: str,
-        run_scheduled: Optional[str] = None,
-        reason_created: Optional[str] = None,
-    ) -> None:
-        self.db.execute(
-            "INSERT INTO task_results"
-            " (task_id, worker_id, run_id, run_state, category, reason_resolved, reason_created,"
-            "  run_scheduled, run_started, run_resolved, classified_at, observed_at, last_checked_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
-            " ON CONFLICT DO UPDATE SET"
-            " worker_id = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired')"
-            " THEN task_results.worker_id ELSE excluded.worker_id END,"
-            " run_state = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired')"
-            " THEN task_results.run_state ELSE excluded.run_state END,"
-            " category = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired')"
-            " THEN task_results.category ELSE excluded.category END,"
-            " reason_resolved = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired')"
-            " THEN task_results.reason_resolved ELSE excluded.reason_resolved END,"
-            " reason_created = COALESCE(task_results.reason_created, excluded.reason_created),"
-            " run_scheduled = COALESCE(task_results.run_scheduled, excluded.run_scheduled),"
-            " run_started = COALESCE(task_results.run_started, excluded.run_started),"
-            " run_resolved = COALESCE(task_results.run_resolved, excluded.run_resolved),"
-            " classified_at = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired')"
-            " THEN task_results.classified_at ELSE excluded.classified_at END,"
-            " observed_at = COALESCE(task_results.observed_at, excluded.observed_at),"
-            " last_checked_at = excluded.last_checked_at",
-            (
-                task_id,
-                worker_id,
-                run_id,
-                run_state,
-                category,
-                reason_resolved,
-                reason_created,
-                run_scheduled,
-                run_started,
-                run_resolved,
-                classified_at,
-                classified_at,
-                classified_at,
-            ),
-        )
-
-    def record_observed_task_run(
-        self, task_id: str, worker_id: str, run_id: Optional[int], observed_at: str,
-    ) -> None:
-        """Persist a worker's task reference before its Queue status is known."""
-        self.db.execute(
-            "INSERT INTO task_results"
-            " (task_id, worker_id, run_id, run_state, classified_at, observed_at, last_checked_at)"
-            " VALUES (?,?,?,'observed',?,?,?)"
-            " ON CONFLICT DO UPDATE SET"
-            " last_checked_at = excluded.last_checked_at"
-            " WHERE task_results.run_state NOT IN ('completed','failed','exception','expired')",
-            (task_id, worker_id, run_id, observed_at, observed_at, observed_at),
-        )
-
-    def record_task_run_check(self, task_id: str, run_id: Optional[int], checked_at: str) -> bool:
-        """Record a Queue-status attempt for an unresolved observed run."""
-        cursor = self.db.execute(
-            "UPDATE task_results SET last_checked_at = ?"
-            " WHERE task_id = ? AND run_id IS ?"
-            " AND run_state NOT IN ('completed','failed','exception','expired')",
-            (checked_at, task_id, run_id),
-        )
-        return cursor.rowcount > 0
-
-    def list_unresolved_task_runs(self, limit: int) -> List[dict]:
-        return [
-            dict(row)
-            for row in self.db.execute(
-                "SELECT task_id, worker_id, run_id, run_state, observed_at, last_checked_at"
-                " FROM task_results WHERE run_state NOT IN ('completed','failed','exception','expired')"
-                " ORDER BY observed_at, task_id, run_id LIMIT ?",
-                (limit,),
-            )
-        ]
 
     def task_run_window_continuity(self, worker_id: str, task_runs: List[Tuple[str, Optional[int]]]) -> Optional[bool]:
         """Return baseline/overlap/gap for a nonempty getWorker recentTasks window."""
@@ -541,16 +470,6 @@ class SqliteStorage:
                  "current_recent_tasks": json.loads(row["current_recent_tasks_json"]) if row["current_recent_tasks_json"] else None}
                 for row in rows]
 
-    def expire_task_run(self, task_id: str, run_id: Optional[int], checked_at: str) -> bool:
-        """Stop retrying a definitively expired Taskcluster task reference."""
-        cursor = self.db.execute(
-            "UPDATE task_results SET run_state = 'expired', last_checked_at = ?"
-            " WHERE task_id = ? AND run_id IS ?"
-            " AND run_state NOT IN ('completed','failed','exception','expired')",
-            (checked_at, task_id, run_id),
-        )
-        return cursor.rowcount > 0
-
     def upsert_worker(self, worker_id: str, worker_group: Optional[str]) -> None:
         self.db.execute(
             "INSERT INTO workers (worker_id, worker_group) VALUES (?,?)"
@@ -591,12 +510,14 @@ class SqliteStorage:
             (category, task_id, worker_id),
         )
 
-    def update_worker_last_category(self, task_id: str, worker_id: str, category: str) -> None:
+    def update_worker_last_category(self, task_id: str, worker_id: str, category: str, *, run_id: int | None = None) -> None:
         self.db.execute(
             """UPDATE workers SET last_failure_category = ?
                WHERE worker_id = ?
-                 AND last_failure = (SELECT run_started FROM task_results WHERE task_id = ? AND worker_id = ?)""",
-            (category, worker_id, task_id, worker_id),
+                 AND EXISTS (SELECT 1 FROM task_results WHERE task_id = ? AND worker_id = ?
+                   AND run_started = workers.last_failure
+                   AND (? IS NULL OR run_id = ?))""",
+            (category, worker_id, task_id, worker_id, run_id, run_id),
         )
 
     def count_alerting(self, threshold: int) -> int:
@@ -612,8 +533,8 @@ class SqliteStorage:
         query = (
             "SELECT COALESCE(category, 'unclassified') AS category, COUNT(*) AS count"
             " FROM task_results WHERE run_state IN ('failed', 'exception', 'expired')"
-            " AND COALESCE(run_resolved, classified_at) >= ?"
-            " AND COALESCE(run_resolved, classified_at) < ?"
+            " AND COALESCE(run_resolved, classified_at, observed_at) >= ?"
+            " AND COALESCE(run_resolved, classified_at, observed_at) < ?"
         )
         params: list = [start, end]
         if category:
@@ -631,19 +552,19 @@ class SqliteStorage:
             FROM task_results t
             WHERE t.category = 'unclassified'
               AND t.run_state IN ('failed', 'exception', 'expired')
-              AND COALESCE(t.run_resolved, t.classified_at) >= ?
-              AND COALESCE(t.run_resolved, t.classified_at) < ?
+              AND COALESCE(t.run_resolved, t.classified_at, t.observed_at) >= ?
+              AND COALESCE(t.run_resolved, t.classified_at, t.observed_at) < ?
         """
         params: list = [start, end]
         if after:
             at, task_id, run_id = after
             query += """ AND (
-                COALESCE(t.run_resolved, t.classified_at) < ?
-                OR (COALESCE(t.run_resolved, t.classified_at) = ? AND t.task_id < ?)
-                OR (COALESCE(t.run_resolved, t.classified_at) = ? AND t.task_id = ? AND COALESCE(t.run_id, -1) < ?)
+                COALESCE(t.run_resolved, t.classified_at, t.observed_at) < ?
+                OR (COALESCE(t.run_resolved, t.classified_at, t.observed_at) = ? AND t.task_id < ?)
+                OR (COALESCE(t.run_resolved, t.classified_at, t.observed_at) = ? AND t.task_id = ? AND COALESCE(t.run_id, -1) < ?)
             )"""
             params.extend([at, at, task_id, at, task_id, run_id])
-        query += " ORDER BY COALESCE(t.run_resolved, t.classified_at) DESC, t.task_id DESC, COALESCE(t.run_id, -1) DESC LIMIT ?"
+        query += " ORDER BY COALESCE(t.run_resolved, t.classified_at, t.observed_at) DESC, t.task_id DESC, COALESCE(t.run_id, -1) DESC LIMIT ?"
         params.append(limit)
         result = [dict(row) for row in self.db.execute(query, params)]
         unclassified_dir = self.results_dir / "unclassified"
@@ -667,8 +588,8 @@ class SqliteStorage:
                 SELECT worker_id, COALESCE(category, 'unclassified') AS category, COUNT(*) AS failures
                 FROM task_results
                 WHERE run_state IN ('failed', 'exception', 'expired')
-                  AND COALESCE(run_resolved, classified_at) >= ?
-                  AND COALESCE(run_resolved, classified_at) < ?
+                  AND COALESCE(run_resolved, classified_at, observed_at) >= ?
+                  AND COALESCE(run_resolved, classified_at, observed_at) < ?
                 GROUP BY worker_id, COALESCE(category, 'unclassified')
             ), ranked_categories AS (
                 SELECT worker_id, category, failures,
@@ -711,14 +632,14 @@ class SqliteStorage:
     def count_recent_errors(self, since: str) -> int:
         return self.db.execute(
             "SELECT COUNT(*) FROM task_results WHERE run_state IN ('failed','exception')"
-            " AND COALESCE(run_resolved, classified_at) >= ?",
+            " AND COALESCE(run_resolved, classified_at, observed_at) >= ?",
             (since,),
         ).fetchone()[0]
 
     def count_recent_successes(self, since: str) -> int:
         return self.db.execute(
             "SELECT COUNT(*) FROM task_results WHERE run_state = 'completed'"
-            " AND COALESCE(run_resolved, classified_at) >= ?",
+            " AND COALESCE(run_resolved, classified_at, observed_at) >= ?",
             (since,),
         ).fetchone()[0]
 
@@ -965,7 +886,7 @@ class SqliteStorage:
         return [dict(row) for row in self.db.execute(
             "SELECT substr(r.run_started, 1, 10) AS day, COALESCE(s.source, 'unknown') AS source, COUNT(*) AS tasks"
             " FROM task_results r LEFT JOIN task_sources s ON s.task_id = r.task_id"
-            " WHERE r.run_started >= ? AND r.run_started < ? GROUP BY day, source ORDER BY day, source",
+            " WHERE r.run_state IN ('completed','failed','exception') AND r.run_started >= ? AND r.run_started < ? GROUP BY day, source ORDER BY day, source",
             (range_start, range_end),
         )]
 
@@ -1169,7 +1090,7 @@ class SqliteStorage:
         categories = {worker_id: {} for worker_id in workers}
         for row in self.db.execute(
             "SELECT worker_id, category, COUNT(*) AS cnt FROM task_results"
-            " WHERE run_state != 'completed' AND category IS NOT NULL"
+            " WHERE run_state IN ('failed','exception') AND category IS NOT NULL"
             " GROUP BY worker_id, category ORDER BY worker_id, cnt DESC",
         ):
             categories.setdefault(row["worker_id"], {})[row["category"]] = row["cnt"]
@@ -1188,11 +1109,11 @@ class SqliteStorage:
             SELECT
                 worker_id,
                 SUM(CASE WHEN run_state = 'completed' AND run_started >= :c1d THEN 1 ELSE 0 END) AS succ_1d,
-                SUM(CASE WHEN run_state != 'completed' AND run_started >= :c1d THEN 1 ELSE 0 END) AS fail_1d,
+                SUM(CASE WHEN run_state IN ('failed','exception') AND run_started >= :c1d THEN 1 ELSE 0 END) AS fail_1d,
                 SUM(CASE WHEN run_state = 'completed' AND run_started >= :c3d THEN 1 ELSE 0 END) AS succ_3d,
-                SUM(CASE WHEN run_state != 'completed' AND run_started >= :c3d THEN 1 ELSE 0 END) AS fail_3d,
+                SUM(CASE WHEN run_state IN ('failed','exception') AND run_started >= :c3d THEN 1 ELSE 0 END) AS fail_3d,
                 SUM(CASE WHEN run_state = 'completed' AND run_started >= :c7d THEN 1 ELSE 0 END) AS succ_7d,
-                SUM(CASE WHEN run_state != 'completed' AND run_started >= :c7d THEN 1 ELSE 0 END) AS fail_7d
+                SUM(CASE WHEN run_state IN ('failed','exception') AND run_started >= :c7d THEN 1 ELSE 0 END) AS fail_7d
             FROM task_results
             WHERE run_started >= :c7d
             GROUP BY worker_id
@@ -1251,14 +1172,14 @@ class SqliteStorage:
         if since:
             rows = self.db.execute(
                 "SELECT worker_id, COUNT(*) as cnt FROM task_results"
-                " WHERE category = ? AND run_state != 'completed' AND run_started >= ?"
+                " WHERE category = ? AND run_state IN ('failed','exception') AND run_started >= ?"
                 " GROUP BY worker_id ORDER BY cnt DESC, worker_id ASC LIMIT ?",
                 (category, since, n),
             )
         else:
             rows = self.db.execute(
                 "SELECT worker_id, COUNT(*) as cnt FROM task_results"
-                " WHERE category = ? AND run_state != 'completed'"
+                " WHERE category = ? AND run_state IN ('failed','exception')"
                 " GROUP BY worker_id ORDER BY cnt DESC, worker_id ASC LIMIT ?",
                 (category, n),
             )
@@ -1269,7 +1190,7 @@ class SqliteStorage:
         result: Dict[str, List[Tuple[str, int]]] = {}
         rows = self.db.execute(
             "SELECT category, worker_id, COUNT(*) AS cnt FROM task_results"
-            " WHERE category IS NOT NULL AND run_state != 'completed' AND run_started >= ?"
+            " WHERE category IS NOT NULL AND run_state IN ('failed','exception') AND run_started >= ?"
             " GROUP BY category, worker_id ORDER BY category, cnt DESC, worker_id ASC",
             (since,),
         )
@@ -1285,7 +1206,7 @@ class SqliteStorage:
         result: Dict[str, dict] = {}
         rows = self.db.execute(
             "SELECT category, worker_id, COUNT(*) AS cnt FROM task_results"
-            " WHERE category IS NOT NULL AND run_state != 'completed' AND run_started >= ?"
+            " WHERE category IS NOT NULL AND run_state IN ('failed','exception') AND run_started >= ?"
             " GROUP BY category, worker_id ORDER BY category, cnt DESC, worker_id ASC",
             (since,),
         )
@@ -1298,7 +1219,7 @@ class SqliteStorage:
         return result
 
     def oldest_classified_at(self) -> Optional[str]:
-        row = self.db.execute("SELECT MIN(classified_at) FROM task_results").fetchone()
+        row = self.db.execute("SELECT MIN(COALESCE(classified_at, run_started, observed_at)) FROM task_results WHERE run_state IN ('completed','failed','exception')").fetchone()
         return row[0] if row and row[0] else None
 
     def save_unclassified_log(self, task_id: str, run_id: Optional[int], worker_id: str, log_text: str) -> None:
@@ -1307,6 +1228,16 @@ class SqliteStorage:
         out = unclassified_dir / f"{task_id}.log"
         header = f"# worker={worker_id} run={run_id} task={task_id}\n\n"
         out.write_text(header + log_text)
+
+    def get_saved_run_log(self, task_id: str, run_id: Optional[int]):
+        path = self.results_dir / "unclassified" / f"{task_id}.log"
+        try:
+            header, separator, log_text = path.read_text().partition("\n\n")
+        except FileNotFoundError:
+            return None
+        if separator and f"run={run_id}" in header.split():
+            return log_text, path
+        return None
 
     def list_unclassified_logs(self) -> Iterator[Tuple[str, str, Path]]:
         """Yield (task_id, log_text, path) for each saved unclassified log file."""
@@ -1581,8 +1512,8 @@ SELECT requested_pools.pool_id,
        priority.high_24h
 FROM requested_pools
 LEFT JOIN LATERAL (
-    SELECT MIN(task_results.classified_at) AS oldest,
-           MAX(task_results.classified_at) AS latest,
+    SELECT MIN(COALESCE(task_results.classified_at, task_results.run_started, task_results.observed_at)) AS oldest,
+           MAX(COALESCE(task_results.classified_at, task_results.run_resolved, task_results.observed_at)) AS latest,
            COUNT(*) AS task_runs,
            COUNT(*) FILTER (WHERE task_results.run_state = 'completed') AS successes,
            COUNT(*) FILTER (WHERE task_results.run_state IN ('failed', 'exception')) AS errors,
@@ -1604,6 +1535,7 @@ LEFT JOIN LATERAL (
            ) AS ok_24h
     FROM task_results
     WHERE task_results.pool_id = requested_pools.pool_id
+      AND task_results.run_state IN ('completed', 'failed', 'exception')
       AND task_results.run_resolved >= %(s24h)s
 ) AS recent ON true
 LEFT JOIN LATERAL (
@@ -1612,7 +1544,7 @@ LEFT JOIN LATERAL (
     FROM task_results
     WHERE task_results.pool_id = requested_pools.pool_id
       AND task_results.run_started >= %(s24h)s
-      AND task_results.run_state != 'completed'
+      AND task_results.run_state IN ('failed','exception')
 ) AS priority ON true
 ORDER BY requested_pools.pool_id
 """
@@ -1745,7 +1677,7 @@ def pool_summaries_global(
     return summaries
 
 
-class PostgresStorage:
+class PostgresStorage(TaskRunEvidence):
     """Postgres-backed storage for a single pool. Intended for Cloud Run / Cloud SQL."""
 
     def __init__(self, pool_id: str, dsn: str, role: str = "classifier") -> None:
@@ -1800,6 +1732,28 @@ class PostgresStorage:
             self._tx_cm = None
             self._tx_conn = None
 
+    def _evidence_sql(self, sql, parameters, *, read=False):
+        insert = "{insert_column}" in sql
+        locks_row = "{row_lock}" in sql
+        if insert:
+            parameters = (self.pool_id, *parameters)
+        elif "{scope}" in sql and not read:
+            before_scope = sql.split("{scope}", 1)[0].count("?")
+            parameters = (*parameters[:before_scope], self.pool_id, *parameters[before_scope:])
+        elif "{scope}" in sql:
+            parameters = (self.pool_id, *parameters)
+        query = sql.format(
+            scope="pool_id = ? AND ", insert_column="pool_id, ", insert_value="?, ", row_lock=" FOR UPDATE",
+        ).replace("?", "%s")
+        with (self._write_cursor() if not read or locks_row else self._cursor()) as cur:
+            cur.execute(query, parameters)
+            if not read:
+                return cur.rowcount
+            return [
+                {key: _to_iso(value) if isinstance(value, datetime) else value for key, value in row.items()}
+                for row in cur.fetchall()
+            ]
+
     def get_seen_tasks(self) -> Dict[str, set]:
         seen: Dict[str, set] = {}
         with self._cursor() as cur:
@@ -1819,16 +1773,18 @@ class PostgresStorage:
 
     def record_task_source(
         self, task_id: str, source: str, source_method: int, fetched_at: str,
-        *, task_name: str | None = None, job_family: str | None = None,
+        *, task_name: str | None = None, job_family: str | None = None, name_retry_enabled: bool = False,
     ) -> None:
         with self._write_cursor() as cur:
             cur.execute(
-                "INSERT INTO task_sources (task_id, source, source_method, fetched_at, task_name, job_family)"
-                " VALUES (%s,%s,%s,%s::timestamptz,%s,%s)"
+                "INSERT INTO task_sources (task_id, source, source_method, fetched_at, task_name, job_family, name_retry_enabled)"
+                " VALUES (%s,%s,%s,%s::timestamptz,%s,%s,%s)"
                 " ON CONFLICT(task_id) DO UPDATE SET source=EXCLUDED.source, source_method=EXCLUDED.source_method,"
                 " fetched_at=EXCLUDED.fetched_at, task_name=COALESCE(EXCLUDED.task_name, task_sources.task_name),"
-                " job_family=COALESCE(EXCLUDED.job_family, task_sources.job_family)",
-                (task_id, source, source_method, fetched_at, task_name, job_family),
+                " job_family=COALESCE(EXCLUDED.job_family, task_sources.job_family),"
+                " name_retry_enabled=EXCLUDED.name_retry_enabled AND COALESCE(EXCLUDED.task_name, task_sources.task_name) IS NULL"
+                " WHERE task_sources.name_retry_enabled OR NOT EXCLUDED.name_retry_enabled",
+                (task_id, source, source_method, fetched_at, task_name, job_family, name_retry_enabled),
             )
 
     def list_task_ids_missing_source(self, limit: int, not_before: Optional[str] = None) -> List[str]:
@@ -1841,7 +1797,7 @@ class PostgresStorage:
         if not_before is not None:
             query += " AND r.run_started >= %s::timestamptz"
             parameters.append(not_before)
-        query += " GROUP BY r.task_id ORDER BY MAX(COALESCE(r.run_resolved, r.classified_at)) DESC, r.task_id LIMIT %s"
+        query += " GROUP BY r.task_id ORDER BY MAX(COALESCE(r.run_resolved, r.classified_at, r.observed_at)) DESC, r.task_id LIMIT %s"
         parameters.append(limit)
         with self._cursor() as cur:
             cur.execute(query, parameters)
@@ -1852,7 +1808,7 @@ class PostgresStorage:
         with self._cursor() as cur:
             cur.execute(
                 "SELECT worker_id, task_id, run_id FROM task_results"
-                " WHERE pool_id = %s AND run_state IN ('completed','failed','exception','expired')",
+                " WHERE pool_id = %s AND NOT status_retry_enabled",
                 (self.pool_id,),
             )
             for row in cur.fetchall():
@@ -1873,7 +1829,7 @@ class PostgresStorage:
                     " SELECT t.task_id, t.run_id FROM refs JOIN task_results AS t"
                     " ON t.pool_id = %s AND t.task_id = refs.task_id"
                     " AND COALESCE(t.run_id, -1) = refs.run_key"
-                    " WHERE t.run_state IN ('completed','failed','exception','expired')",
+                    " WHERE NOT t.status_retry_enabled",
                     (*parameters, self.pool_id),
                 )
                 found.update((row["task_id"], row["run_id"]) for row in cur.fetchall())
@@ -1890,7 +1846,7 @@ class PostgresStorage:
         if not_before is not None:
             query += " AND run_started >= %s::timestamptz"
             parameters.append(not_before)
-        query += " ORDER BY COALESCE(run_resolved, classified_at) DESC, task_id, run_id LIMIT %s OFFSET %s"
+        query += " ORDER BY COALESCE(run_resolved, classified_at, observed_at) DESC, task_id, run_id LIMIT %s OFFSET %s"
         parameters.extend((limit, offset))
         with self._cursor() as cur:
             cur.execute(query, parameters)
@@ -1920,92 +1876,6 @@ class PostgresStorage:
                 (scheduled, reason_created, self.pool_id, task_id, run_id),
             )
             return cur.rowcount > 0
-
-    def record_task_result(
-        self,
-        task_id: str,
-        worker_id: str,
-        run_id: Optional[int],
-        run_state: str,
-        category: Optional[str],
-        reason_resolved: Optional[str],
-        run_started: Optional[str],
-        run_resolved: Optional[str],
-        classified_at: str,
-        run_scheduled: Optional[str] = None,
-        reason_created: Optional[str] = None,
-    ) -> None:
-        with self._write_cursor() as cur:
-            cur.execute(
-                "INSERT INTO task_results"
-                " (pool_id, task_id, worker_id, run_id, run_state, category,"
-                "  reason_resolved, reason_created, run_scheduled, run_started, run_resolved, classified_at, observed_at, last_checked_at)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::timestamptz,%s::timestamptz,%s::timestamptz,%s::timestamptz,%s::timestamptz,%s::timestamptz)"
-                " ON CONFLICT (pool_id, task_id, (COALESCE(run_id, -1))) DO UPDATE SET"
-                " worker_id = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired') THEN task_results.worker_id ELSE EXCLUDED.worker_id END,"
-                " run_state = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired') THEN task_results.run_state ELSE EXCLUDED.run_state END,"
-                " category = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired') THEN task_results.category ELSE EXCLUDED.category END,"
-                " reason_resolved = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired') THEN task_results.reason_resolved ELSE EXCLUDED.reason_resolved END,"
-                " reason_created = COALESCE(task_results.reason_created, EXCLUDED.reason_created),"
-                " run_scheduled = COALESCE(task_results.run_scheduled, EXCLUDED.run_scheduled),"
-                " run_started = COALESCE(task_results.run_started, EXCLUDED.run_started),"
-                " run_resolved = COALESCE(task_results.run_resolved, EXCLUDED.run_resolved),"
-                " classified_at = CASE WHEN task_results.run_state IN ('completed','failed','exception','expired') THEN task_results.classified_at ELSE EXCLUDED.classified_at END,"
-                " observed_at = COALESCE(task_results.observed_at, EXCLUDED.observed_at),"
-                " last_checked_at = EXCLUDED.last_checked_at",
-                (
-                    self.pool_id,
-                    task_id,
-                    worker_id,
-                    run_id,
-                    run_state,
-                    category,
-                    reason_resolved,
-                    reason_created,
-                    run_scheduled,
-                    run_started,
-                    run_resolved,
-                    classified_at,
-                    classified_at,
-                    classified_at,
-                ),
-            )
-
-    def record_observed_task_run(
-        self, task_id: str, worker_id: str, run_id: Optional[int], observed_at: str,
-    ) -> None:
-        """Persist a worker's task reference before its Queue status is known."""
-        with self._write_cursor() as cur:
-            cur.execute(
-                "INSERT INTO task_results"
-                " (pool_id, task_id, worker_id, run_id, run_state, classified_at, observed_at, last_checked_at)"
-                " VALUES (%s,%s,%s,%s,'observed',%s::timestamptz,%s::timestamptz,%s::timestamptz)"
-                " ON CONFLICT (pool_id, task_id, (COALESCE(run_id, -1))) DO UPDATE SET last_checked_at = EXCLUDED.last_checked_at"
-                " WHERE task_results.run_state NOT IN ('completed','failed','exception','expired')",
-                (self.pool_id, task_id, worker_id, run_id, observed_at, observed_at, observed_at),
-            )
-
-    def record_task_run_check(self, task_id: str, run_id: Optional[int], checked_at: str) -> bool:
-        """Record a Queue-status attempt for an unresolved observed run."""
-        with self._write_cursor() as cur:
-            cur.execute(
-                "UPDATE task_results SET last_checked_at = %s::timestamptz"
-                " WHERE pool_id = %s AND task_id = %s AND run_id IS NOT DISTINCT FROM %s"
-                " AND run_state NOT IN ('completed','failed','exception','expired')",
-                (checked_at, self.pool_id, task_id, run_id),
-            )
-            return cur.rowcount > 0
-
-    def list_unresolved_task_runs(self, limit: int) -> List[dict]:
-        with self._cursor() as cur:
-            cur.execute(
-                "SELECT task_id, worker_id, run_id, run_state, observed_at, last_checked_at"
-                " FROM task_results WHERE pool_id = %s"
-                " AND run_state NOT IN ('completed','failed','exception','expired')"
-                " ORDER BY observed_at, task_id, run_id LIMIT %s",
-                (self.pool_id, limit),
-            )
-            return [{**dict(row), "observed_at": _to_iso(row["observed_at"]), "last_checked_at": _to_iso(row["last_checked_at"])} for row in cur.fetchall()]
 
     def task_run_window_continuity(self, worker_id: str, task_runs: List[Tuple[str, Optional[int]]]) -> Optional[bool]:
         """Return baseline/overlap/gap for a nonempty getWorker recentTasks window."""
@@ -2040,17 +1910,6 @@ class PostgresStorage:
         with self._cursor() as cur:
             cur.execute("SELECT id, observed_at, reason, worker_id, worker_group, previous_observed_at, previous_recent_tasks, current_recent_tasks, previous_window_count, current_window_count, overlap_count, error_type FROM task_run_coverage_events WHERE pool_id = %s AND observed_at >= %s::timestamptz AND observed_at < %s::timestamptz ORDER BY observed_at DESC, id DESC LIMIT %s", (self.pool_id, start, end, limit))
             return [{**dict(row), "observed_at": _to_iso(row["observed_at"]), "previous_observed_at": _to_iso(row["previous_observed_at"])} for row in cur.fetchall()]
-
-    def expire_task_run(self, task_id: str, run_id: Optional[int], checked_at: str) -> bool:
-        """Stop retrying a definitively expired Taskcluster task reference."""
-        with self._write_cursor() as cur:
-            cur.execute(
-                "UPDATE task_results SET run_state = 'expired', last_checked_at = %s::timestamptz"
-                " WHERE pool_id = %s AND task_id = %s AND run_id IS NOT DISTINCT FROM %s"
-                " AND run_state NOT IN ('completed','failed','exception','expired')",
-                (checked_at, self.pool_id, task_id, run_id),
-            )
-            return cur.rowcount > 0
 
     def upsert_worker(self, worker_id: str, worker_group: Optional[str]) -> None:
         with self._write_cursor() as cur:
@@ -2102,16 +1961,18 @@ class PostgresStorage:
                 (category, self.pool_id, task_id, worker_id),
             )
 
-    def update_worker_last_category(self, task_id: str, worker_id: str, category: str) -> None:
+    def update_worker_last_category(self, task_id: str, worker_id: str, category: str, *, run_id: int | None = None) -> None:
         with self._write_cursor() as cur:
             cur.execute(
                 """UPDATE workers SET last_failure_category = %s
                    WHERE pool_id = %s AND worker_id = %s
-                     AND last_failure = (
-                         SELECT run_started FROM task_results
+                     AND EXISTS (
+                         SELECT 1 FROM task_results
                          WHERE pool_id = %s AND task_id = %s AND worker_id = %s
+                           AND run_started = workers.last_failure
+                           AND (%s::integer IS NULL OR run_id = %s)
                      )""",
-                (category, self.pool_id, worker_id, self.pool_id, task_id, worker_id),
+                (category, self.pool_id, worker_id, self.pool_id, task_id, worker_id, run_id, run_id),
             )
 
     def count_alerting(self, threshold: int) -> int:
@@ -2427,7 +2288,8 @@ class PostgresStorage:
             cur.execute(
                 "SELECT r.run_started::date::text AS day, COALESCE(s.source, 'unknown') AS source, COUNT(*) AS tasks"
                 " FROM task_results r LEFT JOIN task_sources s ON s.task_id = r.task_id"
-                " WHERE r.pool_id = %s AND r.run_started >= %s::timestamptz AND r.run_started < %s::timestamptz"
+                " WHERE r.pool_id = %s AND r.run_state IN ('completed','failed','exception')"
+                " AND r.run_started >= %s::timestamptz AND r.run_started < %s::timestamptz"
                 " GROUP BY day, source ORDER BY day, source",
                 (self.pool_id, range_start, range_end),
             )
@@ -2656,7 +2518,7 @@ class PostgresStorage:
             rows = cur.fetchall()
             cur.execute(
                 "SELECT worker_id, category, COUNT(*) AS cnt FROM task_results"
-                " WHERE pool_id = %s AND run_state != 'completed' AND category IS NOT NULL"
+                " WHERE pool_id = %s AND run_state IN ('failed','exception') AND category IS NOT NULL"
                 " GROUP BY worker_id, category ORDER BY worker_id, cnt DESC",
                 (self.pool_id,),
             )
@@ -2684,11 +2546,11 @@ class PostgresStorage:
                 SELECT
                     worker_id,
                     SUM(CASE WHEN run_state = 'completed' AND run_started >= %(c1d)s::timestamptz THEN 1 ELSE 0 END) AS succ_1d,
-                    SUM(CASE WHEN run_state != 'completed' AND run_started >= %(c1d)s::timestamptz THEN 1 ELSE 0 END) AS fail_1d,
+                    SUM(CASE WHEN run_state IN ('failed','exception') AND run_started >= %(c1d)s::timestamptz THEN 1 ELSE 0 END) AS fail_1d,
                     SUM(CASE WHEN run_state = 'completed' AND run_started >= %(c3d)s::timestamptz THEN 1 ELSE 0 END) AS succ_3d,
-                    SUM(CASE WHEN run_state != 'completed' AND run_started >= %(c3d)s::timestamptz THEN 1 ELSE 0 END) AS fail_3d,
+                    SUM(CASE WHEN run_state IN ('failed','exception') AND run_started >= %(c3d)s::timestamptz THEN 1 ELSE 0 END) AS fail_3d,
                     SUM(CASE WHEN run_state = 'completed' AND run_started >= %(c7d)s::timestamptz THEN 1 ELSE 0 END) AS succ_7d,
-                    SUM(CASE WHEN run_state != 'completed' AND run_started >= %(c7d)s::timestamptz THEN 1 ELSE 0 END) AS fail_7d
+                    SUM(CASE WHEN run_state IN ('failed','exception') AND run_started >= %(c7d)s::timestamptz THEN 1 ELSE 0 END) AS fail_7d
                 FROM task_results
                 WHERE pool_id = %(pool_id)s AND run_started >= %(c7d)s::timestamptz
                 GROUP BY worker_id
@@ -2749,14 +2611,14 @@ class PostgresStorage:
                 cur.execute(
                     "SELECT worker_id, COUNT(*) AS cnt FROM task_results"
                     " WHERE pool_id = %s AND category = %s"
-                    "   AND run_state != 'completed' AND run_started >= %s::timestamptz"
+                    "   AND run_state IN ('failed','exception') AND run_started >= %s::timestamptz"
                     " GROUP BY worker_id ORDER BY cnt DESC, worker_id ASC LIMIT %s",
                     (self.pool_id, category, since, n),
                 )
             else:
                 cur.execute(
                     "SELECT worker_id, COUNT(*) AS cnt FROM task_results"
-                    " WHERE pool_id = %s AND category = %s AND run_state != 'completed'"
+                    " WHERE pool_id = %s AND category = %s AND run_state IN ('failed','exception')"
                     " GROUP BY worker_id ORDER BY cnt DESC, worker_id ASC LIMIT %s",
                     (self.pool_id, category, n),
                 )
@@ -2768,7 +2630,7 @@ class PostgresStorage:
         with self._cursor() as cur:
             cur.execute(
                 "SELECT category, worker_id, COUNT(*) AS cnt FROM task_results"
-                " WHERE pool_id = %s AND category IS NOT NULL AND run_state != 'completed'"
+                " WHERE pool_id = %s AND category IS NOT NULL AND run_state IN ('failed','exception')"
                 "   AND run_started >= %s::timestamptz"
                 " GROUP BY category, worker_id ORDER BY category, cnt DESC, worker_id ASC",
                 (self.pool_id, since),
@@ -2787,7 +2649,7 @@ class PostgresStorage:
         with self._cursor() as cur:
             cur.execute(
                 "SELECT category, worker_id, COUNT(*) AS cnt FROM task_results"
-                " WHERE pool_id = %s AND category IS NOT NULL AND run_state != 'completed'"
+                " WHERE pool_id = %s AND category IS NOT NULL AND run_state IN ('failed','exception')"
                 "   AND run_started >= %s::timestamptz"
                 " GROUP BY category, worker_id ORDER BY category, cnt DESC, worker_id ASC",
                 (self.pool_id, since),
@@ -2804,7 +2666,7 @@ class PostgresStorage:
     def oldest_classified_at(self) -> Optional[str]:
         with self._cursor() as cur:
             cur.execute(
-                "SELECT MIN(classified_at) AS oldest FROM task_results WHERE pool_id = %s",
+                "SELECT MIN(COALESCE(classified_at, run_started, observed_at)) AS oldest FROM task_results WHERE pool_id = %s AND run_state IN ('completed','failed','exception')",
                 (self.pool_id,),
             )
             row = cur.fetchone()
@@ -2820,6 +2682,16 @@ class PostgresStorage:
                 " log_text = EXCLUDED.log_text, saved_at = now()",
                 (self.pool_id, task_id, run_id, worker_id, log_text),
             )
+
+    def get_saved_run_log(self, task_id: str, run_id: Optional[int]):
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT log_text FROM unclassified_logs WHERE pool_id = %s AND task_id = %s"
+                " AND run_id IS NOT DISTINCT FROM %s",
+                (self.pool_id, task_id, run_id),
+            )
+            row = cur.fetchone()
+        return (row["log_text"], _PgLogRef(self, task_id)) if row else None
 
     def list_unclassified_logs(self) -> Iterator[Tuple[str, str, "_PgLogRef"]]:
         with self._cursor() as cur:
@@ -2860,8 +2732,8 @@ class PostgresStorage:
             "SELECT COALESCE(category, 'unclassified') AS category, COUNT(*) AS count"
             " FROM task_results WHERE pool_id = %s"
             " AND run_state IN ('failed', 'exception', 'expired')"
-            " AND COALESCE(run_resolved, classified_at) >= %s::timestamptz"
-            " AND COALESCE(run_resolved, classified_at) < %s::timestamptz"
+            " AND COALESCE(run_resolved, classified_at, observed_at) >= %s::timestamptz"
+            " AND COALESCE(run_resolved, classified_at, observed_at) < %s::timestamptz"
         )
         params: list = [self.pool_id, start, end]
         if category:
@@ -2885,19 +2757,19 @@ class PostgresStorage:
             FROM task_results t
             WHERE t.pool_id = %s AND t.category = 'unclassified'
               AND t.run_state IN ('failed', 'exception', 'expired')
-              AND COALESCE(t.run_resolved, t.classified_at) >= %s::timestamptz
-              AND COALESCE(t.run_resolved, t.classified_at) < %s::timestamptz
+              AND COALESCE(t.run_resolved, t.classified_at, t.observed_at) >= %s::timestamptz
+              AND COALESCE(t.run_resolved, t.classified_at, t.observed_at) < %s::timestamptz
         """
         params: list = [self.pool_id, start, end]
         if after:
             at, task_id, run_id = after
             query += """ AND (
-                COALESCE(t.run_resolved, t.classified_at) < %s::timestamptz
-                OR (COALESCE(t.run_resolved, t.classified_at) = %s::timestamptz AND t.task_id < %s)
-                OR (COALESCE(t.run_resolved, t.classified_at) = %s::timestamptz AND t.task_id = %s AND COALESCE(t.run_id, -1) < %s)
+                COALESCE(t.run_resolved, t.classified_at, t.observed_at) < %s::timestamptz
+                OR (COALESCE(t.run_resolved, t.classified_at, t.observed_at) = %s::timestamptz AND t.task_id < %s)
+                OR (COALESCE(t.run_resolved, t.classified_at, t.observed_at) = %s::timestamptz AND t.task_id = %s AND COALESCE(t.run_id, -1) < %s)
             )"""
             params.extend([at, at, task_id, at, task_id, run_id])
-        query += " ORDER BY COALESCE(t.run_resolved, t.classified_at) DESC, t.task_id DESC, COALESCE(t.run_id, -1) DESC LIMIT %s"
+        query += " ORDER BY COALESCE(t.run_resolved, t.classified_at, t.observed_at) DESC, t.task_id DESC, COALESCE(t.run_id, -1) DESC LIMIT %s"
         params.append(limit)
         with self._cursor() as cur:
             cur.execute(query, params)
@@ -2926,8 +2798,8 @@ class PostgresStorage:
                 SELECT worker_id, COALESCE(category, 'unclassified') AS category, COUNT(*) AS failures
                 FROM task_results
                 WHERE pool_id = %s AND run_state IN ('failed', 'exception', 'expired')
-                  AND COALESCE(run_resolved, classified_at) >= %s::timestamptz
-                  AND COALESCE(run_resolved, classified_at) < %s::timestamptz
+                  AND COALESCE(run_resolved, classified_at, observed_at) >= %s::timestamptz
+                  AND COALESCE(run_resolved, classified_at, observed_at) < %s::timestamptz
                 GROUP BY worker_id, COALESCE(category, 'unclassified')
             ), ranked_categories AS (
                 SELECT worker_id, category, failures,
@@ -2975,7 +2847,7 @@ class PostgresStorage:
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM task_results"
                 " WHERE pool_id = %s AND run_state IN ('failed','exception')"
-                " AND COALESCE(run_resolved, classified_at) >= %s",
+                " AND COALESCE(run_resolved, classified_at, observed_at) >= %s",
                 (self.pool_id, since),
             )
             return cur.fetchone()["cnt"]
@@ -2985,7 +2857,7 @@ class PostgresStorage:
             cur.execute(
                 "SELECT COUNT(*) AS cnt FROM task_results"
                 " WHERE pool_id = %s AND run_state = 'completed'"
-                " AND COALESCE(run_resolved, classified_at) >= %s",
+                " AND COALESCE(run_resolved, classified_at, observed_at) >= %s",
                 (self.pool_id, since),
             )
             return cur.fetchone()["cnt"]

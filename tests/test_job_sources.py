@@ -87,10 +87,16 @@ def test_terminal_batches_fetch_definitions_concurrently_and_deduplicate(tmp_pat
     def terminal(task_id, run_id=0):
         return (task_id, run_id, "completed", start, end, None)
 
-    classified = classifier._process_terminal_batches([
+    results = [
         ("worker-1", "group", [terminal(task) for task in ("cached", "a", "b", "c", "unavailable")]),
         ("worker-2", "group", [terminal("a", 1), terminal("unavailable", 1), terminal("d")]),
-    ], None)
+    ]
+    for worker, _group, tasks in results:
+        for task_id, run_id, state, started, resolved, _reason in tasks:
+            storage.record_task_result(task_id, worker, run_id, state, None, None, started, resolved, end)
+    storage.commit()
+
+    classified = classifier._process_terminal_batches(results, None)
 
     assert len(fetch_threads) == 4 and classifier_thread not in fetch_threads
     assert calls == Counter({task: 1 for task in ("a", "b", "c", "unavailable", "d")})

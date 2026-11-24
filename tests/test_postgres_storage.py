@@ -451,8 +451,109 @@ def test_observed_run_transition_and_metrics_storage_parity(sqlite, pg):
     assert [tuple(row) for row in sqlite_rows] == [
         (row["task_id"], row["run_state"]) for row in postgres_rows
     ] == [
-        ("completed", "completed"), ("expired", "expired"), ("unresolved", "observed"),
+        ("completed", "completed"), ("expired", None), ("unresolved", None),
     ]
+
+
+def test_run_evidence_retains_running_and_terminal_facts_across_lookup_failures(sqlite, pg, caplog):
+    first = "2026-08-05T10:00:00+00:00"
+    observed = "2026-08-05T10:15:00+00:00"
+    finished = "2026-08-05T10:30:00+00:00"
+    for storage in (sqlite, pg):
+        storage.record_observed_task_run("evidence-parity", "worker", 0, first)
+        storage.record_task_run_check("evidence-parity", 0, observed)
+        run = {"workerId": "worker", "state": "running", "started": first}
+        storage.record_queue_evidence("evidence-parity", 0, "available", observed, run)
+        for result in ("run_missing", "worker_mismatch", "error", "not_found"):
+            storage.record_queue_evidence("evidence-parity", 0, result, None)
+            row, = storage._evidence_sql(
+                "SELECT run_state, status_fetched_at, status_fetch_state FROM task_results WHERE {scope}task_id = ?",
+                ("evidence-parity",), read=True,
+            )
+            assert row == {"run_state": "running", "status_fetched_at": observed, "status_fetch_state": result}
+        assert storage.list_unresolved_task_runs(10) == []
+        assert storage.retry_task_status("evidence-parity", 1) is False
+        assert storage.retry_task_status("evidence-parity", 0) is True
+        assert storage.list_unresolved_task_runs(10)[0]["last_checked_at"] == observed
+        run.update(state="failed", resolved=finished, reasonResolved="failed")
+        assert storage.record_queue_evidence("evidence-parity", 0, "available", finished, run)
+        storage.commit()
+        assert storage.list_pending_classifications(10)[0]["run_state"] == "failed"
+        assert storage.complete_task_classification("evidence-parity", 0, "unclassified", finished)
+        assert not storage.complete_task_classification("evidence-parity", 0, "other", finished)
+        storage.record_queue_evidence("evidence-parity", 0, "available", finished, {**run, "state": "completed"})
+        storage.record_queue_evidence("evidence-parity", 0, "available", finished, {**run, "state": "running"})
+        storage.record_queue_evidence("evidence-parity", 0, "not_found", None)
+        storage.commit()
+        assert storage.list_pending_classifications(10) == []
+        assert not storage.retry_task_status("evidence-parity", 0)
+        rows = storage._evidence_sql(
+            "SELECT run_state, classification_state, classified_at, reason_resolved FROM task_results"
+            " WHERE {scope}task_id = ?", ("evidence-parity",), read=True,
+        )
+        assert rows == [{"run_state": "failed", "classification_state": "classified",
+                         "classified_at": finished, "reason_resolved": "failed"}]
+        assert storage.query_workers()["worker"]["failures"] == 1
+    assert "Conflicting Queue outcomes" in caplog.text
+
+
+def test_evidence_migration_maps_legacy_rows_and_rejects_old_writes():
+    from worker_health.pool_classifier_web.scripts.migrate import MIGRATIONS_DIR, TASK_EVIDENCE_MIGRATION
+
+    with psycopg.connect(DSN) as conn:
+        conn.execute("""
+            CREATE TEMP TABLE task_results (pool_id TEXT, task_id TEXT, worker_id TEXT, run_id INTEGER,
+                run_state TEXT NOT NULL, category TEXT, reason_resolved TEXT, reason_created TEXT,
+                run_scheduled TIMESTAMPTZ, run_started TIMESTAMPTZ, run_resolved TIMESTAMPTZ,
+                classified_at TIMESTAMPTZ NOT NULL, observed_at TIMESTAMPTZ, last_checked_at TIMESTAMPTZ);
+            CREATE TEMP TABLE task_sources (task_id TEXT);
+            INSERT INTO task_results (pool_id, task_id, worker_id, run_id, run_state, category,
+                classified_at, observed_at, last_checked_at)
+            SELECT 'p/w', state, 'w', 0, state, category,
+                '2026-08-05 10:30Z'::timestamptz, '2026-08-05 10:00Z'::timestamptz, '2026-08-05 10:15Z'::timestamptz
+            FROM (VALUES ('observed', NULL), ('expired', NULL), ('completed', NULL),
+                         ('failed', 'infra'), ('exception', NULL)) AS legacy(state, category);
+        """)
+        migration = (MIGRATIONS_DIR / f"{TASK_EVIDENCE_MIGRATION}.sql").read_text()
+        with pytest.raises(psycopg.errors.RaiseException, match="ambiguous legacy expired"):
+            with conn.transaction():
+                conn.execute("UPDATE task_results SET reason_resolved = 'ambiguous' WHERE run_state = 'expired'")
+                conn.execute(migration)
+        conn.execute(migration)
+        rows = conn.execute("""
+            SELECT task_id, run_state, status_fetch_state, classification_state, status_retry_enabled,
+                status_fetched_at IS NULL, classified_at IS NOT NULL
+            FROM task_results ORDER BY task_id
+        """).fetchall()
+        assert rows == [
+            ("completed", "completed", "available", "not_applicable", False, True, False),
+            ("exception", "exception", "available", "pending", False, True, False),
+            ("expired", None, "not_found", "unknown", False, True, False),
+            ("failed", "failed", "available", "classified", False, True, True),
+            ("observed", None, "unknown", "unknown", True, True, False),
+        ]
+        for legacy_state in ("observed", "expired", "completed", "failed"):
+            with pytest.raises(psycopg.errors.CheckViolation):
+                with conn.transaction():
+                    conn.execute(
+                        "INSERT INTO task_results (pool_id, task_id, worker_id, run_id, run_state, classified_at)"
+                        " VALUES ('p/w', 'old', 'w', 0, %s, now())",
+                        (legacy_state,),
+                    )
+
+
+def test_task_evidence_cutover_requires_opt_in_above_limit(monkeypatch):
+    from worker_health.pool_classifier_web.scripts import migrate
+
+    monkeypatch.delenv("POOL_CLASSIFIER_TASK_EVIDENCE_CUTOVER", raising=False)
+    monkeypatch.setattr(migrate, "TASK_EVIDENCE_ONLINE_ROW_LIMIT", 2)
+    with psycopg.connect(DSN) as conn, conn.cursor() as cur:
+        cur.execute("CREATE TEMP TABLE task_results AS SELECT generate_series(1, 3) AS task_id")
+        with pytest.raises(RuntimeError, match="planned cutover"):
+            migrate._prepare_task_evidence_cutover(cur)
+        monkeypatch.setenv("POOL_CLASSIFIER_TASK_EVIDENCE_CUTOVER", "1")
+        assert migrate._prepare_task_evidence_cutover(cur) is True
+        assert cur.execute("SHOW statement_timeout").fetchone() == ("5min",)
 
 
 def test_utilization_storage_parity(sqlite, pg):

@@ -26,13 +26,14 @@ import taskcluster
 
 from worker_health.pool_classifier_web.patterns_registry import all_patterns, categories_by_severity, classify_patterns, severity_of
 from worker_health.pool_classifier_web.job_families import task_job_metadata
-from worker_health.pool_classifier_web.job_sources import JobSource, SourceMethod, classify_job_source
+from worker_health.pool_classifier_web.job_sources import JobSource, classify_job_source
 from worker_health.pool_classifier_web.registry import AVAILABILITY_MODES
 from worker_health.pool_classifier_web.storage import SqliteStorage
+from worker_health.pool_classifier_web.task_run_evidence import QUEUE_STATES
 from worker_health.utils import human_delta
 
 TC_REQUEST_TIMEOUT = 30  # seconds; SDK has no built-in timeout
-type TaskJobMetadata = tuple[JobSource, str | None, str | None]
+type TaskJobMetadata = tuple[JobSource, str | None, str | None, bool]
 
 
 def current_rss_bytes() -> int | None:
@@ -436,24 +437,26 @@ class PoolClassifier:
         self._write_job_source(task_id, self._fetch_job_source(task_id), classified_at)
 
     def _has_job_source(self, task_id: str) -> bool:
-        cached = self.storage.get_task_source(task_id)
-        return cached is not None and cached["source_method"] != int(SourceMethod.TASK_FETCH_FAILED)
+        return self.storage.has_task_metadata(task_id)
 
     def _fetch_job_source(self, task_id: str) -> TaskJobMetadata:
         """Fetch and classify compact metadata without accessing storage."""
         task = None
+        retry = False
         try:
             if not self._interrupted:
                 self._ensure_tc()
                 task = self.tc_queue.task(task_id)
         except Exception as exc:
+            retry = not isinstance(exc, taskcluster.exceptions.TaskclusterRestFailure) or exc.status_code not in (400, 404)
             logger.warning("%s: task-definition fetch failed: %s", task_id, exc)
-        return classify_job_source(task), *task_job_metadata(task)
+        return classify_job_source(task), *task_job_metadata(task), retry
 
     def _write_job_source(self, task_id: str, metadata: TaskJobMetadata, classified_at: str) -> None:
-        source, task_name, job_family = metadata
+        source, task_name, job_family, retry = metadata
         self.storage.record_task_source(
             task_id, source.source, int(source.method), classified_at, task_name=task_name, job_family=job_family,
+            name_retry_enabled=retry,
         )
 
     def _get_task_definition_with_retry(
@@ -519,7 +522,7 @@ class PoolClassifier:
         classified_at = datetime.now(timezone.utc).isoformat()
         for task_id, task in fetched.items():
             source = classify_job_source(task)
-            self._write_job_source(task_id, (source, *task_job_metadata(task)), classified_at)
+            self._write_job_source(task_id, (source, *task_job_metadata(task), False), classified_at)
             stats["classified"] += 1
             if source.source == "unknown":
                 stats["unknown"] += 1
@@ -687,7 +690,7 @@ class PoolClassifier:
             with requests.get(url, headers={"Accept-Encoding": "gzip"}, stream=True, timeout=(10, 15)) as response:
                 if response.status_code != 200:
                     logger.warning("fetch_compressed_log %s/%s status=%s", task_id, run_id, response.status_code)
-                    return "", "empty"
+                    return "", "unavailable" if response.status_code in (404, 410) else "retry"
                 stored_length = response.headers.get("x-goog-stored-content-length") or response.headers.get("content-length")
                 if stored_length is not None and int(stored_length) > LOG_MAX_GZIP_BYTES:
                     return "", "too_large"
@@ -702,7 +705,7 @@ class PoolClassifier:
                         tail_buf.extend(chunk)
         except (EOFError, OSError, requests.RequestException, ValueError) as exc:
             logger.warning("fetch_compressed_log %s/%s failed: %s", task_id, run_id, exc)
-            return "", "empty"
+            return "", "retry"
         return bytes(head_buf).decode("utf-8", errors="replace") + bytes(tail_buf).decode("utf-8", errors="replace"), "ok"
 
     @staticmethod
@@ -753,56 +756,14 @@ class PoolClassifier:
 
     def _resolve_observed_task_runs(self, references: List[dict]) -> Tuple[Dict[str, List[Tuple]], bool]:
         """Resolve durable task-run references, returning terminal runs by worker."""
-        by_task: Dict[str, Dict[str, set]] = {}
+        by_task: Dict[str, List[dict]] = {}
+        checked_at = datetime.now(timezone.utc).isoformat()
         for reference in references:
-            by_task.setdefault(reference["task_id"], {}).setdefault(reference["worker_id"], set()).add(reference["run_id"])
-
-        results: Dict[str, List[Tuple]] = {}
-        complete = True
-        for task_id, workers in by_task.items():
-            checked_at = datetime.now(timezone.utc).isoformat()
-            for run_ids in workers.values():
-                for run_id in run_ids:
-                    self.storage.record_task_run_check(task_id, run_id, checked_at)
-            # Check attempts survive Queue failures and process interruptions.
-            self.storage.commit()
-            try:
-                logger.debug("  fetching status for %s", task_id)
-                status_resp = self._get_task_status(task_id)
-            except Exception as exc:
-                logger.warning("%s: status fetch error: %s", task_id, exc)
-                complete = False
-                continue
-            if not status_resp:
-                # Queue's `None` result is its definitive 404 signal.  Persist
-                # an expiry marker so stale references are never retried.
-                logger.info("task %s no longer has a status record; expiring observed references", task_id)
-                for worker_id, run_ids in workers.items():
-                    for run_id in run_ids:
-                        if self.storage.expire_task_run(task_id, run_id, checked_at):
-                            self.seen_task_runs.setdefault(worker_id, set()).add((task_id, run_id))
-                self.storage.commit()
-                continue
-
-            runs = {run.get("runId"): run for run in status_resp.get("status", {}).get("runs", [])}
-            for worker_id, run_ids in workers.items():
-                for run_id in run_ids:
-                    run = runs.get(run_id)
-                    if not run or run.get("workerId") != worker_id:
-                        complete = False
-                        continue
-                    run_state = run.get("state")
-                    if run_state not in ("completed", "failed", "exception"):
-                        logger.debug("  %s: task %s run %s still running (state=%s)", worker_id, task_id, run_id, run_state)
-                        continue
-                    self.seen_task_runs.setdefault(worker_id, set()).add((task_id, run_id))
-                    results.setdefault(worker_id, []).append(
-                        (
-                            task_id, run_id, run_state, run.get("started"), run.get("resolved"),
-                            run.get("reasonResolved"), run.get("scheduled"), run.get("reasonCreated"),
-                        ),
-                    )
-        return results, complete
+            task_id, run_id = reference["task_id"], reference["run_id"]
+            if self.storage.record_task_run_check(task_id, run_id, checked_at):
+                by_task.setdefault(task_id, []).append(reference)
+        self.storage.commit()
+        return self._apply_prepared_task_statuses(by_task, self._fetch_prepared_task_statuses(by_task))
 
     def _retry_unresolved_task_runs(self) -> Tuple[Dict[str, List[Tuple]], bool]:
         """Retry a bounded durable backlog, including rows from prior processes."""
@@ -917,25 +878,27 @@ class PoolClassifier:
 
     def _fetch_prepared_task_statuses(
         self, references_by_task: Dict[str, List[dict]],
-    ) -> Dict[str, Tuple[str, Optional[dict]]]:
+    ) -> Dict[str, Tuple[str, Optional[dict], Optional[str]]]:
         """Fetch one Queue status per prepared task without touching state.
 
-        Results are tagged as ``ok``, ``expired`` (the Queue's definitive
+        Results are tagged as ``ok``, ``not_found`` (the Queue's definitive
         404), or ``error`` (a retryable transport/API failure).  Applying those
         results remains a classify-thread responsibility.
         """
         if not references_by_task:
             return {}
 
-        def fetch(task_id: str) -> Tuple[str, Optional[dict]]:
+        def fetch(task_id: str) -> Tuple[str, Optional[dict], Optional[str]]:
             try:
                 response = self._get_task_status(task_id)
             except Exception as exc:
                 logger.warning("%s: status fetch error: %s", task_id, exc)
-                return "error", None
-            return ("expired", None) if response is None else ("ok", response)
+                return "error", None, None
+            if response is None:
+                return "not_found", None, None
+            return "ok", response, datetime.now(timezone.utc).isoformat()
 
-        results: Dict[str, Tuple[str, Optional[dict]]] = {}
+        results: Dict[str, Tuple[str, Optional[dict], Optional[str]]] = {}
         with ThreadPoolExecutor(
             max_workers=min(TASK_STATUS_THREAD_COUNT, len(references_by_task)),
             thread_name_prefix="queue-status",
@@ -951,55 +914,44 @@ class PoolClassifier:
     def _apply_prepared_task_statuses(
         self,
         references_by_task: Dict[str, List[dict]],
-        status_results: Dict[str, Tuple[str, Optional[dict]]],
+        status_results: Dict[str, Tuple[str, Optional[dict], Optional[str]]],
     ) -> Tuple[Dict[str, List[Tuple]], bool]:
         """Apply Queue outcomes on the classify thread and return terminals."""
         terminal_by_worker: Dict[str, List[Tuple]] = {}
         complete = True
-        applied_at = datetime.now(timezone.utc).isoformat()
-
         for task_id, references in references_by_task.items():
-            outcome, status_response = status_results.get(task_id, ("error", None))
-            if outcome == "error":
-                complete = False
-                continue
-            if outcome == "expired":
-                logger.info("task %s no longer has a status record; expiring observed references", task_id)
-                for reference in references:
-                    worker_id = reference["worker_id"]
-                    run_id = reference["run_id"]
-                    if self.storage.expire_task_run(task_id, run_id, applied_at):
-                        self.seen_task_runs.setdefault(worker_id, set()).add((task_id, run_id))
-                continue
-
-            assert status_response is not None
-            runs = {
-                run.get("runId"): run
-                for run in status_response.get("status", {}).get("runs", [])
-            }
+            outcome, status_response, fetched_at = status_results.get(task_id, ("error", None, None))
+            runs = {}
+            if outcome == "ok":
+                try:
+                    runs = {run["runId"]: run for run in status_response["status"]["runs"]}
+                except (KeyError, TypeError):
+                    outcome = "error"
             for reference in references:
-                worker_id = reference["worker_id"]
-                run_id = reference["run_id"]
+                worker_id, run_id = reference["worker_id"], reference["run_id"]
                 run = runs.get(run_id)
-                if not run or run.get("workerId") != worker_id:
+                result = outcome
+                if outcome == "ok":
+                    if run is None:
+                        result = "run_missing"
+                    elif not run.get("workerId") or run.get("state") not in QUEUE_STATES:
+                        result = "error"
+                    else:
+                        result = "available" if run["workerId"] == worker_id else "worker_mismatch"
+                if result not in {"available", "not_found"}:
                     complete = False
-                    continue
-                run_state = run.get("state")
-                if run_state not in ("completed", "failed", "exception"):
-                    logger.debug(
-                        "  %s: task %s run %s still running (state=%s)",
-                        worker_id, task_id, run_id, run_state,
-                    )
-                    continue
-                self.seen_task_runs.setdefault(worker_id, set()).add((task_id, run_id))
-                terminal_by_worker.setdefault(worker_id, []).append(
-                    (
-                        task_id, run_id, run_state, run.get("started"), run.get("resolved"),
-                        run.get("reasonResolved"), run.get("scheduled"), run.get("reasonCreated"),
-                    ),
+                became_terminal = self.storage.record_queue_evidence(
+                    task_id, run_id, result, fetched_at if result == "available" else None,
+                    run if result == "available" else None, reference.get("worker_group"),
                 )
-
-        # Expiry markers must survive before the later log/classification work.
+                if result == "not_found" or (result == "available" and became_terminal):
+                    self.seen_task_runs.setdefault(worker_id, set()).add((task_id, run_id))
+                if became_terminal and result == "available":
+                    terminal_by_worker.setdefault(worker_id, []).append((
+                        task_id, run_id, run["state"], run.get("started"), run.get("resolved"),
+                        run.get("reasonResolved"), run.get("scheduled"), run.get("reasonCreated"),
+                    ))
+        # Release Queue I/O from the outcome/counter transaction before fetching logs.
         self.storage.commit()
         return terminal_by_worker, complete
 
@@ -1193,50 +1145,49 @@ class PoolClassifier:
         """Persist terminal tasks and return counts grouped by failure category."""
         category_counts: collections.Counter = collections.Counter()
 
-        def persist(task, category, log_text, classified_at):
-            task_id, run_id, run_state, run_started, run_resolved, reason_resolved, *queue_fields = task
-            run_scheduled, reason_created = (queue_fields + [None, None])[:2]
-            if category == "unclassified" and log_text:
-                self._save_unclassified(task_id, run_id, worker_id, log_text)
-            if run_state != "completed":
-                cat_colored = self._color("1;35" if category == "unclassified" else "1;31", str(category))
-                logger.info(f"  {worker_id}: {run_state} task={task_id} run={run_id} → {cat_colored}")
-            self.storage.record_task_result(task_id, worker_id, run_id, run_state, category, reason_resolved,
-                                            run_started, run_resolved, classified_at,
-                                            run_scheduled=run_scheduled, reason_created=reason_created)
-            self.storage.upsert_worker(worker_id, worker_group)
-            if run_state == "completed":
-                self.storage.increment_success(worker_id, run_started)
-            else:
-                self.storage.increment_failure(worker_id, run_started, category)
-                category_counts[category] += 1
-            self.storage.commit()
-
         for task in terminal_tasks:
-            task_id, run_id, run_state, _run_started, _run_resolved, reason_resolved, *_ = task
+            task_id, run_id, run_state, started, resolved, reason_resolved, *timing = task
             if self._interrupted:
-                logger.info(f"  {worker_id}: interrupted, skipping remaining tasks")
                 break
             if bar:
                 bar()
-            classified_at = datetime.now(timezone.utc).isoformat()
             if prefetched is None:
-                self._record_job_source(task_id, classified_at)
+                # Direct callers can supply a terminal result without the scan pipeline.
+                observed = datetime.now(timezone.utc).isoformat()
+                scheduled, reason_created = (timing + [None, None])[:2]
+                self.storage.record_observed_task_run(task_id, worker_id, run_id, observed)
+                self.storage.record_queue_evidence(task_id, run_id, "available", None, {
+                    "workerId": worker_id, "state": run_state, "started": started, "resolved": resolved,
+                    "reasonResolved": reason_resolved, "scheduled": scheduled, "reasonCreated": reason_created,
+                }, worker_group)
+                self.storage.commit()
+                self._record_job_source(task_id, observed)
             elif task_id in prefetched:
-                self._write_job_source(task_id, prefetched.pop(task_id), classified_at)
+                self._write_job_source(task_id, prefetched.pop(task_id), datetime.now(timezone.utc).isoformat())
             if run_state == "completed":
-                logger.info(f"  {worker_id}: {self._color('1;32', 'completed')} task={task_id} run={run_id}")
-                persist(task, None, "", classified_at)
+                logger.info("  %s: completed task=%s run=%s", worker_id, task_id, run_id)
+                self.storage.commit()
                 continue
-            log_text, fetch_status = ("", "empty")
-            if run_id is not None:
-                log_text, fetch_status = self._fetch_log_tail(task_id, run_id)
-            category = "artifact_too_large" if fetch_status == "too_large" else self._classify(log_text, run_state, reason_resolved)
-            persist(task, category, log_text, classified_at)
+            # Persist fetched metadata and release any write transaction before log I/O.
+            self.storage.commit()
+            log_text, fetch_status = self._fetch_log_tail(task_id, run_id) if run_id is not None else ("", "unavailable")
+            if self._interrupted:
+                break
+            category = self._classify(log_text, run_state, reason_resolved)
+            classified_at = datetime.now(timezone.utc).isoformat()
+            if fetch_status == "retry" and category == "unclassified":
+                self.storage.defer_task_classification(task_id, run_id, classified_at)
+            elif self.storage.complete_task_classification(task_id, run_id, category, classified_at):
+                if category == "unclassified" and log_text:
+                    self._save_unclassified(task_id, run_id, worker_id, log_text)
+                self.storage.update_worker_last_category(task_id, worker_id, category, run_id=run_id)
+                category_counts[category] += 1
+                logger.info("  %s: %s task=%s run=%s → %s", worker_id, run_state, task_id, run_id, category)
+            self.storage.commit()
 
         return category_counts
 
-    def _process_terminal_batches(self, poll_results, bar) -> collections.Counter:
+    def _process_terminal_batches(self, poll_results, bar, names_attempted=()) -> collections.Counter:
         """Overlap definition requests in bounded batches, then persist in scan order."""
         category_counts: collections.Counter = collections.Counter()
         tasks = (
@@ -1252,7 +1203,7 @@ class PoolClassifier:
                     break
                 task_ids = [
                     task_id for task_id in dict.fromkeys(task[0] for _, task in batch)
-                    if task_id not in attempted and not self._has_job_source(task_id)
+                    if task_id not in names_attempted and task_id not in attempted and not self._has_job_source(task_id)
                 ]
                 started = time.monotonic()
                 prefetched = dict(zip(task_ids, executor.map(self._fetch_job_source, task_ids), strict=True))
@@ -1270,6 +1221,25 @@ class PoolClassifier:
                 self.provisioner, self.worker_type, len(attempted), fetch_seconds,
             )
         return category_counts
+
+    def _collect_active_job_names(self) -> set[str]:
+        attempted: set[str] = set()
+        candidates = self.storage.list_task_name_candidates(TASK_DEFINITION_BATCH_SIZE * 4)
+        if not candidates:
+            return attempted
+        with ThreadPoolExecutor(max_workers=TASK_DEFINITION_THREAD_COUNT, thread_name_prefix="queue-name") as executor:
+            for batch in batched((row["task_id"] for row in candidates), TASK_DEFINITION_BATCH_SIZE):
+                if self._interrupted:
+                    break
+                metadata = list(executor.map(self._fetch_job_source, batch))
+                if self._interrupted:
+                    break
+                fetched_at = datetime.now(timezone.utc).isoformat()
+                for task_id, values in zip(batch, metadata, strict=True):
+                    self._write_job_source(task_id, values, fetched_at)
+                self.storage.commit()
+                attempted.update(batch)
+        return attempted
 
     # --- main loop ---
 
@@ -1413,18 +1383,32 @@ class PoolClassifier:
                     task_coverage_continuous and polls_complete,
                 )
 
-            new_total = sum(len(tasks) for _, _wg, tasks in poll_results if tasks)
+            new_total = sum(len(tasks) for _, _wg, tasks in poll_results)
+            new_identities = {(task[0], task[1]) for _, _, tasks in poll_results for task in tasks}
+            pending = []
+            for row in self.storage.list_pending_classifications(UNRESOLVED_TASK_RUN_BATCH_SIZE + new_total):
+                if (row["task_id"], row["run_id"]) in new_identities:
+                    continue
+                pending.append((row["worker_id"], None, [tuple(row[key] for key in (
+                    "task_id", "run_id", "run_state", "run_started", "run_resolved", "reason_resolved",
+                    "run_scheduled", "reason_created",
+                ))]))
+                if len(pending) == UNRESOLVED_TASK_RUN_BATCH_SIZE:
+                    break
+            poll_results.extend(pending)
+            processing_total = new_total + len(pending)
 
             with PhaseMemorySampler() as terminal_memory:
                 terminal_started = time.monotonic()
                 category_counts: collections.Counter = collections.Counter()
-                if new_total > 0 and not self._interrupted:
+                names_attempted = self._collect_active_job_names() if not self._interrupted else set()
+                if processing_total > 0 and not self._interrupted:
                     progress_bar = (
-                        alive_bar(new_total, title="processing tasks", enrich_print=False)
+                        alive_bar(processing_total, title="processing tasks", enrich_print=False)
                         if self.show_progress else nullcontext(lambda: None)
                     )
                     with progress_bar as bar:
-                        category_counts = self._process_terminal_batches(poll_results, bar)
+                        category_counts = self._process_terminal_batches(poll_results, bar, names_attempted)
 
             phase_metrics["terminal_task_processing"] = {
                 "duration_seconds": time.monotonic() - terminal_started,
@@ -1498,97 +1482,45 @@ class PoolClassifier:
         self.storage.close()
         sys.exit(0)
 
-    def _update_category(
-        self,
-        task_id: str,
-        worker_id: str,
-        run_state: str,
-        reason_resolved: Optional[str],
-        log_text: str,
-    ) -> Optional[str]:
-        """Classify log_text and update storage if not still unclassified. Returns new category or None."""
-        category = self._classify(log_text, run_state, reason_resolved)
-        if category == "unclassified":
-            return None
-        self.storage.update_task_category(task_id, worker_id, category)
-        self.storage.update_worker_last_category(task_id, worker_id, category)
-        self.storage.commit()
-        return category
-
     def reclassify_unclassified(self, target_category: str = "unclassified", save_unmatched_logs: bool = False):
-        """Re-run FAILURE_PATTERNS against saved logs and re-fetch logs for DB entries in target_category."""
+        """Replace a classification only after enough evidence is available."""
         self._init_db()
-        reclassified = 0
-        refetch_total = 0
-
         unmatched_dir = self.results_dir / "reclassify_logs" / target_category if self.results_dir else None
         if save_unmatched_logs and unmatched_dir:
             if unmatched_dir.exists():
-                for f in unmatched_dir.glob("*.log"):
-                    f.unlink()
+                for path in unmatched_dir.glob("*.log"):
+                    path.unlink()
             unmatched_dir.mkdir(parents=True, exist_ok=True)
-            (unmatched_dir / "README.md").write_text(
-                "# Temporary reclassify logs\n\n"
-                "This directory is wiped and repopulated each time `--reclassify --save-unmatched-logs` is run.\n"
-                "Do not store anything here you want to keep.\n",
-            )
 
-        # Pass 1: saved log files (only relevant when target is unclassified).
-        saved_task_ids = set()
-        if target_category == "unclassified":
-            for task_id, log_text, log_path in self.storage.list_unclassified_logs():
-                saved_task_ids.add(task_id)
-                row = self.storage.get_task_info(task_id)
-                if row is None:
-                    logger.warning(f"  {task_id}: not in DB, skipping")
-                    continue
-                category = self._update_category(
-                    task_id,
-                    row["worker_id"],
-                    row["run_state"],
-                    row["reason_resolved"],
-                    log_text,
-                )
-                if category:
-                    log_path.unlink()
-                    logger.info(f"  {task_id} ({row['worker_id']}): {target_category} → {category}")
-                    reclassified += 1
+        reclassified = 0
+        with self.storage.classify_lock():
+            for row in self.storage.db_rows_for_category(target_category):
+                if self._interrupted:
+                    break
+                task_id, run_id = row["task_id"], row["run_id"]
+                saved = self.storage.get_saved_run_log(task_id, run_id)
+                if saved:
+                    log_text, log_ref = saved
                 else:
-                    logger.info(f"  {task_id}: still {target_category}")
-                    if save_unmatched_logs and unmatched_dir:
-                        (unmatched_dir / f"{task_id}.log").write_text(log_text)
-
-        # Pass 2: DB entries with no saved log — try re-fetching from TC.
-        for row in self.storage.db_rows_for_category(target_category):
-            task_id = row["task_id"]
-            if task_id in saved_task_ids:
-                continue
-            run_id = row["run_id"]
-            if run_id is None:
-                continue
-            log_text, fetch_status = self._fetch_log_tail(task_id, run_id)
-            if not log_text:
-                continue
-            refetch_total += 1
-            category = self._update_category(
-                task_id,
-                row["worker_id"],
-                row["run_state"],
-                row["reason_resolved"],
-                log_text,
-            )
-            if category:
-                logger.info(f"  {task_id} ({row['worker_id']}): {target_category} → {category} (re-fetched)")
-                reclassified += 1
-            elif target_category == "unclassified":
-                self._save_unclassified(task_id, run_id, row["worker_id"], log_text)
-                logger.info(f"  {task_id}: still unclassified (log saved)")
-            else:
-                logger.info(f"  {task_id}: still {target_category} (no pattern match)")
-                if save_unmatched_logs and unmatched_dir:
-                    (unmatched_dir / f"{task_id}.log").write_text(log_text)
-
-        logger.info(f"Reclassified {reclassified} tasks ({refetch_total} required re-fetch).")
+                    log_ref = None
+                    log_text, _status = self._fetch_log_tail(task_id, run_id) if run_id is not None else ("", "unavailable")
+                if self._interrupted:
+                    break
+                category = self._classify(log_text, row["run_state"], row["reason_resolved"])
+                if category == "unclassified" and (not log_text or target_category != "unclassified"):
+                    if save_unmatched_logs and unmatched_dir and log_text:
+                        (unmatched_dir / f"{task_id}-{run_id}.log").write_text(log_text)
+                    continue
+                if self.storage.replace_task_classification(task_id, run_id, category, datetime.now(timezone.utc).isoformat()):
+                    self.storage.update_worker_last_category(task_id, row["worker_id"], category, run_id=run_id)
+                    if log_ref is not None and category != "unclassified":
+                        log_ref.unlink()
+                    elif log_ref is None and category == "unclassified" and log_text:
+                        self._save_unclassified(task_id, run_id, row["worker_id"], log_text)
+                    if category != target_category:
+                        reclassified += 1
+                self.storage.commit()
+        logger.info("Reclassified %d task runs", reclassified)
 
     def _save_unclassified(self, task_id: str, run_id: int, worker_id: str, log_text: str):
         self.storage.save_unclassified_log(task_id, run_id, worker_id, log_text)

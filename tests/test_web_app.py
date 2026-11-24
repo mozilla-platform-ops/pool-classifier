@@ -165,8 +165,9 @@ def test_utilization_api_postgres_integration(client):
             )
             cur.execute(
                 "INSERT INTO task_results"
-                " (pool_id, task_id, worker_id, run_id, run_state, run_started, run_resolved, classified_at)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                " (pool_id, task_id, worker_id, run_id, run_state, run_started, run_resolved, observed_at,"
+                " status_fetch_state, classification_state, status_retry_enabled)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'available','not_applicable',false)",
                 (POOL_ID, "t1", "w1", 0, "completed", start, middle, middle),
             )
         conn.commit()
@@ -193,8 +194,9 @@ def test_team_activity_summary_counts_resolved_runs_and_clips_duration_to_window
             for task_id, start, end in (("recent", recent_start, recent_end), ("old", old_start, old_end)):
                 cur.execute(
                     "INSERT INTO task_results"
-                    " (pool_id, task_id, worker_id, run_id, run_state, run_started, run_resolved, classified_at)"
-                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                    " (pool_id, task_id, worker_id, run_id, run_state, run_started, run_resolved, observed_at,"
+                    " status_fetch_state, classification_state, status_retry_enabled)"
+                    " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'available','not_applicable',false)",
                     (POOL_ID, task_id, "w1", 0, "completed", start, end, end),
                 )
         conn.commit()
@@ -225,8 +227,9 @@ def test_activity_page_renders_recorded_metrics(client):
             )
             cur.execute(
                 "INSERT INTO task_results"
-                " (pool_id, task_id, worker_id, run_id, run_state, run_started, run_resolved, classified_at)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                " (pool_id, task_id, worker_id, run_id, run_state, run_started, run_resolved, observed_at,"
+                " status_fetch_state, classification_state, status_retry_enabled)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'available','not_applicable',false)",
                 (POOL_ID, "activity-page", "w1", 0, "completed", now - timedelta(days=2), now - timedelta(days=1), now - timedelta(days=1)),
             )
         conn.commit()
@@ -260,8 +263,10 @@ def test_failures_and_workers_api_postgres_integration(client):
             )
             cur.execute(
                 "INSERT INTO task_results"
-                " (pool_id, task_id, worker_id, run_id, run_state, category, run_resolved, classified_at) VALUES"
-                " (%s,%s,%s,0,%s,%s,%s,%s), (%s,%s,%s,0,%s,%s,%s,%s)",
+                " (pool_id, task_id, worker_id, run_id, run_state, category, run_resolved, classified_at,"
+                " status_fetch_state, classification_state, status_retry_enabled) VALUES"
+                " (%s,%s,%s,0,%s,%s,%s,%s,'available','classified',false),"
+                " (%s,%s,%s,0,%s,%s,%s,%s,'available','classified',false)",
                 (
                     POOL_ID, "failure-1", "alert-worker", "failed", "device_error", start, start,
                     POOL_ID, "failure-2", "normal-worker", "exception", "network", start, start,

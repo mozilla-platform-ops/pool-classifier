@@ -18,6 +18,23 @@ MIGRATIONS_DIR = Path(__file__).parent.parent / "migrations"
 MIGRATION_LOCK_ID = 6_061_283
 MIGRATION_LOCK_TIMEOUT = "5s"
 MIGRATION_STATEMENT_TIMEOUT = "30s"
+TASK_EVIDENCE_MIGRATION = "014_task_run_evidence"
+TASK_EVIDENCE_CUTOVER_TIMEOUT = "5min"
+TASK_EVIDENCE_ONLINE_ROW_LIMIT = 100_000
+
+
+def _prepare_task_evidence_cutover(cur) -> bool:
+    """Keep the slow rewrite an explicit maintenance decision."""
+    if os.environ.get("POOL_CLASSIFIER_TASK_EVIDENCE_CUTOVER") == "1":
+        cur.execute("SELECT set_config('statement_timeout', %s, true)", (TASK_EVIDENCE_CUTOVER_TIMEOUT,))
+        return True
+    cur.execute("SELECT COUNT(*) FROM (SELECT 1 FROM task_results LIMIT %s) AS sample", (TASK_EVIDENCE_ONLINE_ROW_LIMIT + 1,))
+    if cur.fetchone()[0] > TASK_EVIDENCE_ONLINE_ROW_LIMIT:
+        raise RuntimeError(
+            "Task-run migration requires a planned cutover for this database. "
+            "Drain old application processes before setting POOL_CLASSIFIER_TASK_EVIDENCE_CUTOVER=1."
+        )
+    return False
 
 
 def apply_migrations(dsn: str) -> None:
@@ -46,7 +63,10 @@ def apply_migrations(dsn: str) -> None:
                     print(f"  {version}: already applied")
                     continue
             with conn.cursor() as cur:
+                cutover = version == TASK_EVIDENCE_MIGRATION and _prepare_task_evidence_cutover(cur)
                 cur.execute(sql_file.read_text())
+                if cutover:
+                    cur.execute("SELECT set_config('statement_timeout', %s, true)", (MIGRATION_STATEMENT_TIMEOUT,))
                 cur.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
             print(f"  {version}: applied")
         conn.commit()

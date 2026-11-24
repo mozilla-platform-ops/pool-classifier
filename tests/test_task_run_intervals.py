@@ -61,7 +61,7 @@ def test_truncated_compressed_log_is_unavailable_not_a_failed_scan(monkeypatch, 
     monkeypatch.setattr("worker_health.pool_classifier.requests.get", lambda *_args, **_kwargs: Response())
     classifier = PoolClassifier("provisioner", "worker-type", results_dir=tmp_path, storage=object(), use_color=False)
 
-    assert classifier._fetch_log_tail("task-id", 0) == ("", "empty")
+    assert classifier._fetch_log_tail("task-id", 0) == ("", "retry")
 
 
 def test_sqlite_records_resolved_time_and_distinct_retries(tmp_path):
@@ -154,7 +154,7 @@ def test_sqlite_persists_observed_runs_and_guards_terminal_transitions(tmp_path)
     assert storage.record_task_run_check("task-1", 0, checked) is True
     assert storage.list_unresolved_task_runs(10) == [{
         "task_id": "task-1", "worker_id": "worker-1", "run_id": 0,
-        "run_state": "observed", "observed_at": observed, "last_checked_at": checked,
+        "run_state": None, "observed_at": observed, "last_checked_at": checked,
     }]
 
     storage.record_task_result(
@@ -231,9 +231,10 @@ def test_prepared_task_statuses_fetch_once_per_task_and_do_not_raise(tmp_path, m
     })
 
     assert set(calls) == {"ok", "expired", "transient"}
-    assert results["ok"] == ("ok", {"status": {"runs": []}})
-    assert results["expired"] == ("expired", None)
-    assert results["transient"] == ("error", None)
+    assert results["ok"][:2] == ("ok", {"status": {"runs": []}})
+    assert datetime.fromisoformat(results["ok"][2]).tzinfo is not None
+    assert results["expired"] == ("not_found", None, None)
+    assert results["transient"] == ("error", None, None)
 
 
 def test_apply_prepared_statuses_expires_retries_and_routes_terminals(tmp_path):
@@ -253,12 +254,12 @@ def test_apply_prepared_statuses_expires_retries_and_routes_terminals(tmp_path):
     }
 
     terminals, complete = classifier._apply_prepared_task_statuses(references, {
-        "expired": ("expired", None),
-        "retry": ("error", None),
+        "expired": ("not_found", None, None),
+        "retry": ("error", None, None),
         "done": ("ok", {"status": {"runs": [{
             "runId": 0, "workerId": "worker-c", "state": "completed",
             "started": "2026-07-14T10:01:00+00:00", "resolved": "2026-07-14T10:02:00+00:00",
-        }]}}),
+        }]}}, observed),
     })
 
     assert complete is False
@@ -268,7 +269,7 @@ def test_apply_prepared_statuses_expires_retries_and_routes_terminals(tmp_path):
         "worker-c": {("done", 0)},
     }
     states = dict(storage.db.execute("SELECT task_id, run_state FROM task_results"))
-    assert states == {"expired": "expired", "retry": "observed", "done": "observed"}
+    assert states == {"expired": None, "retry": None, "done": "completed"}
 
 
 def test_classify_cycle_deduplicates_status_io_and_serializes_storage(tmp_path, monkeypatch):
@@ -373,7 +374,7 @@ def test_sqlite_expired_observed_runs_are_not_reopened(tmp_path):
     row = storage.db.execute(
         "SELECT run_state, observed_at, last_checked_at FROM task_results WHERE task_id = 'expired'",
     ).fetchone()
-    assert tuple(row) == ("expired", "2026-07-14T10:00:00+00:00", "2026-07-14T10:02:00+00:00")
+    assert tuple(row) == (None, "2026-07-14T10:00:00+00:00", "2026-07-14T10:02:00+00:00")
 
 
 def test_recent_outcome_counts_use_task_resolution_time(tmp_path):
@@ -1134,7 +1135,7 @@ def test_classify_cycle_recovers_observed_run_after_restart(tmp_path, monkeypatc
         lambda _task: (_ for _ in ()).throw(RuntimeError("Queue busy")),
     )
     classifier.classify_cycle(workers=[{"workerId": "worker-1", "workerGroup": "group-1"}])
-    assert storage.list_unresolved_task_runs(10)[0]["run_state"] == "observed"
+    assert storage.list_unresolved_task_runs(10)[0]["run_state"] is None
 
     restarted = PoolClassifier(
         "provisioner", "worker-type", results_dir=tmp_path,
@@ -1173,8 +1174,8 @@ def test_terminal_collection_persists_queue_404_as_expired(tmp_path, monkeypatch
     assert classifier._new_terminal_tasks("worker-1", "group-1") == ([], True)
     assert status_calls == ["expired-task"]
     assert storage.db.execute(
-        "SELECT run_state FROM task_results WHERE task_id = 'expired-task'",
-    ).fetchone()[0] == "expired"
+        "SELECT status_fetch_state FROM task_results WHERE task_id = 'expired-task'",
+    ).fetchone()[0] == "not_found"
 
 
 def test_terminal_collection_skips_expired_task_status_references(tmp_path, monkeypatch):
