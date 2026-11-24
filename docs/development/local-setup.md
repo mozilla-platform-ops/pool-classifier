@@ -37,8 +37,9 @@ down -v` does not remove that bind mount.
 Start the app:
 
 ```sh
-./pc_start.sh                  # serves on :18080
-PC_PORT=8090 ./pc_start.sh     # override port
+./pc_start.sh                  # stable :18080 and debug UI :18081
+PC_PORT=18080 ./pc_start.sh     # stable instance only
+PC_PORT=8090 ./pc_start.sh      # single instance on a custom port
 ```
 
 For a local production-style server, use the package entry point. It runs

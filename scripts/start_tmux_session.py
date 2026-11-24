@@ -164,7 +164,7 @@ def main() -> None:
         panes=[
             # Keep classification on the stable default instance: pc_fetch_data.sh
             # targets :18080 unless PC_BASE_URL is explicitly overridden.
-            PaneSpec(name="pool-classifier", commands=["./pc_start.sh"]),
+            PaneSpec(name="pool-classifier", commands=["PC_PORT=18080 ./pc_start.sh"]),
             PaneSpec(
                 name="pool-classifier-debug-18081",
                 commands=[

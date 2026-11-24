@@ -21,7 +21,8 @@ uv sync --group dev
 ./pc_start.sh
 ```
 
-The local dashboard is available at <http://localhost:18080/>. A Taskcluster
+The launcher starts the stable dashboard at <http://localhost:18080/> and the
+auto-reloading UI at <http://localhost:18081/>. Ctrl-C stops both. A Taskcluster
 token is required at `~/.tc_token`; see the development guide for its format
 and the complete local workflow.
 
@@ -53,12 +54,12 @@ defaults as the polling classifier, and `--no-color` disables terminal colors.
 The command only fetches task data and prints a comparison; it does not update
 classification storage or patterns.
 
-To inspect current detail-page code without waiting for a classifier to replace
-a cached dashboard snapshot, start the debug listener on port 18081 with
-snapshots disabled. `pc_start.sh` enables Flask debug mode on port 18081.
-The default port 18080 is the stable target for `pc_fetch_data.sh`.
+The debug UI renders current detail-page code with snapshots disabled.
+`pc_fetch_data.sh` sends scan requests to the stable instance on port 18080.
+Set `PC_PORT` to launch just one instance.
 
 ```sh
+PC_PORT=18080 ./pc_start.sh
 PC_PORT=18081 POOL_CLASSIFIER_DISABLE_DASHBOARD_SNAPSHOTS=1 ./pc_start.sh
 ```
 
