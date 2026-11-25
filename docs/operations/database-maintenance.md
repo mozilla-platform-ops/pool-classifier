@@ -88,6 +88,20 @@ A single Ctrl-C lets the active batch commit, then stops cleanly with exit
 status 130 and a `db_maintenance_stopped` log event. Use a second Ctrl-C only
 to abort immediately.
 
+## Refresh job-family labels
+
+After the scanner has picked up the new suite rules, use
+`reclassify-job-families` to update stored Talos and navigation benchmark
+labels. The operation reads cached task names and updates matching metadata
+in batches. Use `--dry-run` to preview the counts by destination family.
+
+```sh
+DATABASE_URL=... uv run --frozen python -m worker_health.pool_classifier_web.scripts.db_maintenance \
+  --operation reclassify-job-families --dry-run
+```
+
+Remove `--dry-run` to apply the labels. The operation is safe to rerun.
+
 ## Datastore summary
 
 `datastore-summary` is read-only. It reports PostgreSQL settings, table sizes,

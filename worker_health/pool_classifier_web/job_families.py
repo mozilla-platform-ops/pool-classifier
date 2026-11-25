@@ -15,6 +15,7 @@ WORKLOAD_RANGES = {
     "7d": (timedelta(days=7), 25200),
 }
 WORKLOAD_BASE_SECONDS = 900
+OTHER_PERFORMANCE_TESTS = "Other performance tests"
 
 
 def build_job_family_trend(storage, start: datetime, end: datetime, bucket_seconds: int) -> dict:
@@ -53,7 +54,7 @@ _FAMILIES = tuple(
         ("Page load", r"tp6m?|pageload|page-load"),
         ("Video playback", r"video-playback|youtube-playback|youtubep"),
         ("Startup", r"startup|cold-start|warm-start"),
-        ("Benchmarks", r"speedometer[0-9]*|jetstream[0-9]*|motionmark[0-9]*|ares6|benchmark"),
+        ("Benchmarks", r"speedometer[0-9]*|jetstream[0-9]*|motionmark[0-9]*|ares6|benchmark|nav-bench"),
         ("Networking", r"http3|h3|doh|trr|networking"),
         ("Resource and power", r"resource-usage|power|battery"),
         ("Mochitest media", r"mochitest-media"),
@@ -65,9 +66,18 @@ _FAMILIES = tuple(
         ("Reftest", r"reftest"),
         ("Xpcshell", r"xpcshell"),
         ("Web platform tests", r"web-platform-tests|wpt"),
-        ("Other performance tests", r"browsertime|raptor|talos"),
+        ("Talos", r"talos"),
+        (OTHER_PERFORMANCE_TESTS, r"browsertime|raptor"),
     )
 )
+
+
+def job_family_for_name(name: str) -> str | None:
+    label = name.lower()
+    for family, pattern in _FAMILIES:
+        if pattern.search(label):
+            return family
+    return None
 
 
 def task_job_metadata(task: dict | None) -> tuple[str | None, str | None]:
@@ -82,9 +92,5 @@ def task_job_metadata(task: dict | None) -> tuple[str | None, str | None]:
     kind = treeherder.get("jobKind") if isinstance(treeherder, dict) else None
     if kind == "build" or (name and name.lower().startswith("build-")):
         return name, "Builds"
-    if name:
-        label = name.lower()
-        for family, pattern in _FAMILIES:
-            if pattern.search(label):
-                return name, family
-    return name, "Other tests" if kind == "test" else "Unknown"
+    family = job_family_for_name(name) if name else None
+    return name, family or ("Other tests" if kind == "test" else "Unknown")

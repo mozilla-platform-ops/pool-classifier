@@ -13,6 +13,7 @@ To run locally:
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -80,6 +81,43 @@ def pg():
 
 def _now_iso(delta_hours=0):
     return (datetime.now(timezone.utc) + timedelta(hours=delta_hours)).isoformat()
+
+
+def test_reclassify_cached_performance_families(capsys):
+    from psycopg.conninfo import make_conninfo
+
+    from worker_health.pool_classifier_web.scripts.reclassify_job_families import run
+
+    with psycopg.connect(DSN, autocommit=True) as admin:
+        admin.execute("CREATE SCHEMA test_reclassify_job_families")
+        dsn = make_conninfo(DSN, options="-c search_path=test_reclassify_job_families")
+        try:
+            with psycopg.connect(dsn, autocommit=True) as conn:
+                conn.execute("CREATE TABLE task_sources (task_id text PRIMARY KEY, task_name text, job_family text)")
+                conn.execute("""
+                    INSERT INTO task_sources VALUES
+                    ('a', 'test-win-talos-svgr', 'Other performance tests'),
+                    ('b', 'test-win-browsertime-nav-bench', 'Other performance tests'),
+                    ('c', 'test-win-browsertime-first-install', 'Other performance tests'),
+                    ('d', 'test-win-talos-tp6m', 'Page load'),
+                    ('e', NULL, 'Other performance tests'),
+                    ('f', 'build-win-talos', 'Builds')
+                """)
+                run(dsn, ["--batch-size", "1", "--dry-run"])
+                assert json.loads(capsys.readouterr().out)["labels"] == {"Benchmarks": 1, "Talos": 1}
+                assert conn.execute("SELECT job_family FROM task_sources WHERE task_id = 'a'").fetchone() == (
+                    "Other performance tests",
+                )
+                run(dsn, ["--batch-size", "1"])
+                assert json.loads(capsys.readouterr().out)["labels"] == {"Benchmarks": 1, "Talos": 1}
+                assert conn.execute("SELECT job_family FROM task_sources ORDER BY task_id").fetchall() == [
+                    ("Talos",), ("Benchmarks",), ("Other performance tests",),
+                    ("Page load",), ("Other performance tests",), ("Builds",),
+                ]
+                run(dsn, [])
+                assert json.loads(capsys.readouterr().out)["labels"] == {}
+        finally:
+            admin.execute("DROP SCHEMA test_reclassify_job_families CASCADE")
 
 
 def test_job_family_volume_matches_sqlite_and_is_pool_scoped(sqlite, pg):

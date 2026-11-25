@@ -18,6 +18,7 @@ from worker_health.pool_classifier_web.scripts import backfill_m007_task_timesta
 from worker_health.pool_classifier_web.scripts import backfill_start_lag_all_pools
 from worker_health.pool_classifier_web.scripts import backfill_job_sources_all_pools
 from worker_health.pool_classifier_web.scripts import datastore_summary
+from worker_health.pool_classifier_web.scripts import reclassify_job_families
 from worker_health.pool_classifier_web.scripts import task_evidence_cutover
 from worker_health.pool_classifier_web.scripts import utilization_query_plan
 from worker_health.pool_classifier_web.scripts.create_unresolved_task_run_index import (
@@ -76,6 +77,7 @@ OPERATIONS: dict[str, Operation] = {
     "create-unresolved-task-run-index": _create_unresolved_task_run_index,
     "create-utilization-task-run-index": _create_utilization_task_run_index,
     "datastore-summary": datastore_summary.run,
+    "reclassify-job-families": reclassify_job_families.run,
     "task-evidence-cutover": task_evidence_cutover.run,
     "utilization-task-run-query-plan": utilization_query_plan.run,
 }

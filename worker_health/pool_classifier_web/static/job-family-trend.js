@@ -4,7 +4,7 @@ const suiteColors = new Map([
     ["Mochitest media", "#5fdfd0"], ["Mochitest", "#a0afee"], ["JS jitest", "#ffa998"],
     ["WebGL", "#cbdb77"], ["WebRender", "#86d3a9"], ["Crashtest", "#ef8ac0"],
     ["Reftest", "#bda6ee"], ["Xpcshell", "#f3be7a"], ["Web platform tests", "#80d0e0"],
-    ["Other performance tests", "#81adff"], ["Builds", "#c7cb80"], ["Other tests", "#e5a3ca"],
+    ["Talos", "#d5e090"], ["Other performance tests", "#81adff"], ["Builds", "#c7cb80"], ["Other tests", "#e5a3ca"],
 ]);
 
 const number = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });

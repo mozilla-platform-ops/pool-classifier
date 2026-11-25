@@ -55,6 +55,14 @@ def test_job_family_uses_test_suite_and_build_kind():
         "test-linux-mochitest-media-2", "Mochitest media",
     )
     assert task_job_metadata({"extra": {"treeherder": {"jobKind": "build"}}}) == (None, "Builds")
+    for suffix, expected in (
+        ("talos-svgr-swr", "Talos"),
+        ("talos-tp6m", "Page load"),
+        ("browsertime-nav-bench-firefox-nav-bench", "Benchmarks"),
+        ("browsertime-first-install-firefox-welcome", "Other performance tests"),
+    ):
+        name = f"test-windows11-64-24h2-shippable/opt-{suffix}"
+        assert task_job_metadata({"metadata": {"name": name}}) == (name, expected)
     assert task_job_metadata({"metadata": {"name": "unmapped-job"}}) == ("unmapped-job", "Unknown")
 
 
