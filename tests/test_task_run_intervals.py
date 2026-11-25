@@ -980,9 +980,9 @@ def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
 
     headings = [
         'id="summary-heading"',
-        'id="s-job-families"',
         'id="s-start-lag"',
         'id="s-utilization"',
+        'id="s-job-families"',
         'id="s-job-sources"',
         'id="s-device-turnaround"',
         'id="s-attention"',
@@ -998,9 +998,9 @@ def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
     assert links == sorted(links)
     for anchor, label in (
         ("summary-heading", "Summary"),
-        ("s-job-families", "Jobs by Suite"),
         ("s-start-lag", "Start Lag"),
         ("s-utilization", "Utilization"),
+        ("s-job-families", "Jobs by Suite"),
         ("s-job-sources", "Task Source"),
         ("s-device-turnaround", "Device Turnaround"),
         ("s-attention", "Alerting Workers"),
