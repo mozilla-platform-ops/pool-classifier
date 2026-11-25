@@ -980,9 +980,10 @@ def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
 
     headings = [
         'id="summary-heading"',
-        'id="s-job-sources"',
+        'id="s-job-families"',
         'id="s-start-lag"',
         'id="s-utilization"',
+        'id="s-job-sources"',
         'id="s-device-turnaround"',
         'id="s-attention"',
         'id="s-quarantined"',
@@ -992,11 +993,15 @@ def test_pool_detail_sections_put_pool_health_before_host_debugging(tmp_path):
     ]
     positions = [html.index(heading) for heading in headings]
     assert positions == sorted(positions)
+    navigation = html.split('<nav class="page-nav">', 1)[1].split("</nav>", 1)[0]
+    links = [navigation.index(heading.replace('id="', 'href="#')) for heading in headings]
+    assert links == sorted(links)
     for anchor, label in (
         ("summary-heading", "Summary"),
-        ("s-job-sources", "Task Source"),
+        ("s-job-families", "Jobs by Suite"),
         ("s-start-lag", "Start Lag"),
         ("s-utilization", "Utilization"),
+        ("s-job-sources", "Task Source"),
         ("s-device-turnaround", "Device Turnaround"),
         ("s-attention", "Alerting Workers"),
         ("s-quarantined", "Quarantined Workers"),

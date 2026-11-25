@@ -2187,10 +2187,10 @@ class PoolClassifier:
             '<div class="dashboard-toolbar">',
             '<nav class="page-nav">',
             '  <a href="#summary-heading">Summary</a><span class="sep">|</span>',
-            '  <a href="#s-job-sources">Task Source</a><span class="sep">|</span>',
             '  <a href="#s-job-families">Jobs by Suite</a><span class="sep">|</span>',
             '  <a href="#s-start-lag">Start Lag</a><span class="sep">|</span>',
             '  <a href="#s-utilization">Utilization</a><span class="sep">|</span>',
+            '  <a href="#s-job-sources">Task Source</a><span class="sep">|</span>',
             '  <a href="#s-device-turnaround">Device Turnaround</a><span class="sep">|</span>',
             '  <a href="#s-attention">Alerting Workers</a><span class="sep">|</span>',
             '  <a href="#s-quarantined">Quarantined</a><span class="sep">|</span>',
@@ -2241,9 +2241,6 @@ class PoolClassifier:
                 '<p class="util-detail">No consecutive busy-device task pairs were recorded.</p></article>'
             )
         parts += [
-            '<h2 id="s-job-sources"><a href="#s-job-sources">Task Source</a></h2>',
-            '<p class="gen">Terminal task runs grouped by the Taskcluster project tag or an explicit reviewed source mapping.</p>',
-            '<p class="source-summary gen"><span id="source-freshness">Loading job sources…</span><span aria-hidden="true">·</span><span class="source-controls" role="group" aria-label="Task Source range"><button type="button" class="active" data-source-days="7">[7d]</button><button type="button" data-source-days="14">[14d]</button></span></p><div id="source-chart" class="source-chart" role="group" aria-label="Daily job volume by source"></div><div id="source-tooltip" class="source-tooltip" role="tooltip" aria-hidden="true"></div>',
             f'<section id="job-families" aria-labelledby="s-job-families" data-endpoint="{escape(job_families_url, quote=True)}">',
             '<h2 id="s-job-families"><a href="#s-job-families">Jobs by Suite</a></h2>',
             '<div class="source-controls" role="group" aria-label="Jobs by Suite period">'
@@ -2274,6 +2271,9 @@ class PoolClassifier:
                 if self.availability_mode == "listed"
                 else []
             ),
+            '<h2 id="s-job-sources"><a href="#s-job-sources">Task Source</a></h2>',
+            '<p class="gen">Terminal task runs grouped by the Taskcluster project tag or an explicit reviewed source mapping.</p>',
+            '<p class="source-summary gen"><span id="source-freshness">Loading job sources…</span><span aria-hidden="true">·</span><span class="source-controls" role="group" aria-label="Task Source range"><button type="button" class="active" data-source-days="7">[7d]</button><button type="button" data-source-days="14">[14d]</button></span></p><div id="source-chart" class="source-chart" role="group" aria-label="Daily job volume by source"></div><div id="source-tooltip" class="source-tooltip" role="tooltip" aria-hidden="true"></div>',
             '<div class="pool-highlights-grid">',
             '<section aria-labelledby="s-device-turnaround">',
             '<h2 id="s-device-turnaround"><a href="#s-device-turnaround">Device Turnaround</a></h2>',
