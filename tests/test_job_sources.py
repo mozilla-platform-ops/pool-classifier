@@ -63,6 +63,17 @@ def test_job_family_uses_test_suite_and_build_kind():
     ):
         name = f"test-windows11-64-24h2-shippable/opt-{suffix}"
         assert task_job_metadata({"metadata": {"name": name}}) == (name, expected)
+    for name, expected in (
+        ("test-linux-browsertime-network-bench-firefox-h2-upload", "Networking"),
+        ("perftest-android-hw-a55-foreground-resource-fenix", "Resource and power"),
+        ("perftest-android-hw-a55-background-resource-fenix", "Resource and power"),
+        ("test-macosx1500-aarch64/debug-gtest-1proc", "GTest"),
+        ("test-macosx1500-aarch64/debug-marionette-integration-swr", "Marionette"),
+        ("test-macosx1500-aarch64/opt-test-verify-path-10", "Test Verify"),
+        ("source-test-python-mozbuild-3.11-macosx1470-64/opt", "Source tests"),
+        ("test-macosx1500-aarch64/opt-mochitest-media-test-verify", "Mochitest media"),
+    ):
+        assert task_job_metadata({"metadata": {"name": name}}) == (name, expected)
     assert task_job_metadata({"metadata": {"name": "unmapped-job"}}) == ("unmapped-job", "Unknown")
 
 

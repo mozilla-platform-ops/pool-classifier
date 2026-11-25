@@ -91,9 +91,11 @@ to abort immediately.
 ## Refresh job-family labels
 
 After the scanner has picked up the new suite rules, use
-`reclassify-job-families` to update stored Talos and navigation benchmark
-labels. The operation reads cached task names and updates matching metadata
-in batches. Use `--dry-run` to preview the counts by destination family.
+`reclassify-job-families` to update stored catch-all suite labels. The
+operation reads cached task names and updates matching metadata in batches.
+Use `--dry-run` to preview the counts by destination family. Repeat
+`--pool PROVISIONER/WORKER-TYPE` to limit the pass to task IDs seen in
+specific pools. A task ID shares the same cached label across pools.
 
 ```sh
 DATABASE_URL=... uv run --frozen python -m worker_health.pool_classifier_web.scripts.db_maintenance \

@@ -83,7 +83,7 @@ def _now_iso(delta_hours=0):
     return (datetime.now(timezone.utc) + timedelta(hours=delta_hours)).isoformat()
 
 
-def test_reclassify_cached_performance_families(capsys):
+def test_reclassify_cached_job_families(capsys):
     from psycopg.conninfo import make_conninfo
 
     from worker_health.pool_classifier_web.scripts.reclassify_job_families import run
@@ -94,6 +94,7 @@ def test_reclassify_cached_performance_families(capsys):
         try:
             with psycopg.connect(dsn, autocommit=True) as conn:
                 conn.execute("CREATE TABLE task_sources (task_id text PRIMARY KEY, task_name text, job_family text)")
+                conn.execute("CREATE TABLE task_results (task_id text, pool_id text)")
                 conn.execute("""
                     INSERT INTO task_sources VALUES
                     ('a', 'test-win-talos-svgr', 'Other performance tests'),
@@ -101,21 +102,41 @@ def test_reclassify_cached_performance_families(capsys):
                     ('c', 'test-win-browsertime-first-install', 'Other performance tests'),
                     ('d', 'test-win-talos-tp6m', 'Page load'),
                     ('e', NULL, 'Other performance tests'),
-                    ('f', 'build-win-talos', 'Builds')
+                    ('f', 'build-win-talos', 'Builds'),
+                    ('g', 'test-linux-browsertime-network-bench', 'Other performance tests'),
+                    ('h', 'perftest-android-background-resource', 'Unknown'),
+                    ('i', 'test-macosx-debug-gtest-1proc', 'Other tests'),
+                    ('j', 'test-macosx-opt-test-verify', 'Other tests'),
+                    ('k', 'test-macosx-debug-marionette', 'Other tests'),
+                    ('l', 'source-test-python-mozbuild', 'Other tests'),
+                    ('m', 'test-linux-browsertime-network-bench', 'Other performance tests')
                 """)
-                run(dsn, ["--batch-size", "1", "--dry-run"])
-                assert json.loads(capsys.readouterr().out)["labels"] == {"Benchmarks": 1, "Talos": 1}
+                conn.execute("""
+                    INSERT INTO task_results SELECT task_id, 'in/scope' FROM task_sources WHERE task_id < 'm';
+                    INSERT INTO task_results VALUES ('m', 'out/scope');
+                """)
+                flags = ["--batch-size", "1", "--pool", "in/scope"]
+                expected = dict.fromkeys((
+                    "Benchmarks", "Talos", "Networking", "Resource and power",
+                    "GTest", "Test Verify", "Marionette", "Source tests",
+                ), 1)
+                run(dsn, [*flags, "--dry-run"])
+                assert json.loads(capsys.readouterr().out)["labels"] == expected
                 assert conn.execute("SELECT job_family FROM task_sources WHERE task_id = 'a'").fetchone() == (
                     "Other performance tests",
                 )
-                run(dsn, ["--batch-size", "1"])
-                assert json.loads(capsys.readouterr().out)["labels"] == {"Benchmarks": 1, "Talos": 1}
+                run(dsn, flags)
+                assert json.loads(capsys.readouterr().out)["labels"] == expected
                 assert conn.execute("SELECT job_family FROM task_sources ORDER BY task_id").fetchall() == [
                     ("Talos",), ("Benchmarks",), ("Other performance tests",),
                     ("Page load",), ("Other performance tests",), ("Builds",),
+                    ("Networking",), ("Resource and power",), ("GTest",),
+                    ("Test Verify",), ("Marionette",), ("Source tests",), ("Other performance tests",),
                 ]
-                run(dsn, [])
+                run(dsn, flags)
                 assert json.loads(capsys.readouterr().out)["labels"] == {}
+                run(dsn, [])
+                assert json.loads(capsys.readouterr().out)["labels"] == {"Networking": 1}
         finally:
             admin.execute("DROP SCHEMA test_reclassify_job_families CASCADE")
 
